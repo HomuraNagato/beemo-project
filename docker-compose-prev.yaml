@@ -1,0 +1,111 @@
+
+services:
+
+  eve-beemo:
+    image: debian
+    container_name: eve-beemo
+    hostname: eve-beemo
+    stdin_open: true
+    tty: true
+    network_mode: host
+    privileged: true
+    ports:
+      - 5013:5013
+    build:
+      context: ./compose/orchestrator
+      dockerfile: Dockerfile
+    volumes:
+     - ./:/home
+     - eve-beemo-volume:/app/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  reasoning-cpp:
+    container_name: reasoning-cpp
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    ports:
+      - 5014:5014
+    volumes:
+      - ./models:/models
+      - ./compose/reasoning_cpp/entrypoint.sh:/entrypoint.sh
+    env_file:
+      - ./.env
+#    depends_on:
+#      orpheus-model-init:
+#        condition: service_completed_successfully
+    privileged: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    entrypoint: /entrypoint.sh
+
+  orpheus: # python fastapi and ui for sending tts requests
+    container_name: orpheus
+    build:
+      context: ./library/Orpheus-FastAPI
+      dockerfile: Dockerfile.gpu
+    ports:
+      - 5023:5023
+    env_file:
+      - ./.env
+    privileged: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      orpheus-cpp:
+        condition: service_started
+
+  orpheus-cpp: # text tokenization
+    container_name: orpheus-cpp
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    ports:
+      - 5024:5024
+    volumes:
+      - ./models:/models
+      - ./compose/orpheus_cpp/entrypoint.sh:/entrypoint.sh
+    env_file:
+      - ./.env
+    depends_on:
+      orpheus-model-init:
+        condition: service_completed_successfully
+    privileged: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    entrypoint: /entrypoint.sh
+
+  orpheus-model-init:
+    container_name: orpheus-model-init
+    image: curlimages/curl:latest
+    user: "${UID:-1000}:${GID:-1000}"
+    env_file:
+      - ./.env
+    volumes:
+      - ./models:/app/models
+      - ./compose/orpheus_model_init/entrypoint.sh:/entrypoint.sh
+    working_dir: /app
+    entrypoint: /entrypoint.sh
+    
+
+volumes:
+  eve-beemo-volume:
+    name: eve-beemo-volume
+    

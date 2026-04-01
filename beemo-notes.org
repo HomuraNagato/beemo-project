@@ -1,0 +1,207 @@
+
+|--------------+--------------------+-------|
+| group        | service            | ports |
+|--------------+--------------------+-------|
+| stt          | stt                |  5003 |
+| orchestrator | orchestrator       |  5013 |
+| orchestrator | reasoning cpp      |  5014 |
+| tts          | orpheus fastapi    |  5023 |
+| tts          | orpheus cpp tts    |  5024 |
+| tts          | orpheus model init |     - |
+|--------------+--------------------+-------|
+
+* STT
+** achitecture
+
+custom python service with no open endpoints
+ - OpenWakeWord
+ - silence algorithm
+ - STT
+
+requirements
+ - local microphone that PyAudio can attach to
+
+** initial agent request
+
+[ME]: is it possible to couple these three into a single service?. using python
+and/or llama.cpp servers (or other option if it works better)
+
+ - OpenWakeWord for recognizing a wake word request
+ - Silence detector streams audio to
+ - STT model
+ - write or stream text to either requestee or logs or smth as it will be input
+   to another service that handles what to do with the text request?
+ 
+
+
+[AI]: Yes, it’s definitely possible—and often practical—to **combine all three functionalities** (wake word detection, silence detection, and STT) into a **single Python service**. This service would:
+
+- Continuously listen to audio from the microphone (or audio stream),
+- Run OpenWakeWord models to detect the wake word,
+- After wake word triggers, start streaming audio for command capture while running silence detection to know when to stop,
+- Stream or batch-process that audio through an STT model (e.g., Whisper, Vosk, or other Python friendly STT),
+- Output transcribed text incrementally or at the end, either streaming it to a client or writing to logs or downstream services,
+- And leave the actual handling of the textual command to another system (e.g., LLM server like llama.cpp via RPC or API).
+
+---
+
+### Why couple these in one service?
+
+- **Lower latency:** Tight integration avoids IPC overhead.
+- **Simpler resource sharing:** Audio buffers and models can share memory and optimizations.
+- **Simpler deployment:** One container or process instead of many.
+- Easier debugging and synchronized state management between wake word and command capture.
+
+---
+
+### How it could work conceptually
+
+```mermaid
+flowchart TD
+    A[Audio Input: Microphone] --> B[OpenWakeWord: Wake Word Detection]
+    B -- Wake Word Detected --> C[Start Command Recording + Silence Detection]
+    C -- Silence Detected or timeout --> D[Send audio chunk to STT Model]
+    D --> E[Stream or log transcribed text]
+    E --> F[Downstream command handler via API or messaging]
+    B -- No Wake Word--> B
+```
+
+---
+
+### Python stack suggestions
+
+- **Audio input:** `pyaudio` or `sounddevice` for real-time streaming microphone input.
+- **Wake word:** Your OpenWakeWord model (likely TensorFlow Lite or PyTorch).
+- **Silence detection:** `webrtcvad` works well for continuous stream VAD.
+- **STT:** Open source Python-friendly STT options:
+  - **Whisper (OpenAI whisper.cpp or official python API)**  
+  - **Vosk** (offline, real-time friendly)  
+  - **Coqui STT**  
+  - You can also call external Python bindings or even run llama.cpp for command interpretation separately.
+- **Async/event loop:** Use `asyncio` to manage streaming without blocking.
+
+---
+
+### High-level pseudocode example sketch
+
+```python
+import asyncio
+import pyaudio
+import webrtcvad
+import openwakeword_inference  # your OpenWakeWord wrapper
+import stt_inference           # your STT wrapper (Whisper, Vosk, ...)
+
+class AssistantService:
+    def __init__(self):
+        self.audio_interface = pyaudio.PyAudio()
+        self.stream = self.audio_interface.open(format=pyaudio.paInt16,
+                                                channels=1,
+                                                rate=16000,
+                                                input=True,
+                                                frames_per_buffer=512)
+        self.vad = webrtcvad.Vad(2)
+        self.wakeword_model = openwakeword_inference.load_model('wakeword.tflite')
+        self.stt = stt_inference.load_model()  # Whisper/Vosk/etc
+
+        self.listening_for_command = False
+        self.command_audio = []
+
+    def detect_wake_word(self, audio_data):
+        # preprocess audio and run openwakeword inference, return True if detected
+        return self.wakeword_model.detect(audio_data)
+
+    def is_speech(self, frame):
+        return self.vad.is_speech(frame, 16000)
+
+    async def run(self):
+        while True:
+            audio_frame = self.stream.read(512, exception_on_overflow=False)
+
+            if not self.listening_for_command:
+                if self.detect_wake_word(audio_frame):
+                    print("Wake word detected! Start listening for command...")
+                    self.listening_for_command = True
+                    self.command_audio = [audio_frame]
+                    silence_counter = 0
+                else:
+                    # Keep listening for wake word
+                    continue
+            else:
+                self.command_audio.append(audio_frame)
+                if self.is_speech(audio_frame):
+                    silence_counter = 0
+                else:
+                    silence_counter += 1
+
+                # If silence persists for ~0.5 sec (e.g. 15 frames * 30ms frames)
+                if silence_counter > 15:
+                    print("Silence detected, processing command...")
+                    full_command_audio = b"".join(self.command_audio)
+                    # Run STT on full_command_audio asynchronously
+                    transcription = await asyncio.to_thread(self.stt.transcribe, full_command_audio)
+                    print(f"Transcribed command: {transcription}")
+
+                    # Here, send transcription to downstream service (LLM etc), or log it
+                    # Example: send_to_llm_service(transcription)
+
+                    # Reset to listen for new wake word 
+                    self.listening_for_command = False
+                    self.command_audio = []
+
+if __name__ == '__main__':
+    assistant = AssistantService()
+    asyncio.run(assistant.run())
+```
+
+---
+
+### Notes
+
+- The OpenWakeWord detection may require buffering multiple frames before determining detection.
+- For **streaming STT outputs**, instead of buffering the entire utterance, you could integrate streaming models (e.g., Whisper streaming API).
+- Depending on your STT you may want to **chunk audio frames** matching model input size.
+- You could enhance responsiveness by sending partial transcripts if your STT supports it.
+- You can expand this service to push outputs via gRPC or message bus to other components that handle the NLP/LLM part.
+
+---
+
+### Benefits of this approach
+
+- You get a **single, modular Python service** handling audio input → wake word → voice activity → STT transcription.
+- Downstream services only need to consume **text commands**, simplifying the architecture.
+- Easier to test and deploy.
+- Keeps wake word and command context tightly coupled.
+
+---
+
+If you want, I can help you:
+
+- Build or refine such a combined assistant service with real model bindings.
+- Provide sample code integrating OpenWakeWord, `webrtcvad`, and Whisper or Vosk.
+- Design an interface/API for sending the text result to your LLM server or other downstream services.
+- Containerize this service with Docker.
+- Suggest scaling patterns if you need multiple instances or distributed audio sources.
+
+Would you like to see a more complete code example or specific integrations?
+
+* Reasoning
+** architecture
+
+tool based reasoning agent
+ - access to camera service?
+ - access to audio recordings
+ - access to embeddings db
+ - access to internet
+
+when and how to update embeddings db? with all requests?
+eg. if structured response says is_important, then call embedding service with
+full context (or omit question?)
+
+* STT
+** architecture
+
+Orpheus or Piper TTS
+
+* references
+
+llama.cpp: github.com/ggml-org/llama.cpp

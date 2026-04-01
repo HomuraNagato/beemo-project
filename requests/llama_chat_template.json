@@ -1,0 +1,8 @@
+{
+  "model": "llama-3.2.gguf",
+  "messages": [
+    { "role": "system", "content": "You are a helpful assistant." },
+    { "role": "user", "content": "Say 'llama ok' in 3 words." }
+  ],
+  "stream": false
+}

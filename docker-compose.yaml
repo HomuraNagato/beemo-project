@@ -1,0 +1,158 @@
+
+services:
+
+  eve-orchestrator:
+    container_name: eve-orchestrator
+    hostname: eve-orchestrator
+#    image: eve-beemo-orchestrator
+#    image: eve-orchestrator
+    stdin_open: true
+    tty: true
+    privileged: true
+    env_file:
+      - ./.env
+    ports:
+      - 5013:5013
+    build:
+      context: .
+      dockerfile: compose/orchestrator/Dockerfile
+    volumes:
+      - ./:/workspace
+      - eve-orchestrator-volume:/app/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  eve-llama-cpp:
+    container_name: eve-llama-cpp
+    hostname: eve-llama-cpp
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    ports:
+      - 5014:5014
+    volumes:
+      - ./models:/models
+      - ./compose/reasoning_cpp/entrypoint.sh:/entrypoint.sh
+    env_file:
+      - ./.env
+    privileged: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    entrypoint: /entrypoint.sh
+
+  eve-tools:
+    container_name: eve-tools
+    hostname: eve-tools
+    stdin_open: true
+    tty: true
+    privileged: true
+    ports:
+      - 5015:5015
+    build:
+      context: .
+      dockerfile: compose/tools/Dockerfile
+    env_file:
+      - ./.env
+
+  eve-vision:
+    container_name: eve-vision
+    hostname: eve-vision
+    image: eve-vision
+    ports:
+      - 5016:5016
+    build:
+      context: ./compose/vision
+      dockerfile: Dockerfile
+    env_file:
+      - ./.env
+    privileged: true
+
+  eve-ui:
+    container_name: eve-ui
+    hostname: eve-ui
+    image: eve-ui
+    ports:
+      - 5017:5017
+    build:
+      context: ./compose/ui
+      dockerfile: Dockerfile
+    env_file:
+      - ./.env
+    privileged: true
+
+  eve-install:
+    container_name: eve-install
+    build:
+      context: ./compose/install
+      dockerfile: Dockerfile
+    volumes:
+      - ./:/workspace
+      - eve-models-volume:/workspace/models
+    entrypoint: /workspace/scripts/eve_install.sh
+
+#  eve-tts:
+#    container_name: eve-tts
+#    hostname: eve-tts
+#    image: eve-tts
+#    ports:
+#      - 5018:5018
+#    build:
+#      context: ./compose/tts
+#      dockerfile: Dockerfile
+#    env_file:
+#      - ./.env
+#    privileged: true
+#    deploy:
+#      resources:
+#        reservations:
+#          devices:
+#            - driver: nvidia
+#              count: all
+#              capabilities: [gpu]
+
+#  eve-asr:
+#    container_name: eve-asr
+#    hostname: eve-asr
+#    image: eve-asr
+#    ports:
+#      - 5019:5019
+#    build:
+#      context: ./compose/asr
+#      dockerfile: Dockerfile
+#    env_file:
+#      - ./.env
+#    privileged: true
+#    deploy:
+#      resources:
+#        reservations:
+#          devices:
+#            - driver: nvidia
+#              count: all
+#              capabilities: [gpu]
+
+#  eve-wakeword:
+#    container_name: eve-wakeword
+#    hostname: eve-wakeword
+#    image: eve-wakeword
+#    ports:
+#      - 5020:5020
+#    build:
+#      context: ./compose/wakeword
+#      dockerfile: Dockerfile
+#    env_file:
+#      - ./.env
+#    privileged: true
+
+volumes:
+  eve-orchestrator-volume:
+    name: eve-orchestrator-volume
+  eve-models-volume:
+    name: eve-models-volume

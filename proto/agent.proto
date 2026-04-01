@@ -1,0 +1,114 @@
+syntax = "proto3";
+
+package eve;
+
+option go_package = "eve-beemo/proto/gen;proto";
+
+// Orchestrator-facing stream of state updates (optional for UI/tests).
+service Orchestrator {
+  rpc StreamState(StateRequest) returns (stream StateUpdate);
+  rpc Chat(ChatRequest) returns (ChatResponse);
+}
+
+service WakeWord {
+  rpc StreamWake(WakeRequest) returns (stream WakeDetected);
+}
+
+service ASR {
+  // Client streams audio chunks; server streams transcripts.
+  rpc StreamTranscribe(stream AudioChunk) returns (stream TranscribeResult);
+}
+
+service LLM {
+  rpc Chat(ChatRequest) returns (stream ChatChunk);
+}
+
+service TTS {
+  rpc Speak(SpeakRequest) returns (stream AudioChunk);
+}
+
+service Vision {
+  rpc Capture(CaptureRequest) returns (CaptureResult);
+}
+
+service Tools {
+  rpc Execute(ToolRequest) returns (ToolResult);
+}
+
+message StateRequest {
+  string session_id = 1;
+}
+
+message StateUpdate {
+  string session_id = 1;
+  string state = 2;
+  string message = 3;
+  int64 timestamp_unix_ms = 4;
+}
+
+message WakeRequest {
+  string session_id = 1;
+}
+
+message WakeDetected {
+  string session_id = 1;
+  int64 timestamp_unix_ms = 2;
+  string source = 3;
+}
+
+message AudioChunk {
+  bytes pcm_s16le = 1;
+  int32 sample_rate_hz = 2;
+}
+
+message TranscribeResult {
+  string text = 1;
+  float confidence = 2;
+  bool is_final = 3;
+}
+
+message ChatMessage {
+  string role = 1; // system | user | assistant
+  string content = 2;
+}
+
+message ChatRequest {
+  string session_id = 1;
+  repeated ChatMessage messages = 2;
+  repeated string image_paths = 3;
+  map<string, string> options = 4;
+}
+
+message ChatChunk {
+  string text = 1;
+  bool is_final = 2;
+}
+
+message ChatResponse {
+  string text = 1;
+}
+
+message SpeakRequest {
+  string session_id = 1;
+  string text = 2;
+  map<string, string> options = 3;
+}
+
+message CaptureRequest {
+  string session_id = 1;
+}
+
+message CaptureResult {
+  string image_path = 1;
+}
+
+message ToolRequest {
+  string session_id = 1;
+  string action = 2;
+  string value = 3;
+}
+
+message ToolResult {
+  string action = 1;
+  string result = 2;
+}

@@ -1,0 +1,8 @@
+
+# large files
+library
+models
+
+*~
+
+.env

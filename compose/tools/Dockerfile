@@ -1,0 +1,22 @@
+FROM golang:1.22-bullseye AS build
+
+WORKDIR /workspace
+
+COPY go.mod go.mod
+
+COPY proto/gen proto/gen
+COPY src/tools src/tools
+
+RUN go mod tidy
+
+RUN go build -o /out/eve-tools ./src/tools
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /out/eve-tools /usr/local/bin/eve-tools
+
+ENTRYPOINT ["/usr/local/bin/eve-tools"]
