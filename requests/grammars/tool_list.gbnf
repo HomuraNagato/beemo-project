@@ -1,4 +1,0 @@
-root ::= "[" ws list? ws "]"
-list ::= tool (ws "," ws tool)*
-tool ::= "get_time" | "web"
-ws ::= [ \\t\\n]*

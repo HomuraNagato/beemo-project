@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LLM_HTTP_URL=${LLM_HTTP_URL:-http://eve-llama-cpp:5014/v1/chat/completions}
-MODEL=${REASONING_MODEL:-llama-3.2.gguf}
+LLM_HTTP_URL=${LLM_HTTP_URL:-http://eve-vllm:5014/v1/chat/completions}
+MODEL=${REASONING_MODEL:-Qwen2.5-7B-Instruct}
 PROMPT=${1:-"what is the definition of mellifluous?"}
 
 payload=$(cat <<JSON

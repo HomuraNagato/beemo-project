@@ -1,0 +1,6 @@
+root ::= "[" ws call ws "]"
+call ::= "{" ws "\"tool\"" ws ":" ws "\"calculator\"" ws "," ws "\"args\"" ws ":" ws "{" ws "\"expression\"" ws ":" ws expr_string ws "}" ws "}"
+
+expr_string ::= "\"10 / 4\""
+
+ws ::= [ \t\n\r]*

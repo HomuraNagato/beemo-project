@@ -56,8 +56,9 @@ Goal: Split into services that wait/listen while a main orchestrator routes mess
    - Accepts text; returns audio stream or handles playback.
 6. Vision Service (optional) (target: Python/script)
    - Captures images and returns file paths.
-7. Tool Service (target: Python/script)
+7. Tool execution (initially in-process inside orchestrator)
    - Executes `search_web`, `get_time`, etc.
+   - Can be split into a service later if isolation or deployment needs justify it.
 8. UI Service (target: Python/script)
    - Handles rendering/animation, receives state + text updates.
 
@@ -85,8 +86,7 @@ Services:
    - `Speak(SpeakRequest) -> stream AudioChunk`
 6. Vision
    - `Capture(CaptureRequest) -> CaptureResult`
-7. Tools
-   - `Execute(ToolRequest) -> ToolResult`
+Note: tool execution is currently internal to the orchestrator, so a gRPC `Tools` contract is optional rather than required.
 
 Core Messages:
 - `WakeDetected { timestamp, source }`
@@ -107,7 +107,7 @@ Core Messages:
 2. Stream mic audio to `ASR.StreamTranscribe(...)`.
 3. Receive `TranscribeResult` from ASR.
 4. Append to memory; call `LLM.Chat(...)` and stream `ChatChunk`.
-5. If tool JSON detected, call `Tools.Execute(...)` -> `ToolResult`.
+5. If tool JSON detected, execute the matching local tool handler -> `ToolResult`.
 6. Optionally summarize tool result via `LLM.Chat(...)`.
 7. Send text to `TTS.Speak(...)` (stream `AudioChunk`) + UI updates.
 
@@ -116,7 +116,7 @@ Core Messages:
 ## Implementation Plan (Service Order)
 1. Orchestrator (gRPC client, state machine, memory, tool routing).
 2. LLM service (`llama.cpp` server) + client adapter in orchestrator.
-3. Tools service (search/time/etc) + client adapter in orchestrator.
+3. Expand in-process tool execution (search/time/etc).
 4. Vision service + client adapter in orchestrator.
 5. UI service (optional) + state update wiring.
 6. Wake Word service (last; requires mic access).
@@ -130,3 +130,16 @@ Core Messages:
 - ASR service owns the mic device when using streaming transcription.
 - Threading to process boundary: convert shared flags/events into messages.
 - Action parsing is currently regex-based; consider stricter JSON-only tool responses in orchestrator.
+
+---
+
+## Future Planner Layer
+- Add a planner/organizer stage ahead of tool execution for requests that need multiple steps or multiple tools.
+- Planner output should break a request into a small ordered plan rather than forcing a single tool call.
+- Executor stage should run one or more tool calls from that plan, collect structured results, and pass the full result set to the final response stage.
+- Keep the simple direct single-tool path for trivial requests so latency stays low.
+- Good candidates for planner-required queries:
+  - multi-step research
+  - chained calculations
+  - calendar or scheduling workflows
+  - requests that need clarification before selecting tools

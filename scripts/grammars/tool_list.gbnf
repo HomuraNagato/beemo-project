@@ -1,0 +1,64 @@
+root ::= empty_list | single_call_list
+empty_list ::= "[" ws "]"
+single_call_list ::= "[" ws tool_call ws "]"
+
+tool_call ::= get_time_call | calculator_call
+
+get_time_call ::= "{" ws "\"tool\"" ws ":" ws "\"get_time\"" ws "," ws "\"args\"" ws ":" ws "{}" ws "}"
+
+calculator_call ::= "{" ws "\"tool\"" ws ":" ws "\"calculator\"" ws "," ws "\"args\"" ws ":" ws calc_args ws "}"
+
+calc_args ::= expression_args | convert_args | bmi_args | bmr_args | tdee_args | percent_of_args | percent_change_args | percent_ratio_args
+
+expression_args ::= "{" ws "\"operation\"" ws ":" ws "\"expression\"" ws "," ws "\"expression\"" ws ":" ws string ws "}"
+convert_args ::= "{" ws "\"operation\"" ws ":" ws "\"convert\"" convert_tail? ws "}"
+convert_tail ::= ws "," ws convert_field (ws "," ws convert_field)*
+convert_field ::= input_field | per_field | value_field | from_unit_field | to_unit_field
+input_field ::= "\"input\"" ws ":" ws measurement_list
+per_field ::= "\"per\"" ws ":" ws measurement_list
+value_field ::= "\"value\"" ws ":" ws number
+from_unit_field ::= "\"from_unit\"" ws ":" ws unit_expr_string
+to_unit_field ::= "\"to_unit\"" ws ":" ws unit_expr_string
+
+bmi_args ::= "{" ws "\"operation\"" ws ":" ws "\"bmi\"" bmi_tail? ws "}"
+bmi_tail ::= ws "," ws bmi_field (ws "," ws bmi_field)*
+bmi_field ::= weight_field | height_field
+weight_field ::= "\"weight\"" ws ":" ws measurement_list
+height_field ::= "\"height\"" ws ":" ws measurement_list
+
+bmr_args ::= "{" ws "\"operation\"" ws ":" ws "\"bmr\"" bmr_tail? ws "}"
+bmr_tail ::= ws "," ws bmr_field (ws "," ws bmr_field)*
+bmr_field ::= age_years_field | gender_field | weight_field | height_field
+age_years_field ::= "\"age_years\"" ws ":" ws number
+gender_field ::= "\"gender\"" ws ":" ws gender_string
+
+tdee_args ::= "{" ws "\"operation\"" ws ":" ws "\"tdee\"" tdee_tail? ws "}"
+tdee_tail ::= ws "," ws tdee_field (ws "," ws tdee_field)*
+tdee_field ::= age_years_field | gender_field | weight_field | height_field | activity_level_field
+activity_level_field ::= "\"activity_level\"" ws ":" ws activity_level_string
+
+percent_of_args ::= "{" ws "\"operation\"" ws ":" ws "\"percent_of\"" ws "," ws "\"percent\"" ws ":" ws number ws "," ws "\"value\"" ws ":" ws number ws "}"
+percent_change_args ::= "{" ws "\"operation\"" ws ":" ws "\"percent_change\"" ws "," ws "\"value\"" ws ":" ws number ws "," ws "\"percent\"" ws ":" ws number ws "," ws "\"direction\"" ws ":" ws direction_string ws "}"
+percent_ratio_args ::= "{" ws "\"operation\"" ws ":" ws "\"percent_ratio\"" ws "," ws "\"part\"" ws ":" ws number ws "," ws "\"whole\"" ws ":" ws number ws "}"
+
+measurement_list ::= "[" ws component_list ws "]"
+component_list ::= component (ws "," ws component)*
+component ::= "{" ws "\"unit\"" ws ":" ws component_unit_string ws "," ws "\"value\"" ws ":" ws number ws "}"
+
+component_unit_string ::= "\"mm\"" | "\"cm\"" | "\"m\"" | "\"km\"" | "\"in\"" | "\"ft\"" | "\"mi\"" | "\"mg\"" | "\"g\"" | "\"kg\"" | "\"lb\"" | "\"ml\"" | "\"l\"" | "\"s\"" | "\"min\"" | "\"hr\"" | "\"mmol\"" | "\"mol\"" | "\"c\"" | "\"f\"" | "\"k\""
+unit_expr_string ::= "\"" unit_expr_chars "\""
+unit_expr_chars ::= unit_expr_char+
+unit_expr_char ::= [a-zA-Z/]
+direction_string ::= "\"increase\"" | "\"decrease\""
+gender_string ::= "\"male\"" | "\"female\""
+activity_level_string ::= "\"sedentary\"" | "\"light\"" | "\"moderate\"" | "\"active\"" | "\"very_active\""
+
+string ::= "\"" chars "\""
+chars ::= char*
+char ::= [a-zA-Z0-9_ +\\*/().?-]
+
+number ::= "-"? int frac?
+int ::= "0" | [1-9] [0-9]*
+frac ::= "." [0-9]+
+
+ws ::= [ \t\n\r]*

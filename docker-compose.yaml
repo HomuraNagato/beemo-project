@@ -14,8 +14,8 @@ services:
     ports:
       - 5013:5013
     build:
-      context: .
-      dockerfile: compose/orchestrator/Dockerfile
+      context: ./compose/orchestrator
+      dockerfile: Dockerfile
     volumes:
       - ./:/workspace
       - eve-orchestrator-volume:/app/data
@@ -27,18 +27,19 @@ services:
               count: 1
               capabilities: [gpu]
 
-  eve-llama-cpp:
-    container_name: eve-llama-cpp
-    hostname: eve-llama-cpp
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+  eve-vllm:
+    container_name: eve-vllm
+    hostname: eve-vllm
+    image: vllm/vllm-openai
+    privileged: true
     ports:
       - 5014:5014
     volumes:
       - ./models:/models
-      - ./compose/reasoning_cpp/entrypoint.sh:/entrypoint.sh
+      - ./compose/reasoning_vllm/entrypoint.sh:/entrypoint.sh
     env_file:
       - ./.env
-    privileged: true
+    ipc: host
     deploy:
       resources:
         reservations:
@@ -48,19 +49,6 @@ services:
               capabilities: [gpu]
     entrypoint: /entrypoint.sh
 
-  eve-tools:
-    container_name: eve-tools
-    hostname: eve-tools
-    stdin_open: true
-    tty: true
-    privileged: true
-    ports:
-      - 5015:5015
-    build:
-      context: .
-      dockerfile: compose/tools/Dockerfile
-    env_file:
-      - ./.env
 
   eve-vision:
     container_name: eve-vision
