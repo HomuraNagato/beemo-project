@@ -677,6 +677,49 @@ func TestChatPreservesCollectedFieldsAcrossMultipleTDEEClarifications(t *testing
 	}
 }
 
+func TestChatCarriesAgeIntoTDEEFollowUpFromActiveThread(t *testing.T) {
+	t.Parallel()
+
+	server := &orchestratorServer{
+		cfg: config.Config{
+			LLMHTTPURL:   "http://llm.test/v1/chat/completions",
+			LLMModel:     "test-model",
+			LLMTimeoutMs: 500,
+		},
+		tools: orchtools.NewLocalExecutor(),
+		readGrammar: func(path string) (string, error) {
+			return "root ::= \"[]\"", nil
+		},
+		callCompletion: func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+			if !strings.Contains(prompt, "Active conversation thread:\nuser: what is the bmr of 45kg?\nassistant: What are the age in years, gender, and height?\nuser: 34 years, female, 162cm\nassistant: The BMR for a 34-year-old female weighing 45kg, who is 162cm tall, is 1131.50 kcal/day.\nuser: what is the tdee?") {
+				t.Fatalf("decision prompt missing tdee follow-up thread: %q", prompt)
+			}
+			return `[{"tool":"calculator","args":{"operation":"tdee","age_years":34,"gender":"female","weight":[{"unit":"kg","value":45}],"height":[{"unit":"cm","value":162}]}}]`, nil
+		},
+		callFinalMessage: func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+			t.Fatalf("final LLM should not be called for missing activity level")
+			return "", nil
+		},
+	}
+
+	resp, err := server.Chat(context.Background(), &pb.ChatRequest{
+		SessionId: "test-session",
+		Messages: []*pb.ChatMessage{
+			{Role: "user", Content: "what is the bmr of 45kg?"},
+			{Role: "assistant", Content: "What are the age in years, gender, and height?"},
+			{Role: "user", Content: "34 years, female, 162cm"},
+			{Role: "assistant", Content: "The BMR for a 34-year-old female weighing 45kg, who is 162cm tall, is 1131.50 kcal/day."},
+			{Role: "user", Content: "what is the tdee?"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	if got, want := resp.GetText(), "What is the activity level: sedentary, light, moderate, active, or very_active?"; got != want {
+		t.Fatalf("unexpected response: got %q want %q", got, want)
+	}
+}
+
 func TestChatReturnsParseErrorOnInvalidDecisionJSON(t *testing.T) {
 	t.Parallel()
 

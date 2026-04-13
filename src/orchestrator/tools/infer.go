@@ -23,7 +23,7 @@ type PendingFillRequest struct {
 var (
 	weightEvidencePattern   = regexp.MustCompile(`(?i)\b\d+(?:\.\d+)?\s*(kg|kgs|kilograms?|g|grams?|lb|lbs|pounds?)\b`)
 	heightEvidencePattern   = regexp.MustCompile(`(?i)(\b\d+(?:\.\d+)?\s*(ft|feet|foot|in|inch|inches|cm|m|meters?|metres?)\b|\b\d+\s*'\s*\d*(?:\.\d+)?\s*"?|\b\d+(?:\.\d+)?\s*")`)
-	ageEvidencePattern      = regexp.MustCompile(`(?i)(\b\d+\s*(years?\s*old|yo|y/o)\b|\bage\s+\d+\b)`)
+	ageEvidencePattern      = regexp.MustCompile(`(?i)(\b\d+(?:\.\d+)?\s*(years?\s*old|years?|yrs?|yr|yo|y/o)\b|\bage\s+\d+(?:\.\d+)?\b)`)
 	genderEvidencePattern   = regexp.MustCompile(`(?i)\b(male|female|man|woman)\b`)
 	activityEvidencePattern = regexp.MustCompile(`(?i)\b(sedentary|light|moderate|active|very active|very_active)\b`)
 
@@ -31,7 +31,7 @@ var (
 	resumeMeasurementPattern = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(mm|millimeter|millimeters|millimetre|millimetres|cm|centimeter|centimeters|centimetre|centimetres|m|meter|meters|metre|metres|km|kilometer|kilometers|kilometre|kilometres|in|inch|inches|ft|foot|feet|mi|mile|miles|mg|milligram|milligrams|kg|kgs|kilogram|kilograms|kiloggram|kiloggrams|g|gram|grams|gr|lb|lbs|pound|pounds|ml|milliliter|milliliters|millilitre|millilitres|l|liter|liters|litre|litres|s|sec|secs|second|seconds|min|mins|minute|minutes|hr|hrs|h|hour|hours|mmol|millimole|millimoles|mol|mole|moles)\b`)
 	resumeFeetInchesPattern  = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(?:ft|foot|feet|')\s*(?:(\d+(?:\.\d+)?)\s*(?:in|inch|inches|")?)?`)
 	resumeInchesQuotePattern = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*"`)
-	resumeAgeExplicitPattern = regexp.MustCompile(`(?i)\b(\d{1,3})\s*(years?\s*old|yo|y/o)\b`)
+	resumeAgeExplicitPattern = regexp.MustCompile(`(?i)\b(\d{1,3}(?:\.\d+)?)\s*(years?\s*old|years?|yrs?|yr|yo|y/o)\b`)
 	resumeBareNumberPattern  = regexp.MustCompile(`^\s*(\d{1,3})(?:\.0+)?\s*[\.,!?]*\s*$`)
 )
 

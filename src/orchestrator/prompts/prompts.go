@@ -33,6 +33,7 @@ Examples:
 - [{"tool":"calculator","args":{"operation":"bmi","weight":[{"unit":"lb","value":101}],"height":[{"unit":"ft","value":5},{"unit":"in","value":4}]}}]
 - [{"tool":"calculator","args":{"operation":"bmr","age_years":34,"gender":"female","weight":[{"unit":"kg","value":45}],"height":[{"unit":"in","value":64}]}}]
 - [{"tool":"calculator","args":{"operation":"tdee","age_years":34,"gender":"female","activity_level":"moderate","weight":[{"unit":"kg","value":45}],"height":[{"unit":"in","value":64}]}}]
+- Active thread has user weight/height/age/gender for BMR, then user asks "what is the tdee?" -> reuse those explicit values in the tdee call and omit only activity_level if it was never provided
 - [{"tool":"calculator","args":{"operation":"percent_of","percent":20,"value":85}}]
 - User query "summarize this paragraph" -> []
 
@@ -41,6 +42,7 @@ Rules:
 - A question about the current or relative date/time should never return [].
 - For math, BMI/BMR/TDEE, pace/speed, chemistry-style unit conversions, or other unit conversion questions, use calculator.
 - If the user explicitly asks for BMI, BMR, or TDEE, use calculator with that operation even when some fields are missing.
+- For follow-up BMI, BMR, or TDEE questions, carry forward explicit measurements or demographics from the active conversation thread unless the user corrected them later in that thread.
 - Use calculator convert for both simple units and compound units like mi/hr, min/mi, mg/ml, or g/l.
 - Use the active conversation thread to resolve follow-up references such as "what about tomorrow?", "same conversion", or "what about bmr?".
 - Do not answer the user.
@@ -65,6 +67,7 @@ Return [] only when neither tool applies.
 Important:
 - If the user asks about current or relative time/date/day/month/year, return [{"tool":"get_time","args":{}}], not [].
 - If the user asks for math, unit conversion, BMI, BMR, TDEE, pace, speed, or percentages, return calculator.
+- For follow-up BMI, BMR, or TDEE questions, reuse explicit measurements or demographics from the active conversation thread and omit only fields that are still missing.
 - Use the active conversation thread to resolve follow-up references such as "what about tomorrow?" or "what about bmr?".
 - Do not answer the user.
 
