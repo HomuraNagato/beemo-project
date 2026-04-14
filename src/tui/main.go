@@ -37,6 +37,7 @@ func main() {
 	client := pb.NewOrchestratorClient(conn)
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 0, 1024), 1024*1024)
+	baseSessionID := *sessionID
 
 	var transcript []transcriptEntry
 	var messages []*pb.ChatMessage
@@ -62,6 +63,7 @@ func main() {
 		case "/clear":
 			transcript = nil
 			messages = nil
+			*sessionID = fmt.Sprintf("%s-%d", baseSessionID, time.Now().UnixNano())
 			render(*addr, *sessionID, transcript)
 			continue
 		case "/help":

@@ -720,6 +720,76 @@ func TestChatCarriesAgeIntoTDEEFollowUpFromActiveThread(t *testing.T) {
 	}
 }
 
+func TestChatUsesStoredSessionTranscriptForLatestOnlyFollowUp(t *testing.T) {
+	t.Parallel()
+
+	decisionCalls := 0
+	finalCalls := 0
+	server := &orchestratorServer{
+		cfg: config.Config{
+			LLMHTTPURL:   "http://llm.test/v1/chat/completions",
+			LLMModel:     "test-model",
+			LLMTimeoutMs: 500,
+		},
+		tools: orchtools.NewLocalExecutor(),
+		readGrammar: func(path string) (string, error) {
+			return "root ::= \"[]\"", nil
+		},
+		callCompletion: func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+			decisionCalls++
+			switch decisionCalls {
+			case 1:
+				return `[{"tool":"calculator","args":{"operation":"bmr","weight":[{"unit":"kg","value":45}]}}]`, nil
+			case 2:
+				if !strings.Contains(prompt, "Active conversation thread:\nuser: what is the bmr of 45kg?\nassistant: What are the age in years, gender, and height?\nuser: 34 years, female, 162cm\nassistant: The BMR is 1131.50 kcal/day.\nuser: what is the tdee?") {
+					t.Fatalf("decision prompt missing stored session transcript: %q", prompt)
+				}
+				return `[{"tool":"calculator","args":{"operation":"tdee","age_years":34,"gender":"female","weight":[{"unit":"kg","value":45}],"height":[{"unit":"cm","value":162}]}}]`, nil
+			default:
+				t.Fatalf("unexpected decision call %d with prompt %q", decisionCalls, prompt)
+				return "", nil
+			}
+		},
+		callFinalMessage: func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+			finalCalls++
+			switch finalCalls {
+			case 1:
+				if !strings.Contains(prompt, "Tool result: tool=calculator result=BMR 1131.50 kcal/day") {
+					t.Fatalf("final prompt missing bmr result: %q", prompt)
+				}
+				return "The BMR is 1131.50 kcal/day.", nil
+			default:
+				t.Fatalf("final LLM should not be called for missing TDEE activity level")
+				return "", nil
+			}
+		},
+	}
+
+	firstResp, err := server.Chat(context.Background(), chatRequest("what is the bmr of 45kg?"))
+	if err != nil {
+		t.Fatalf("first Chat returned error: %v", err)
+	}
+	if got, want := firstResp.GetText(), "What are the age in years, gender, and height?"; got != want {
+		t.Fatalf("unexpected first response: got %q want %q", got, want)
+	}
+
+	secondResp, err := server.Chat(context.Background(), chatRequestWithSession("test-session", "34 years, female, 162cm"))
+	if err != nil {
+		t.Fatalf("second Chat returned error: %v", err)
+	}
+	if got, want := secondResp.GetText(), "The BMR is 1131.50 kcal/day."; got != want {
+		t.Fatalf("unexpected second response: got %q want %q", got, want)
+	}
+
+	thirdResp, err := server.Chat(context.Background(), chatRequestWithSession("test-session", "what is the tdee?"))
+	if err != nil {
+		t.Fatalf("third Chat returned error: %v", err)
+	}
+	if got, want := thirdResp.GetText(), "What is the activity level: sedentary, light, moderate, active, or very_active?"; got != want {
+		t.Fatalf("unexpected third response: got %q want %q", got, want)
+	}
+}
+
 func TestChatReturnsParseErrorOnInvalidDecisionJSON(t *testing.T) {
 	t.Parallel()
 

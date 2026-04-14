@@ -21,14 +21,16 @@ import (
 
 type orchestratorServer struct {
 	pb.UnimplementedOrchestratorServer
-	cfg              config.Config
-	tools            orchtools.Executor
-	readGrammar      func(path string) (string, error)
-	callCompletion   func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error)
-	callFinalMessage func(httpURL, model, prompt string, timeout time.Duration) (string, error)
-	historyMu        sync.Mutex
-	pendingMu        sync.Mutex
-	pendingBySession map[string]pendingToolState
+	cfg                 config.Config
+	tools               orchtools.Executor
+	readGrammar         func(path string) (string, error)
+	callCompletion      func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error)
+	callFinalMessage    func(httpURL, model, prompt string, timeout time.Duration) (string, error)
+	historyMu           sync.Mutex
+	pendingMu           sync.Mutex
+	pendingBySession    map[string]pendingToolState
+	transcriptMu        sync.Mutex
+	transcriptBySession map[string][]*pb.ChatMessage
 }
 
 type toolCall struct {
@@ -45,18 +47,17 @@ type pendingToolState struct {
 }
 
 const (
-	contextSelectionMessages = 24
-	activeContextTurns       = 6
+	contextSelectionMessages  = 24
+	activeContextTurns        = 6
+	sessionTranscriptMessages = 24
 )
 
 func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb.ChatResponse, error) {
 	start := time.Now()
-	userQuery := ""
-	for i := len(req.GetMessages()) - 1; i >= 0; i-- {
-		if req.GetMessages()[i].GetRole() == "user" {
-			userQuery = req.GetMessages()[i].GetContent()
-			break
-		}
+	effectiveMessages := s.resolveMessages(req.GetSessionId(), req.GetMessages())
+	userQuery := latestUserQuery(req.GetMessages())
+	if userQuery == "" {
+		userQuery = latestUserQuery(effectiveMessages)
 	}
 	fmt.Printf("orch.chat start session=%s user_query=%q\n", req.GetSessionId(), userQuery)
 	if userQuery == "" {
@@ -104,7 +105,7 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 		callCompletion = llm.CallChatWithGrammar
 	}
 	callTimeout := time.Duration(s.cfg.LLMTimeoutMs) * time.Millisecond
-	activeContext := chatctx.Build(req.GetMessages(), contextSelectionMessages, activeContextTurns)
+	activeContext := chatctx.Build(effectiveMessages, contextSelectionMessages, activeContextTurns)
 
 	text := ""
 	fromPending := false
@@ -180,6 +181,7 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 			}
 		}
 		if strings.TrimSpace(text) == "" {
+			s.setTranscript(req.GetSessionId(), appendAssistantMessage(effectiveMessages, pending.Question))
 			s.appendHistory(&historyEntry{
 				Timestamp: time.Now().Format(time.RFC3339),
 				SessionID: req.GetSessionId(),
@@ -282,6 +284,7 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 				Missing:           append([]string(nil), result.Missing...),
 				Question:          result.Question,
 			})
+			s.setTranscript(req.GetSessionId(), appendAssistantMessage(effectiveMessages, result.Question))
 			s.appendHistory(&historyEntry{
 				Timestamp:  time.Now().Format(time.RFC3339),
 				SessionID:  req.GetSessionId(),
@@ -329,8 +332,136 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 		Response:   finalText,
 		Status:     "ok",
 	})
+	s.setTranscript(req.GetSessionId(), appendAssistantMessage(effectiveMessages, finalText))
 	fmt.Printf("orch.chat done session=%s status=ok path=final ms=%d\n", req.GetSessionId(), time.Since(start).Milliseconds())
 	return &pb.ChatResponse{Text: finalText}, nil
+}
+
+func latestUserQuery(messages []*pb.ChatMessage) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i] == nil {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(messages[i].GetRole())) != "user" {
+			continue
+		}
+		content := strings.TrimSpace(messages[i].GetContent())
+		if content != "" {
+			return content
+		}
+	}
+	return ""
+}
+
+func cloneMessages(messages []*pb.ChatMessage) []*pb.ChatMessage {
+	cloned := make([]*pb.ChatMessage, 0, len(messages))
+	for _, message := range messages {
+		if message == nil {
+			continue
+		}
+		cloned = append(cloned, &pb.ChatMessage{
+			Role:    message.GetRole(),
+			Content: message.GetContent(),
+		})
+	}
+	return cloned
+}
+
+func normalizeMessages(messages []*pb.ChatMessage) []*pb.ChatMessage {
+	normalized := make([]*pb.ChatMessage, 0, len(messages))
+	for _, message := range messages {
+		if message == nil {
+			continue
+		}
+		role := strings.ToLower(strings.TrimSpace(message.GetRole()))
+		content := strings.TrimSpace(message.GetContent())
+		if role == "" || content == "" {
+			continue
+		}
+		normalized = append(normalized, &pb.ChatMessage{
+			Role:    role,
+			Content: content,
+		})
+	}
+	return normalized
+}
+
+func trimMessages(messages []*pb.ChatMessage) []*pb.ChatMessage {
+	normalized := normalizeMessages(messages)
+	if len(normalized) <= sessionTranscriptMessages {
+		return normalized
+	}
+	return cloneMessages(normalized[len(normalized)-sessionTranscriptMessages:])
+}
+
+func appendAssistantMessage(messages []*pb.ChatMessage, response string) []*pb.ChatMessage {
+	text := strings.TrimSpace(response)
+	if text == "" {
+		return trimMessages(messages)
+	}
+	next := cloneMessages(messages)
+	next = append(next, &pb.ChatMessage{Role: "assistant", Content: text})
+	return trimMessages(next)
+}
+
+func requestSuppliesTranscript(messages []*pb.ChatMessage) bool {
+	if len(messages) > 1 {
+		return true
+	}
+	for _, message := range messages {
+		if message == nil {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(message.GetRole())) != "user" {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *orchestratorServer) getTranscript(sessionID string) []*pb.ChatMessage {
+	s.transcriptMu.Lock()
+	defer s.transcriptMu.Unlock()
+	if s.transcriptBySession == nil {
+		return nil
+	}
+	return cloneMessages(s.transcriptBySession[sessionID])
+}
+
+func (s *orchestratorServer) setTranscript(sessionID string, messages []*pb.ChatMessage) {
+	if strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	trimmed := trimMessages(messages)
+	s.transcriptMu.Lock()
+	defer s.transcriptMu.Unlock()
+	if len(trimmed) == 0 {
+		if s.transcriptBySession != nil {
+			delete(s.transcriptBySession, sessionID)
+		}
+		return
+	}
+	if s.transcriptBySession == nil {
+		s.transcriptBySession = make(map[string][]*pb.ChatMessage)
+	}
+	s.transcriptBySession[sessionID] = trimmed
+}
+
+func (s *orchestratorServer) resolveMessages(sessionID string, incoming []*pb.ChatMessage) []*pb.ChatMessage {
+	normalized := normalizeMessages(incoming)
+	if len(normalized) == 0 {
+		return nil
+	}
+	if requestSuppliesTranscript(normalized) {
+		return trimMessages(normalized)
+	}
+	stored := s.getTranscript(sessionID)
+	if len(stored) == 0 {
+		return trimMessages(normalized)
+	}
+	combined := cloneMessages(stored)
+	combined = append(combined, cloneMessages(normalized)...)
+	return trimMessages(combined)
 }
 
 func cloneRawMessage(raw json.RawMessage) json.RawMessage {

@@ -1,0 +1,23 @@
+services:
+
+  eve-vllm:
+    container_name: eve-vllm
+    hostname: eve-vllm
+    image: vllm/vllm-openai
+    privileged: true
+    ports:
+      - 5014:5014
+    volumes:
+      - ./models:/models
+      - ./compose/reasoning_vllm/entrypoint.sh:/entrypoint.sh
+    env_file:
+      - ./.env
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    entrypoint: /entrypoint.sh

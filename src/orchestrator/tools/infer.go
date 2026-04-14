@@ -22,7 +22,7 @@ type PendingFillRequest struct {
 
 var (
 	weightEvidencePattern   = regexp.MustCompile(`(?i)\b\d+(?:\.\d+)?\s*(kg|kgs|kilograms?|g|grams?|lb|lbs|pounds?)\b`)
-	heightEvidencePattern   = regexp.MustCompile(`(?i)(\b\d+(?:\.\d+)?\s*(ft|feet|foot|in|inch|inches|cm|m|meters?|metres?)\b|\b\d+\s*'\s*\d*(?:\.\d+)?\s*"?|\b\d+(?:\.\d+)?\s*")`)
+	heightEvidencePattern   = regexp.MustCompile(`(?i)(\b\d+(?:\.\d+)?\s*(ft|feet|foot|in|inch|inches|mm|millimeters?|millimetres?|cm|centimeters?|centimetres?|m|meters?|metres?)\b|\b\d+\s*'\s*\d*(?:\.\d+)?\s*"?|\b\d+(?:\.\d+)?\s*")`)
 	ageEvidencePattern      = regexp.MustCompile(`(?i)(\b\d+(?:\.\d+)?\s*(years?\s*old|years?|yrs?|yr|yo|y/o)\b|\bage\s+\d+(?:\.\d+)?\b)`)
 	genderEvidencePattern   = regexp.MustCompile(`(?i)\b(male|female|man|woman)\b`)
 	activityEvidencePattern = regexp.MustCompile(`(?i)\b(sedentary|light|moderate|active|very active|very_active)\b`)

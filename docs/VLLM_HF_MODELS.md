@@ -69,7 +69,7 @@ Start with an instruct model that is known to behave well with structured output
 After updating `.env`:
 
 ```bash
-docker compose up -d eve-vllm
+docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up -d eve-vllm
 ```
 
 Then test:
@@ -81,7 +81,7 @@ Then test:
 
 ## Notes
 
-- `vllm/vllm-openai:latest` is used directly in `docker-compose.yaml`; no Dockerfile is required initially.
+- `vllm/vllm-openai:latest` is used directly in `docker-compose.gpu.yaml`; no Dockerfile is required initially.
 - `compose/reasoning_vllm/entrypoint.sh` is the runtime launcher.
 - The API model name is `REASONING_MODEL`.
 - The filesystem load path defaults to `${MODEL_DIR}/${REASONING_MODEL}` unless `REASONING_MODEL_PATH` is set.

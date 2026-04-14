@@ -7,6 +7,7 @@ MODELS_DIR="$ROOT_DIR/models"
 REPORT_DIR_DEFAULT="$ROOT_DIR/memory"
 REPORT_DIR="${REPORT_DIR:-$REPORT_DIR_DEFAULT}"
 REPORT_FILE=""
+COMPOSE_FILES=(-f "$ROOT_DIR/docker-compose.yaml" -f "$ROOT_DIR/docker-compose.gpu.yaml")
 
 DOWNLOAD_MISSING=0
 INCLUDE_LOCAL=0
@@ -205,7 +206,7 @@ restart_stack_for_model() {
   local model_name="$1"
   log "restarting eve-vllm + eve-orchestrator for $model_name"
   start_log_tail
-  docker compose -f "$ROOT_DIR/docker-compose.yaml" up -d --force-recreate eve-vllm eve-orchestrator >/dev/null
+  docker compose "${COMPOSE_FILES[@]}" up -d --force-recreate eve-vllm eve-orchestrator >/dev/null
 }
 
 wait_for_vllm() {

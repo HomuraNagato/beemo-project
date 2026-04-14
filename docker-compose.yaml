@@ -19,35 +19,6 @@ services:
     volumes:
       - ./:/workspace
       - eve-orchestrator-volume:/app/data
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-
-  eve-vllm:
-    container_name: eve-vllm
-    hostname: eve-vllm
-    image: vllm/vllm-openai
-    privileged: true
-    ports:
-      - 5014:5014
-    volumes:
-      - ./models:/models
-      - ./compose/reasoning_vllm/entrypoint.sh:/entrypoint.sh
-    env_file:
-      - ./.env
-    ipc: host
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    entrypoint: /entrypoint.sh
 
 
   eve-vision:
@@ -106,38 +77,44 @@ services:
 #              count: all
 #              capabilities: [gpu]
 
-#  eve-asr:
-#    container_name: eve-asr
-#    hostname: eve-asr
+  eve-asr:
+    container_name: eve-asr
+    hostname: eve-asr
 #    image: eve-asr
-#    ports:
-#      - 5019:5019
-#    build:
-#      context: ./compose/asr
-#      dockerfile: Dockerfile
-#    env_file:
-#      - ./.env
-#    privileged: true
-#    deploy:
-#      resources:
-#        reservations:
-#          devices:
-#            - driver: nvidia
-#              count: all
-#              capabilities: [gpu]
+    ports:
+      - 5019:5019
+    build:
+      context: .
+      dockerfile: compose/asr/Dockerfile
+    env_file:
+      - ./.env
+    environment:
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./models:/models
 
-#  eve-wakeword:
-#    container_name: eve-wakeword
-#    hostname: eve-wakeword
+  eve-wakeword:
+    container_name: eve-wakeword
+    hostname: eve-wakeword
 #    image: eve-wakeword
-#    ports:
-#      - 5020:5020
-#    build:
-#      context: ./compose/wakeword
-#      dockerfile: Dockerfile
-#    env_file:
-#      - ./.env
-#    privileged: true
+    ports:
+      - 5020:5020
+    build:
+      context: .
+      dockerfile: compose/wakeword/Dockerfile
+    env_file:
+      - ./.env
+    environment:
+      PYTHONUNBUFFERED: "1"
+    depends_on:
+      - eve-asr
+      - eve-orchestrator
+    volumes:
+      - ./models:/models
+      - type: bind
+        source: ${PULSE_SOCKET_PATH:-/mnt/wslg/PulseServer}
+        target: /tmp/pulse/native
+        read_only: true
 
 volumes:
   eve-orchestrator-volume:

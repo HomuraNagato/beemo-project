@@ -1,0 +1,5 @@
+faster-whisper==1.1.1
+grpcio==1.71.0
+grpcio-tools==1.71.0
+numpy==1.26.4
+requests==2.32.3

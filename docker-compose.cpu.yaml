@@ -1,0 +1,20 @@
+services:
+
+  eve-vllm:
+    container_name: eve-vllm
+    hostname: eve-vllm
+    image: vllm/vllm-openai-cpu:latest-x86_64
+    privileged: true
+    ports:
+      - 5014:5014
+    volumes:
+      - ./models:/models
+      - ./compose/reasoning_vllm/entrypoint.sh:/entrypoint.sh
+    env_file:
+      - ./.env
+    environment:
+      VLLM_DEVICE: cpu
+      VLLM_DTYPE: ${VLLM_CPU_DTYPE:-bfloat16}
+      VLLM_CPU_KVCACHE_SPACE: ${VLLM_CPU_KVCACHE_SPACE:-4}
+    shm_size: 4g
+    entrypoint: /entrypoint.sh
