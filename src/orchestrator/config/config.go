@@ -18,6 +18,7 @@ type Config struct {
 	EmbeddingModel      string
 	EmbeddingTimeoutMs  int
 	RoutesPath          string
+	FactsPath           string
 	RouteTopK           int
 	RouteDomainTopK     int
 	OrchAddr            string
@@ -54,6 +55,7 @@ func Load() Config {
 		EmbeddingModel:      os.Getenv("EMBEDDING_MODEL"),
 		EmbeddingTimeoutMs:  atoiOrDefault(os.Getenv("EMBEDDING_TIMEOUT_MS"), 30000),
 		RoutesPath:          getenvOrDefault("ROUTES_PATH", "routes.yaml"),
+		FactsPath:           getenvOrDefault("FACTS_PATH", "facts.yaml"),
 		RouteTopK:           atoiOrDefault(os.Getenv("ROUTE_TOP_K"), 5),
 		RouteDomainTopK:     atoiOrDefault(os.Getenv("ROUTE_DOMAIN_TOP_K"), 2),
 		OrchAddr:            os.Getenv("ORCH_ADDR"),

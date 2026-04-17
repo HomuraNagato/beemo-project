@@ -3,7 +3,9 @@ package memoryctx
 import (
 	"strings"
 	"testing"
+	"time"
 
+	"eve-beemo/src/orchestrator/subjectctx"
 	orchtools "eve-beemo/src/orchestrator/tools"
 )
 
@@ -106,7 +108,7 @@ func TestStorePersistsObservationMetadataAndCanonicalValue(t *testing.T) {
 		t.Fatalf("RememberUserMessageWithContext returned error: %v", err)
 	}
 
-	observations := store.sessions["session-1"].subjects["person:serene"].observations["weight"]
+	observations := store.subjects["person:serene"].observations["weight"]
 	if len(observations) != 1 {
 		t.Fatalf("unexpected observation history: %#v", observations)
 	}
@@ -164,5 +166,132 @@ func TestStoreSnapshotDetailsReportsConflictsForDistinctExplicitValues(t *testin
 	}
 	if _, ok := details.Conflicts["height"]; ok {
 		t.Fatalf("did not expect height conflict: %#v", details.Conflicts)
+	}
+}
+
+func TestStoreRemembersSubjectAliasesAcrossSessions(t *testing.T) {
+	t.Parallel()
+
+	store := NewStore()
+	err := store.RememberSubjectAliases("session-1", []subjectctx.Subject{
+		{ID: "person:serene", Aliases: []string{"serene", "sister", "my sister"}},
+		{ID: "self", Aliases: []string{"i", "me", "my"}},
+	})
+	if err != nil {
+		t.Fatalf("RememberSubjectAliases returned error: %v", err)
+	}
+
+	subjects, err := store.LoadSubjectAliases()
+	if err != nil {
+		t.Fatalf("LoadSubjectAliases returned error: %v", err)
+	}
+	if len(subjects) != 1 {
+		t.Fatalf("unexpected persisted subjects: %#v", subjects)
+	}
+	if got, want := subjects[0].ID, "person:serene"; got != want {
+		t.Fatalf("unexpected subject id: got %q want %q", got, want)
+	}
+	if got, want := strings.Join(subjects[0].Aliases, ","), "my sister,serene,sister"; got != want {
+		t.Fatalf("unexpected aliases: got %q want %q", got, want)
+	}
+}
+
+func TestStoreHydratesAcrossSessionsBySubjectID(t *testing.T) {
+	t.Parallel()
+
+	store := NewStore()
+	if err := store.RememberUserMessage("session-1", "person:serene", "Serene is female, 27 years old, weighs 134lbs, and is 174cm tall"); err != nil {
+		t.Fatalf("RememberUserMessage returned error: %v", err)
+	}
+
+	call, err := store.HydrateCall("session-2", "person:serene", orchtools.PlannedCall{
+		Action: "calculator",
+		Args:   []byte(`{"operation":"bmr"}`),
+	})
+	if err != nil {
+		t.Fatalf("HydrateCall returned error: %v", err)
+	}
+
+	got := string(call.Args)
+	for _, fragment := range []string{
+		`"age_years":27`,
+		`"gender":"female"`,
+		`"height":[{"unit":"cm","value":174}]`,
+	} {
+		if !strings.Contains(got, fragment) {
+			t.Fatalf("hydrated args missing %s in %s", fragment, got)
+		}
+	}
+	if !strings.Contains(got, `"weight":[{"unit":"kg","value":60.78137758`) {
+		t.Fatalf("hydrated args missing canonical weight in %s", got)
+	}
+}
+
+func TestStoreLookupAttributePrefersLatestExplicitRawObservation(t *testing.T) {
+	t.Parallel()
+
+	store := NewStore()
+	if err := store.RememberUserMessage("session-1", "self", "I weigh 45kg and I am 64 inches tall"); err != nil {
+		t.Fatalf("RememberUserMessage returned error: %v", err)
+	}
+	if err := store.RememberToolCallWithContext("session-1", "self", orchtools.PlannedCall{
+		Action: "calculator",
+		Args:   []byte(`{"operation":"bmi","weight":[{"unit":"kg","value":45}],"height":[{"unit":"cm","value":162.56}]}`),
+	}, RecordContext{
+		Domain:     "calculator",
+		Route:      "calculator.bmi",
+		SourceTurn: "what is my bmi?",
+		SourceType: SourceTypeResolvedToolArgs,
+	}); err != nil {
+		t.Fatalf("RememberToolCallWithContext returned error: %v", err)
+	}
+
+	observation, ok, err := store.LookupAttribute("self", "height")
+	if err != nil {
+		t.Fatalf("LookupAttribute returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected stored height observation")
+	}
+	if got, want := string(observation.RawValue), `[{"unit":"in","value":64}]`; got != want {
+		t.Fatalf("unexpected raw height: got %s want %s", got, want)
+	}
+}
+
+func TestStoreRecallFindsRelevantObservationByEmbedding(t *testing.T) {
+	t.Parallel()
+
+	store := NewStore().WithEmbeddings("http://embed.test/v1/embeddings", "test-embed", 0).WithEmbedder(func(httpURL, model string, inputs []string, timeout time.Duration) ([][]float32, error) {
+		vectors := make([][]float32, 0, len(inputs))
+		for _, input := range inputs {
+			lower := strings.ToLower(input)
+			switch {
+			case strings.Contains(lower, "attribute: height"), strings.Contains(lower, "how tall"), strings.Contains(lower, "height?"):
+				vectors = append(vectors, []float32{1, 0})
+			case strings.Contains(lower, "attribute: weight"), strings.Contains(lower, "what is my weight"), strings.Contains(lower, "weigh"):
+				vectors = append(vectors, []float32{0, 1})
+			default:
+				vectors = append(vectors, []float32{0.1, 0.1})
+			}
+		}
+		return vectors, nil
+	})
+
+	if err := store.RememberUserMessage("session-1", "self", "I weigh 45kg and I am 64 inches tall"); err != nil {
+		t.Fatalf("RememberUserMessage returned error: %v", err)
+	}
+
+	matches, err := store.Recall("self", "how tall am I?", 3, 0)
+	if err != nil {
+		t.Fatalf("Recall returned error: %v", err)
+	}
+	if len(matches) == 0 {
+		t.Fatal("expected semantic recall matches")
+	}
+	if got, want := matches[0].Observation.Attribute, "height"; got != want {
+		t.Fatalf("unexpected top recalled attribute: got %q want %q", got, want)
+	}
+	if got := matches[0].Observation.ObservationText; !strings.Contains(got, "Attribute: height") {
+		t.Fatalf("unexpected recalled observation text: %q", got)
 	}
 }

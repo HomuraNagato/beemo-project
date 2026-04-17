@@ -119,3 +119,20 @@ func TestResolveDoesNotTreatAboutAsNamedSubject(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveWithSeedUsesPersistedAliasesAcrossSessions(t *testing.T) {
+	t.Parallel()
+
+	ctx := ResolveWithSeed([]*pb.ChatMessage{
+		{Role: "user", Content: "what is serene's bmr?"},
+	}, []Subject{
+		{ID: "person:serene", Aliases: []string{"serene", "sister", "my sister"}},
+	})
+
+	if got, want := ctx.CurrentSubjectID, "person:serene"; got != want {
+		t.Fatalf("unexpected current subject: got %q want %q", got, want)
+	}
+	if len(ctx.Subjects) != 1 {
+		t.Fatalf("unexpected subjects: %#v", ctx.Subjects)
+	}
+}

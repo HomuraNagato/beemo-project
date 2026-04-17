@@ -23,6 +23,21 @@ domains:
       - convert 5 foot 4 to centimeters
       - what is my bmi?
 
+  - id: facts
+    title: Subject facts
+    summary: Recall previously stated subject facts or remembered details such as weight, height, age, gender, activity level, birthdays, or start dates.
+    when_to_use:
+      - Use for direct recall questions about a subject's known weight, height, age, gender, activity level, or other remembered personal details.
+      - Use when the user asks what a previously discussed person weighs, how tall they are, when a remembered event happened, or similar stored details.
+    when_not_to_use:
+      - Do not use for new calculations such as BMI, BMR, or TDEE.
+      - Do not use when the user is providing a new fact instead of asking to recall one.
+    example_requests:
+      - what is my weight?
+      - what is serene's height?
+      - what is her activity level?
+      - when did i start my new job?
+
 routes:
   - id: get_time.current_or_relative
     domain: time
@@ -69,6 +84,33 @@ routes:
     handler:
       type: tool
       target: calculator
+
+  - id: facts.lookup
+    domain: facts
+    title: Recall a stored subject fact
+    summary: Recall a previously stated fact or remembered detail for the resolved subject, such as weight, height, age, gender, activity level, a birthday, or a start date.
+    when_to_use:
+      - The user asks to recall a known fact or remembered detail about a subject.
+      - The user asks what someone weighs, how tall they are, how old they are, their gender, their activity level, or when a remembered event happened.
+    when_not_to_use:
+      - The user is providing a new fact instead of asking to recall one.
+      - The user asks for a calculation such as BMI, BMR, or TDEE.
+    example_requests:
+      - what is my weight?
+      - what is serene's height?
+      - how old is she?
+      - what is her activity level?
+      - when did i start my new job?
+    required_fields: []
+    args_guidance: Use memory_lookup. Args may be empty; the runtime will first try semantic recall over stored observations, then fall back to typed fact resolution when appropriate.
+    default_args: {}
+    memory:
+      read: true
+      write: false
+      scope: subject
+    handler:
+      type: tool
+      target: memory_lookup
 
   - id: calculator.convert
     domain: calculator

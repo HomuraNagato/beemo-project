@@ -256,6 +256,25 @@ implementation bias:
  - move to persisted Postgres storage once the session model proves out
  - add vector retrieval only after subject resolution and filtering are working well
 
+typed facts vs open observations:
+ - `facts.yaml` should define only the small typed fact catalog that the system knows how to select, format, and use reliably in tools
+ - examples: `weight`, `height`, `age_years`, `gender`, `activity_level`
+ - these are operational facts, not the full universe of memory
+ - `observations` should remain broader than `facts.yaml`
+ - observations may include arbitrary remembered items even when there is no predefined fact definition yet
+ - examples: birthday, job start date, a move to a new city, likes/dislikes, family relationships, notable life events
+ - the system should treat these as remembered observations/events first, not require them to be promoted into the typed fact catalog immediately
+ - if an open observation starts mattering repeatedly for retrieval, formatting, validation, or tool use, it can later be promoted into `facts.yaml`
+ - long term memory should therefore have two lanes:
+   - typed facts for structured, tool-usable memory
+   - open observations/events for broader recall
+ - `facts.yaml` is the typed layer on top of the broader `observations` store, not a full schema for everything the user may ever want remembered
+ - for persisted observations, keep both:
+   - a human-readable `observation_text` document on the row for validation/debugging
+   - the embedding vector on that same row for retrieval
+ - do not split observation text and observation embeddings into separate tables unless scale forces it later
+ - the row itself should stay inspectable in Postgres so it is easy to validate why a recall result surfaced
+
 ** memory implementation path
 
 1. add a subject resolver
@@ -299,14 +318,22 @@ implementation bias:
 current implementation status:
  - done:
    - session-scoped subject resolver
+   - seeded subject resolution from persisted aliases
    - explicit alias linking for self, named people, and relation references
    - possessive/direct health subject resolution for patterns like "serene's bmi"
-   - in-memory observation store keyed by session_id + subject_id
+   - in-memory observation store keyed by durable subject_id, with session_id retained as provenance
    - route-aware memory policy in routes.yaml for calculator bmi / bmr / tdee
    - calculator health observation writes from explicit user input
    - calculator health hydration before execution
    - deterministic-first resolution for bmi / bmr / tdee inputs
    - canonicalization of health measurements before execution
+   - a single `facts.lookup` path via `memory_lookup` for stored weight / height / age / gender / activity level
+   - `facts.yaml` as the direct-recall fact catalog instead of hardcoding the fact list in Go
+   - an embedding-backed fact selector that chooses the exact fact attribute inside the facts domain after route selection
+   - raw-first recall for direct fact lookup so previously stated units like `64 inches` can be returned without forcing the canonical calculator unit
+   - semantic recall over stored observation embeddings for `memory_lookup` when no explicit typed attribute is supplied
+   - Postgres observation rows now store both a validation-friendly `observation_text` document and the embedding vector on the same row
+   - startup backfill for older observation rows that are missing `observation_text` or embeddings for the active model
    - richer observation records with domain / route / source_turn / source_type / raw_value / canonical_value / created_at
    - conflict detection over distinct explicit subject observations
    - clarification questions when memory has competing values for required calculator fields
@@ -316,26 +343,30 @@ current implementation status:
      - model fallback
  - partial:
    - ambiguity handling for some alias conflicts
-   - memory behavior is still mostly specialized for calculator health routes
-   - Postgres persistence is wired for observations, and startup now bootstraps the `beemo` database if the server exists, but aliases are not yet written/read there
+   - memory behavior is still mostly specialized for calculator health routes plus direct fact recall
+   - `facts.yaml` currently covers only the typed direct-recall fact catalog; broader open observations/events are stored in `observations` but are not yet exposed through a general recall path
+   - semantic recall can search stored observations, but the broad write path for arbitrary non-health observations/events is still not implemented yet
+   - Postgres persistence is wired for observations and aliases, and startup now bootstraps the `beemo` database if the server exists
    - route catalog sync currently stores one base route descriptor plus one embedding per route/model in Postgres, while live retrieval still uses the richer in-memory index
  - not done yet:
-   - memory inspection / debugging surface
-   - general non-calculator memory hydration
-   - episodic summaries
-   - embedding retrieval over filtered episodic memory
+    - memory inspection / debugging surface
+    - general non-calculator memory hydration
+    - episodic summaries
+    - embedding retrieval over filtered episodic memory
 
 current limitation:
  - the memory layer is intentionally narrow right now
  - it is reliable for calculator health follow-ups in-session
+ - the typed fact path is stronger than the generic observation/event path right now
  - it is not yet the general memory system for all routes
 
 recommended next milestone from here:
- 1. persist and read back subject aliases in Postgres
- 2. add a small inspection/debug surface for session -> subject -> snapshot -> conflicts
+ 1. add a small inspection/debug surface for subject -> snapshot -> conflicts plus session provenance
+ 2. add session-local current-subject state for pronoun continuity without making pronouns durable across chats
  3. generalize route-aware memory reads/writes beyond calculator health routes
- 4. extend the Postgres route sync so it stores the full retrieval corpus, not just one base descriptor per route
- 5. add episodic summaries later and use embeddings only inside filtered episodic memory
+ 4. add a general observation/event recall path so remembered items that are not yet in `facts.yaml` can still be retrieved cleanly
+ 5. extend the Postgres route sync so it stores the full retrieval corpus, not just one base descriptor per route
+ 6. add episodic summaries later and use embeddings only inside filtered episodic memory
 
 * STT
 ** architecture

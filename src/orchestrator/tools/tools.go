@@ -406,6 +406,52 @@ func formatMeasurementComponent(component measurementComponent) string {
 	)
 }
 
+func FormatFactValue(kind string, raw json.RawMessage) (string, error) {
+	switch strings.TrimSpace(kind) {
+	case "measurement":
+		var components []measurementComponent
+		if err := json.Unmarshal(raw, &components); err != nil {
+			return "", fmt.Errorf("invalid measurement observation: %w", err)
+		}
+		if len(components) == 0 {
+			return "", fmt.Errorf("measurement observation is empty")
+		}
+		parts := make([]string, 0, len(components))
+		for _, component := range components {
+			parts = append(parts, formatMeasurementComponent(component))
+		}
+		return strings.Join(parts, " "), nil
+	case "years":
+		var years float64
+		if err := json.Unmarshal(raw, &years); err != nil {
+			return "", fmt.Errorf("invalid years observation: %w", err)
+		}
+		return formatNumber(years) + " years", nil
+	case "text":
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return "", fmt.Errorf("invalid text observation: %w", err)
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return "", fmt.Errorf("text observation is empty")
+		}
+		return value, nil
+	case "enum":
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return "", fmt.Errorf("invalid enum observation: %w", err)
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return "", fmt.Errorf("enum observation is empty")
+		}
+		return strings.ReplaceAll(value, "_", " "), nil
+	default:
+		return "", fmt.Errorf("unsupported fact kind: %s", kind)
+	}
+}
+
 func formatNumber(value float64) string {
 	const scale = 1000000000000
 	rounded := math.Round(value*scale) / scale

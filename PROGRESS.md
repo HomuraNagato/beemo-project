@@ -9,7 +9,9 @@
 - `src/orchestrator/db/` contains simple Postgres connection and migration helpers for the optional Postgres-backed `beemo` database.
 - `src/orchestrator/llm/llm.go` talks to an OpenAI-compatible HTTP API for both chat completions and grammar-constrained completions.
 - `src/orchestrator/embedding/` contains the OpenAI-compatible embeddings HTTP client used by the route selector.
+- `facts.yaml` defines the direct-recall fact catalog used by the facts selector.
 - `src/orchestrator/routing/` loads `routes.yaml`, warms a route index at startup, and does hierarchical domain-first retrieval.
+- `src/orchestrator/factsel/` loads `facts.yaml`, embeds the fact descriptors, and selects the best stored fact attribute after `facts.lookup` is chosen.
 - `src/orchestrator/subjectctx/` resolves `self`, named people, relation aliases, and possessive health references into session-scoped subject IDs.
 - `src/orchestrator/memoryctx/` maintains the subject-scoped observation store used for calculator follow-ups, with an in-memory path and a Postgres-backed path.
 - `src/orchestrator/tools/` contains the in-process tool layer, including `get_time` and a non-trivial `calculator`.
@@ -28,17 +30,29 @@
 - A local OpenAI-compatible embedding path is implemented through the separate `eve-embedding` vLLM service.
 - Session-scoped subject memory is implemented for calculator health routes:
   - subject resolution for `self`, named people, relation aliases, pronouns, and possessive forms such as `Serene's`
-  - append-only observations keyed by `session_id + subject_id`
+  - append-only observations keyed by durable `subject_id`, with `session_id` retained as provenance
   - route-aware memory policy in `routes.yaml` for calculator `bmi` / `bmr` / `tdee`
   - richer observation records with `domain`, `route`, `source_turn`, `source_type`, `raw_value`, `canonical_value`, and `created_at`
   - hydration of BMI/BMR/TDEE inputs from subject memory
   - deterministic-first health-slot resolution with canonicalization before execution
   - conflict detection for competing explicit values, with clarification before calculator execution when memory is ambiguous
+- Direct fact recall is now separated from calculator execution:
+  - a single `facts.lookup` route now covers direct recall of stored weight, height, age, gender, and activity level
+  - direct recall questions like `what is my weight?` no longer need to piggyback on `calculator.bmi`
+  - the exact fact attribute is selected from `facts.yaml` after `facts.lookup` is chosen
+  - memory lookup prefers the latest explicit raw observation when possible, so recalled units stay closer to what the user originally said
+  - `facts.yaml` is only the typed fact catalog; the broader `observations` store may still contain open-ended remembered items that are not yet first-class facts
 - Optional Postgres persistence is wired for subject observations:
   - `DATABASE_URL` enables the Postgres-backed store
   - orchestrator bootstraps the target database if the database server is reachable but the named DB does not exist yet
   - orchestrator runs SQL migrations from `db/migrations` at startup
   - the same codebase can either connect to an existing local Postgres server and create/use the `beemo` database, or start one via `docker-compose.pensieve.yaml`
+  - durable aliases are now loaded from `subject_aliases` before subject resolution and written back after resolution
+  - each observation row now stores both a validation-friendly `observation_text` document and its embedding vector on the same row
+  - orchestrator backfills missing observation text/embeddings at startup for older rows
+- Direct memory recall now has two layers:
+  - semantic recall over stored observation embeddings runs first for `memory_lookup` when no explicit attribute is provided
+  - typed-fact selection from `facts.yaml` is now the fallback rather than the first step
 - Initial Postgres schema is present for:
   - `subjects`
   - `subject_aliases`
@@ -62,10 +76,11 @@
 - LLM output is still synchronous request/response from the orchestrator's perspective; streaming token handling is not implemented.
 - The current memory layer is still narrow even though Postgres persistence is now available:
   - no memory inspection/debug endpoint yet
-  - no general non-calculator memory hydration yet
+  - no general non-calculator memory hydration beyond direct fact recall yet
+  - semantic recall now works over stored observations, but there is still no broad write path for arbitrary open observations/events outside the current extractor/tool flows
   - route retrieval still uses the in-memory warmup index rather than querying `route_embeddings`
   - no episodic memory layer yet
-  - no alias persistence/readback path yet
+  - pronoun/current-subject continuity is still session-local rather than DB-backed
 - Audio, wake-word detection, TTS playback, and camera/vision integration are not yet migrated into working Go services. The current voice path is a Python/Docker prototype rather than a Go migration.
 - Compose references for some planned services are incomplete; for example, `compose/vision` and `compose/ui` are referenced by `docker-compose.yaml` but are not present in the repository.
 
@@ -86,8 +101,8 @@
 5. Run `go test ./...` to validate the current Go codebase.
 
 ## Recommended Next Steps (Go-first)
-1. Add a small inspection/debug surface for `session -> subject -> snapshot -> conflicts` so the Postgres-backed memory path is easy to inspect live.
-2. Persist and read back aliases in Postgres so subject resolution survives orchestrator restarts when `DATABASE_URL` is set.
+1. Add a small inspection/debug surface for `subject -> snapshot -> conflicts` plus recent session provenance so the Postgres-backed memory path is easy to inspect live.
+2. Add session-local current-subject state for cleaner pronoun continuity without making pronouns durable across chats.
 3. Generalize route-aware memory reads/writes beyond calculator health routes.
 4. Extend the route catalog sync so Postgres stores the full retrieval corpus, not just one base route descriptor per route.
 5. Implement `StreamState` and establish a consistent orchestrator state model so UIs can subscribe to runtime updates.

@@ -71,9 +71,16 @@ func (c Context) Summary() string {
 }
 
 func Resolve(messages []*pb.ChatMessage) Context {
+	return ResolveWithSeed(messages, nil)
+}
+
+func ResolveWithSeed(messages []*pb.ChatMessage, seeded []Subject) Context {
 	r := resolver{
 		subjects:   map[string]*subjectState{},
 		aliasToIDs: map[string]map[string]struct{}{},
+	}
+	for _, subject := range seeded {
+		r.seedSubject(subject)
 	}
 	var latestUser string
 
@@ -134,6 +141,22 @@ type resolver struct {
 type subjectState struct {
 	ID      string
 	Aliases []string
+}
+
+func (r *resolver) seedSubject(subject Subject) {
+	subjectID := strings.TrimSpace(subject.ID)
+	if subjectID == "" {
+		return
+	}
+	state, exists := r.subjects[subjectID]
+	if !exists {
+		state = &subjectState{ID: subjectID}
+		r.subjects[subjectID] = state
+		r.order = append(r.order, subjectID)
+	}
+	for _, alias := range subject.Aliases {
+		r.addAlias(state, alias)
+	}
 }
 
 func (r *resolver) linkExplicitSubjects(text string) {

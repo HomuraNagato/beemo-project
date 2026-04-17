@@ -9,6 +9,7 @@ import (
 
 	pb "eve-beemo/proto/gen/proto"
 	"eve-beemo/src/orchestrator/config"
+	"eve-beemo/src/orchestrator/factsel"
 	"eve-beemo/src/orchestrator/memoryctx"
 	"eve-beemo/src/orchestrator/routing"
 	orchtools "eve-beemo/src/orchestrator/tools"
@@ -21,6 +22,30 @@ type staticRouteSelector struct {
 
 func (s staticRouteSelector) Retrieve(query string, timeout time.Duration) ([]routing.Candidate, error) {
 	return s.candidates, s.err
+}
+
+type staticFactSelector struct {
+	attr  string
+	err   error
+	attrs []string
+	facts map[string]factsel.Fact
+}
+
+func (s staticFactSelector) Select(query string, attrs []string, timeout time.Duration) (string, error) {
+	return s.attr, s.err
+}
+
+func (s staticFactSelector) Attrs() []string {
+	return append([]string(nil), s.attrs...)
+}
+
+func (s staticFactSelector) Fact(attr string) (factsel.Fact, bool) {
+	fact, ok := s.facts[attr]
+	return fact, ok
+}
+
+func (s staticFactSelector) QuestionPrompt(attrs []string) string {
+	return "What fact should I look up?"
 }
 
 func TestChatFinalResponseFlow(t *testing.T) {
@@ -1500,6 +1525,166 @@ func TestChatUsesStoredSessionTranscriptForLatestOnlyFollowUp(t *testing.T) {
 	}
 	if got, want := thirdResp.GetText(), "What is the activity level: sedentary, light, moderate, active, or very_active?"; got != want {
 		t.Fatalf("unexpected third response: got %q want %q", got, want)
+	}
+}
+
+func TestChatUsesMemoryLookupForStoredHeight(t *testing.T) {
+	t.Parallel()
+
+	decisionCalls := 0
+	finalCalls := 0
+	server := &orchestratorServer{
+		cfg: config.Config{
+			LLMHTTPURL:   "http://llm.test/v1/chat/completions",
+			LLMModel:     "test-model",
+			LLMTimeoutMs: 500,
+		},
+		tools:       orchtools.NewLocalExecutor(),
+		memoryStore: memoryctx.NewStore(),
+		factSelector: staticFactSelector{
+			attr:  "height",
+			attrs: []string{"weight", "height", "age_years", "gender", "activity_level"},
+			facts: map[string]factsel.Fact{
+				"height": {ID: "height", Kind: "measurement", OutputLabel: "height", QuestionLabel: "height"},
+			},
+		},
+		readGrammar: func(path string) (string, error) {
+			return "root ::= \"[]\"", nil
+		},
+		callCompletion: func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+			decisionCalls++
+			switch decisionCalls {
+			case 1:
+				return `[{"tool":"calculator","args":{"operation":"bmi","weight":[{"unit":"kg","value":45}],"height":[{"unit":"in","value":64}]}}]`, nil
+			case 2:
+				return `[{"tool":"memory_lookup","args":{}}]`, nil
+			default:
+				t.Fatalf("unexpected decision call %d with prompt %q", decisionCalls, prompt)
+				return "", nil
+			}
+		},
+		callFinalMessage: func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+			finalCalls++
+			switch finalCalls {
+			case 1:
+				if !strings.Contains(prompt, "Tool result: tool=calculator result=BMI 17.03") {
+					t.Fatalf("first final prompt missing bmi result: %q", prompt)
+				}
+				return "Your BMI is 17.03.", nil
+			case 2:
+				if !strings.Contains(prompt, "Tool result: tool=memory_lookup result=height 64 in") {
+					t.Fatalf("second final prompt missing memory lookup result: %q", prompt)
+				}
+				return "Your height is 64 in.", nil
+			default:
+				t.Fatalf("unexpected final call %d with prompt %q", finalCalls, prompt)
+				return "", nil
+			}
+		},
+	}
+
+	firstResp, err := server.Chat(context.Background(), chatRequest("what is my bmi? I weigh 45kg and am 64 inches tall"))
+	if err != nil {
+		t.Fatalf("first Chat returned error: %v", err)
+	}
+	if got, want := firstResp.GetText(), "Your BMI is 17.03."; got != want {
+		t.Fatalf("unexpected first response: got %q want %q", got, want)
+	}
+
+	secondResp, err := server.Chat(context.Background(), chatRequestWithSession("test-session", "what is my height?"))
+	if err != nil {
+		t.Fatalf("second Chat returned error: %v", err)
+	}
+	if got, want := secondResp.GetText(), "Your height is 64 in."; got != want {
+		t.Fatalf("unexpected second response: got %q want %q", got, want)
+	}
+}
+
+func TestChatUsesSemanticMemoryRecallForStoredHeight(t *testing.T) {
+	t.Parallel()
+
+	store := memoryctx.NewStore().WithEmbeddings("http://embed.test/v1/embeddings", "test-embed", 0).WithEmbedder(func(httpURL, model string, inputs []string, timeout time.Duration) ([][]float32, error) {
+		vectors := make([][]float32, 0, len(inputs))
+		for _, input := range inputs {
+			lower := strings.ToLower(input)
+			switch {
+			case strings.Contains(lower, "attribute: height"), strings.Contains(lower, "how tall"), strings.Contains(lower, "height?"):
+				vectors = append(vectors, []float32{1, 0})
+			case strings.Contains(lower, "attribute: weight"), strings.Contains(lower, "what is my weight"), strings.Contains(lower, "weigh"):
+				vectors = append(vectors, []float32{0, 1})
+			default:
+				vectors = append(vectors, []float32{0.1, 0.1})
+			}
+		}
+		return vectors, nil
+	})
+
+	decisionCalls := 0
+	finalCalls := 0
+	server := &orchestratorServer{
+		cfg: config.Config{
+			LLMHTTPURL:         "http://llm.test/v1/chat/completions",
+			LLMModel:           "test-model",
+			LLMTimeoutMs:       500,
+			EmbeddingHTTPURL:   "http://embed.test/v1/embeddings",
+			EmbeddingModel:     "test-embed",
+			EmbeddingTimeoutMs: 500,
+		},
+		tools:       orchtools.NewLocalExecutor(),
+		memoryStore: store,
+		factSelector: staticFactSelector{
+			attr:  "",
+			attrs: []string{"weight", "height", "age_years", "gender", "activity_level"},
+			facts: map[string]factsel.Fact{
+				"height": {ID: "height", Kind: "measurement", OutputLabel: "height", QuestionLabel: "height"},
+			},
+		},
+		readGrammar: func(path string) (string, error) {
+			return "root ::= \"[]\"", nil
+		},
+		callCompletion: func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+			decisionCalls++
+			switch decisionCalls {
+			case 1:
+				return `[{"tool":"calculator","args":{"operation":"bmi","weight":[{"unit":"kg","value":45}],"height":[{"unit":"in","value":64}]}}]`, nil
+			case 2:
+				return `[{"tool":"memory_lookup","args":{}}]`, nil
+			default:
+				t.Fatalf("unexpected decision call %d with prompt %q", decisionCalls, prompt)
+				return "", nil
+			}
+		},
+		callFinalMessage: func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+			finalCalls++
+			switch finalCalls {
+			case 1:
+				return "Your BMI is 17.03.", nil
+			case 2:
+				if !strings.Contains(prompt, "Tool result: tool=memory_lookup result=height 64 in") {
+					t.Fatalf("second final prompt missing semantic memory lookup result: %q", prompt)
+				}
+				return "Your height is 64 in.", nil
+			default:
+				t.Fatalf("unexpected final call %d with prompt %q", finalCalls, prompt)
+				return "", nil
+			}
+		},
+	}
+
+	firstResp, err := server.Chat(context.Background(), chatRequest("what is my bmi? I weigh 45kg and am 64 inches tall"))
+	if err != nil {
+		t.Fatalf("first Chat returned error: %v", err)
+	}
+	if got, want := firstResp.GetText(), "Your BMI is 17.03."; got != want {
+		t.Fatalf("unexpected first response: got %q want %q", got, want)
+	}
+
+	secondResp, err := server.Chat(context.Background(), chatRequestWithSession("test-session", "how tall am i?"))
+	if err != nil {
+		t.Fatalf("second Chat returned error: %v", err)
+	}
+	if got, want := secondResp.GetText(), "Your height is 64 in."; got != want {
+		t.Fatalf("unexpected second response: got %q want %q", got, want)
 	}
 }
 

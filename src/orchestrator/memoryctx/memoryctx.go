@@ -4,10 +4,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"eve-beemo/src/orchestrator/embedding"
+	"eve-beemo/src/orchestrator/subjectctx"
 	orchtools "eve-beemo/src/orchestrator/tools"
 )
 
@@ -17,14 +21,18 @@ const (
 )
 
 type Observation struct {
-	Attribute      string
-	Domain         string
-	Route          string
-	RawValue       json.RawMessage
-	CanonicalValue json.RawMessage
-	SourceTurn     string
-	SourceType     string
-	CreatedAt      time.Time
+	SessionID       string
+	Attribute       string
+	Domain          string
+	Route           string
+	RawValue        json.RawMessage
+	CanonicalValue  json.RawMessage
+	ObservationText string
+	EmbeddingModel  string
+	Embedding       []float32
+	SourceTurn      string
+	SourceType      string
+	CreatedAt       time.Time
 }
 
 type RecordContext struct {
@@ -40,14 +48,39 @@ type SnapshotDetails struct {
 	Err       error
 }
 
-type Store struct {
-	mu       sync.Mutex
-	sessions map[string]*sessionState
-	db       *sql.DB
+type RecallMatch struct {
+	Observation Observation
+	Score       float32
 }
 
-type sessionState struct {
+func (s *Store) LookupAttribute(subjectID, attr string) (Observation, bool, error) {
+	if s.db != nil {
+		return s.lookupAttributeDB(subjectID, attr)
+	}
+	if strings.TrimSpace(subjectID) == "" || strings.TrimSpace(attr) == "" {
+		return Observation{}, false, nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	subject := s.subjects[subjectID]
+	if subject == nil {
+		return Observation{}, false, nil
+	}
+	observations := subject.observations[strings.TrimSpace(attr)]
+	return preferredObservationFromAscendingHistory(observations)
+}
+
+type Store struct {
+	mu       sync.Mutex
 	subjects map[string]*subjectState
+	aliases  map[string]map[string]struct{}
+	db       *sql.DB
+	httpURL  string
+	model    string
+	timeout  time.Duration
+	embedFn  func(httpURL, model string, inputs []string, timeout time.Duration) ([][]float32, error)
 }
 
 type subjectState struct {
@@ -56,12 +89,38 @@ type subjectState struct {
 
 func NewStore() *Store {
 	return &Store{
-		sessions: map[string]*sessionState{},
+		subjects: map[string]*subjectState{},
+		aliases:  map[string]map[string]struct{}{},
+		embedFn:  embedding.Call,
 	}
 }
 
 func NewPostgresStore(db *sql.DB) *Store {
-	return &Store{db: db}
+	return &Store{
+		db:      db,
+		embedFn: embedding.Call,
+	}
+}
+
+func (s *Store) WithEmbeddings(httpURL, model string, timeout time.Duration) *Store {
+	if s == nil {
+		return nil
+	}
+	s.httpURL = strings.TrimSpace(httpURL)
+	s.model = strings.TrimSpace(model)
+	s.timeout = timeout
+	if s.embedFn == nil {
+		s.embedFn = embedding.Call
+	}
+	return s
+}
+
+func (s *Store) WithEmbedder(fn func(httpURL, model string, inputs []string, timeout time.Duration) ([][]float32, error)) *Store {
+	if s == nil {
+		return nil
+	}
+	s.embedFn = fn
+	return s
 }
 
 func (s *Store) RememberUserMessage(sessionID, subjectID, text string, attrs ...string) error {
@@ -162,22 +221,73 @@ func (s *Store) Snapshot(sessionID, subjectID string, attrs ...string) map[strin
 	return s.SnapshotDetails(sessionID, subjectID, attrs...).Values
 }
 
+func (s *Store) Recall(subjectID, query string, limit int, timeout time.Duration) ([]RecallMatch, error) {
+	if s.db != nil {
+		return s.recallDB(subjectID, query, limit, timeout)
+	}
+	if strings.TrimSpace(subjectID) == "" || strings.TrimSpace(query) == "" || limit <= 0 {
+		return nil, nil
+	}
+	if !s.embeddingEnabled() {
+		return nil, nil
+	}
+
+	queryVector, err := s.embedQuery(strings.TrimSpace(query), timeout)
+	if err != nil || len(queryVector) == 0 {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	subject := s.subjects[subjectID]
+	if subject == nil {
+		s.mu.Unlock()
+		return nil, nil
+	}
+	matches := make([]RecallMatch, 0, len(subject.observations))
+	for _, observations := range subject.observations {
+		for _, observation := range observations {
+			if len(observation.Embedding) == 0 {
+				continue
+			}
+			score := cosineSimilarity(queryVector, observation.Embedding)
+			if score < 0 {
+				continue
+			}
+			matches = append(matches, RecallMatch{
+				Observation: cloneObservation(observation),
+				Score:       score,
+			})
+		}
+	}
+	s.mu.Unlock()
+
+	if len(matches) == 0 {
+		return nil, nil
+	}
+	sort.SliceStable(matches, func(i, j int) bool {
+		if matches[i].Score == matches[j].Score {
+			return matches[i].Observation.CreatedAt.After(matches[j].Observation.CreatedAt)
+		}
+		return matches[i].Score > matches[j].Score
+	})
+	if limit > 0 && len(matches) > limit {
+		matches = matches[:limit]
+	}
+	return matches, nil
+}
+
 func (s *Store) SnapshotDetails(sessionID, subjectID string, attrs ...string) SnapshotDetails {
 	if s.db != nil {
 		return s.snapshotDetailsDB(sessionID, subjectID, attrs...)
 	}
-	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(subjectID) == "" {
+	if strings.TrimSpace(subjectID) == "" {
 		return SnapshotDetails{}
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	session := s.sessions[sessionID]
-	if session == nil {
-		return SnapshotDetails{}
-	}
-	subject := session.subjects[subjectID]
+	subject := s.subjects[subjectID]
 	if subject == nil {
 		return SnapshotDetails{}
 	}
@@ -211,34 +321,50 @@ func (s *Store) SnapshotDetails(sessionID, subjectID string, attrs ...string) Sn
 }
 
 func (s *Store) applyPatch(sessionID, subjectID string, patch json.RawMessage, ctx RecordContext, attrs ...string) error {
-	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(subjectID) == "" || len(patch) == 0 {
+	if strings.TrimSpace(subjectID) == "" || len(patch) == 0 {
 		return nil
 	}
 
-	values := map[string]json.RawMessage{}
-	if err := json.Unmarshal(patch, &values); err != nil {
-		return fmt.Errorf("invalid observation patch: %w", err)
+	observations, err := s.observationsFromPatch(sessionID, patch, ctx, attrs...)
+	if err != nil {
+		return err
 	}
-	if len(values) == 0 {
+	if len(observations) == 0 {
 		return nil
 	}
-	allowed := attrSet(attrs)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	session := s.sessions[sessionID]
-	if session == nil {
-		session = &sessionState{subjects: map[string]*subjectState{}}
-		s.sessions[sessionID] = session
-	}
-	subject := session.subjects[subjectID]
+	subject := s.subjects[subjectID]
 	if subject == nil {
 		subject = &subjectState{observations: map[string][]Observation{}}
-		session.subjects[subjectID] = subject
+		s.subjects[subjectID] = subject
 	}
 
+	for _, observation := range observations {
+		attr := observation.Attribute
+		history := subject.observations[attr]
+		if len(history) > 0 && observationsEqual(history[len(history)-1], observation) {
+			continue
+		}
+		subject.observations[attr] = append(history, observation)
+	}
+	return nil
+}
+
+func (s *Store) observationsFromPatch(sessionID string, patch json.RawMessage, ctx RecordContext, attrs ...string) ([]Observation, error) {
+	values := map[string]json.RawMessage{}
+	if err := json.Unmarshal(patch, &values); err != nil {
+		return nil, fmt.Errorf("invalid observation patch: %w", err)
+	}
+	if len(values) == 0 {
+		return nil, nil
+	}
+	allowed := attrSet(attrs)
 	now := time.Now().UTC()
+
+	observations := make([]Observation, 0, len(values))
 	for attr, raw := range values {
 		if len(allowed) > 0 {
 			if _, ok := allowed[attr]; !ok {
@@ -251,25 +377,93 @@ func (s *Store) applyPatch(sessionID, subjectID string, patch json.RawMessage, c
 		raw = cloneRaw(raw)
 		canonical, err := orchtools.CanonicalizeObservationValue(attr, raw)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		observation := Observation{
-			Attribute:      attr,
-			Domain:         strings.TrimSpace(ctx.Domain),
-			Route:          strings.TrimSpace(ctx.Route),
-			RawValue:       raw,
-			CanonicalValue: cloneRaw(canonical),
-			SourceTurn:     strings.TrimSpace(ctx.SourceTurn),
-			SourceType:     strings.TrimSpace(ctx.SourceType),
-			CreatedAt:      now,
+			SessionID:       strings.TrimSpace(sessionID),
+			Attribute:       attr,
+			Domain:          strings.TrimSpace(ctx.Domain),
+			Route:           strings.TrimSpace(ctx.Route),
+			RawValue:        raw,
+			CanonicalValue:  cloneRaw(canonical),
+			ObservationText: observationText(attr, raw, canonical, ctx),
+			SourceTurn:      strings.TrimSpace(ctx.SourceTurn),
+			SourceType:      strings.TrimSpace(ctx.SourceType),
+			CreatedAt:       now,
 		}
-		history := subject.observations[attr]
-		if len(history) > 0 && observationsEqual(history[len(history)-1], observation) {
+		observations = append(observations, observation)
+	}
+	if len(observations) == 0 {
+		return nil, nil
+	}
+	s.attachObservationEmbeddings(observations, s.timeout)
+	return observations, nil
+}
+
+func (s *Store) RememberSubjectAliases(sessionID string, subjects []subjectctx.Subject) error {
+	if s.db != nil {
+		return s.rememberSubjectAliasesDB(sessionID, subjects)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.aliases == nil {
+		s.aliases = map[string]map[string]struct{}{}
+	}
+	for _, subject := range subjects {
+		subjectID := strings.TrimSpace(subject.ID)
+		if subjectID == "" {
 			continue
 		}
-		subject.observations[attr] = append(history, observation)
+		for _, alias := range subject.Aliases {
+			alias = normalizeAliasForStorage(alias)
+			if !shouldPersistAlias(subjectID, alias) {
+				continue
+			}
+			if s.aliases[subjectID] == nil {
+				s.aliases[subjectID] = map[string]struct{}{}
+			}
+			s.aliases[subjectID][alias] = struct{}{}
+		}
 	}
 	return nil
+}
+
+func (s *Store) LoadSubjectAliases() ([]subjectctx.Subject, error) {
+	if s.db != nil {
+		return s.loadSubjectAliasesDB()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(s.aliases) == 0 {
+		return nil, nil
+	}
+	subjectIDs := make([]string, 0, len(s.aliases))
+	for subjectID := range s.aliases {
+		subjectIDs = append(subjectIDs, subjectID)
+	}
+	sort.Strings(subjectIDs)
+
+	subjects := make([]subjectctx.Subject, 0, len(subjectIDs))
+	for _, subjectID := range subjectIDs {
+		aliasSet := s.aliases[subjectID]
+		if len(aliasSet) == 0 {
+			continue
+		}
+		aliases := make([]string, 0, len(aliasSet))
+		for alias := range aliasSet {
+			aliases = append(aliases, alias)
+		}
+		sort.Strings(aliases)
+		subjects = append(subjects, subjectctx.Subject{
+			ID:      subjectID,
+			Aliases: aliases,
+		})
+	}
+	return subjects, nil
 }
 
 func attrSet(attrs []string) map[string]struct{} {
@@ -347,6 +541,23 @@ func conflictingExplicitObservations(observations []Observation) []Observation {
 	return ordered
 }
 
+func preferredObservationFromAscendingHistory(observations []Observation) (Observation, bool, error) {
+	for idx := len(observations) - 1; idx >= 0; idx-- {
+		observation := observations[idx]
+		if !isExplicitObservation(observation) || len(observation.RawValue) == 0 {
+			continue
+		}
+		return cloneObservation(observation), true, nil
+	}
+	for idx := len(observations) - 1; idx >= 0; idx-- {
+		observation := cloneObservation(observations[idx])
+		if len(observation.CanonicalValue) > 0 || len(observation.RawValue) > 0 {
+			return observation, true, nil
+		}
+	}
+	return Observation{}, false, nil
+}
+
 func isExplicitObservation(observation Observation) bool {
 	return strings.TrimSpace(observation.SourceType) == SourceTypeExplicitUser
 }
@@ -394,15 +605,140 @@ func observationsEqual(a, b Observation) bool {
 
 func cloneObservation(observation Observation) Observation {
 	return Observation{
-		Attribute:      observation.Attribute,
-		Domain:         observation.Domain,
-		Route:          observation.Route,
-		RawValue:       cloneRaw(observation.RawValue),
-		CanonicalValue: cloneRaw(observation.CanonicalValue),
-		SourceTurn:     observation.SourceTurn,
-		SourceType:     observation.SourceType,
-		CreatedAt:      observation.CreatedAt,
+		SessionID:       observation.SessionID,
+		Attribute:       observation.Attribute,
+		Domain:          observation.Domain,
+		Route:           observation.Route,
+		RawValue:        cloneRaw(observation.RawValue),
+		CanonicalValue:  cloneRaw(observation.CanonicalValue),
+		ObservationText: observation.ObservationText,
+		EmbeddingModel:  observation.EmbeddingModel,
+		Embedding:       cloneEmbedding(observation.Embedding),
+		SourceTurn:      observation.SourceTurn,
+		SourceType:      observation.SourceType,
+		CreatedAt:       observation.CreatedAt,
 	}
+}
+
+func normalizeAliasForStorage(alias string) string {
+	return strings.TrimSpace(alias)
+}
+
+func shouldPersistAlias(subjectID, alias string) bool {
+	alias = strings.TrimSpace(alias)
+	if alias == "" {
+		return false
+	}
+	if subjectID == "self" {
+		return false
+	}
+	switch alias {
+	case "he", "him", "his", "she", "her", "hers", "they", "them", "their", "theirs", "i", "me", "my", "mine":
+		return false
+	default:
+		return true
+	}
+}
+
+func (s *Store) embeddingEnabled() bool {
+	return s != nil && s.embedFn != nil && strings.TrimSpace(s.httpURL) != ""
+}
+
+func (s *Store) embedQuery(query string, timeout time.Duration) ([]float32, error) {
+	if !s.embeddingEnabled() {
+		return nil, nil
+	}
+	effectiveTimeout := timeout
+	if effectiveTimeout <= 0 {
+		effectiveTimeout = s.timeout
+	}
+	vectors, err := s.embedFn(s.httpURL, s.model, []string{memoryRecallInstruction(query)}, effectiveTimeout)
+	if err != nil || len(vectors) == 0 {
+		return nil, err
+	}
+	return cloneEmbedding(vectors[0]), nil
+}
+
+func (s *Store) attachObservationEmbeddings(observations []Observation, timeout time.Duration) {
+	if !s.embeddingEnabled() || len(observations) == 0 {
+		return
+	}
+	inputs := make([]string, 0, len(observations))
+	indexes := make([]int, 0, len(observations))
+	for idx := range observations {
+		text := strings.TrimSpace(observations[idx].ObservationText)
+		if text == "" {
+			continue
+		}
+		inputs = append(inputs, text)
+		indexes = append(indexes, idx)
+	}
+	if len(inputs) == 0 {
+		return
+	}
+	effectiveTimeout := timeout
+	if effectiveTimeout <= 0 {
+		effectiveTimeout = s.timeout
+	}
+	vectors, err := s.embedFn(s.httpURL, s.model, inputs, effectiveTimeout)
+	if err != nil || len(vectors) != len(inputs) {
+		return
+	}
+	for i, idx := range indexes {
+		observations[idx].EmbeddingModel = s.model
+		observations[idx].Embedding = cloneEmbedding(vectors[i])
+	}
+}
+
+func observationText(attr string, raw, canonical json.RawMessage, ctx RecordContext) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Attribute: %s\n", strings.TrimSpace(attr))
+	if len(raw) > 0 {
+		fmt.Fprintf(&b, "Raw value: %s\n", strings.TrimSpace(string(raw)))
+	}
+	if len(canonical) > 0 && string(canonical) != string(raw) {
+		fmt.Fprintf(&b, "Canonical value: %s\n", strings.TrimSpace(string(canonical)))
+	}
+	if strings.TrimSpace(ctx.SourceType) != "" {
+		fmt.Fprintf(&b, "Source type: %s\n", strings.TrimSpace(ctx.SourceType))
+	}
+	if strings.TrimSpace(ctx.SourceTurn) != "" {
+		fmt.Fprintf(&b, "Source turn: %s\n", strings.TrimSpace(ctx.SourceTurn))
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func memoryRecallInstruction(query string) string {
+	return "Instruct: Given a user request to recall something about a resolved subject, retrieve the most relevant remembered observation.\nQuery: " + strings.TrimSpace(query)
+}
+
+func cosineSimilarity(a, b []float32) float32 {
+	if len(a) == 0 || len(b) == 0 || len(a) != len(b) {
+		return -1
+	}
+	var dot float64
+	var magA float64
+	var magB float64
+	for i := range a {
+		af := float64(a[i])
+		bf := float64(b[i])
+		dot += af * bf
+		magA += af * af
+		magB += bf * bf
+	}
+	if magA == 0 || magB == 0 {
+		return -1
+	}
+	return float32(dot / (math.Sqrt(magA) * math.Sqrt(magB)))
+}
+
+func cloneEmbedding(input []float32) []float32 {
+	if len(input) == 0 {
+		return nil
+	}
+	cloned := make([]float32, len(input))
+	copy(cloned, input)
+	return cloned
 }
 
 func relevantAttrsForOperation(operation string) []string {

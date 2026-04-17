@@ -15,6 +15,7 @@ import (
 	"eve-beemo/src/orchestrator/chatctx"
 	"eve-beemo/src/orchestrator/config"
 	orchestrdb "eve-beemo/src/orchestrator/db"
+	"eve-beemo/src/orchestrator/factsel"
 	"eve-beemo/src/orchestrator/llm"
 	"eve-beemo/src/orchestrator/memoryctx"
 	"eve-beemo/src/orchestrator/prompts"
@@ -29,6 +30,7 @@ type orchestratorServer struct {
 	cfg                 config.Config
 	tools               orchtools.Executor
 	routeSelector       routeSelector
+	factSelector        factSelector
 	readGrammar         func(path string) (string, error)
 	callCompletion      func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error)
 	callFinalMessage    func(httpURL, model, prompt string, timeout time.Duration) (string, error)
@@ -63,10 +65,19 @@ type routeCatalog interface {
 	Routes() []routing.Route
 }
 
+type factSelector interface {
+	Select(query string, attrs []string, timeout time.Duration) (string, error)
+	Attrs() []string
+	Fact(attr string) (factsel.Fact, bool)
+	QuestionPrompt(attrs []string) string
+}
+
 const (
 	contextSelectionMessages  = 24
 	activeContextTurns        = 6
 	sessionTranscriptMessages = 24
+	memoryRecallMinScore      = 0.48
+	memoryRecallMinMargin     = 0.03
 )
 
 func useCurrentTurnGrounding(call toolCall, currentSubjectID string) bool {
@@ -162,6 +173,179 @@ func filteredSnapshot(snapshot map[string]json.RawMessage, excluded []string) ma
 	return filtered
 }
 
+func lookupAttributeFromTool(call toolCall, route routing.Route) (string, error) {
+	args := map[string]json.RawMessage{}
+	if len(call.Args) > 0 {
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return "", fmt.Errorf("invalid %s args: %w", call.Tool, err)
+		}
+	}
+	if raw, ok := args["attribute"]; ok {
+		var attr string
+		if err := json.Unmarshal(raw, &attr); err != nil {
+			return "", fmt.Errorf("invalid memory_lookup attribute: %w", err)
+		}
+		attr = strings.TrimSpace(attr)
+		if attr != "" {
+			return attr, nil
+		}
+	}
+	if value, ok := route.DefaultArgs["attribute"]; ok {
+		if attr, ok := value.(string); ok && strings.TrimSpace(attr) != "" {
+			return strings.TrimSpace(attr), nil
+		}
+	}
+	return "", nil
+}
+
+func memoryLookupArgs(attr string) json.RawMessage {
+	if strings.TrimSpace(attr) == "" {
+		return json.RawMessage(`{}`)
+	}
+	raw, err := json.Marshal(map[string]string{"attribute": attr})
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return raw
+}
+
+func buildMemoryLookupResult(memoryStore *memoryctx.Store, facts factSelector, subjectID, userQuery string, call toolCall, route routing.Route, timeout time.Duration) (orchtools.Result, error) {
+	if strings.TrimSpace(subjectID) == "" {
+		return orchtools.Result{
+			Action:   call.Tool,
+			Status:   "needs_input",
+			Missing:  []string{"subject"},
+			Question: "Who is this about?",
+		}, nil
+	}
+
+	attr, err := lookupAttributeFromTool(call, route)
+	if err != nil {
+		return orchtools.Result{}, err
+	}
+	if attr == "" {
+		matches, err := memoryStore.Recall(subjectID, userQuery, 3, timeout)
+		if err != nil {
+			return orchtools.Result{}, err
+		}
+		if match, ok := bestRecallMatch(matches); ok {
+			return resultFromObservation(memoryStore, facts, subjectID, call.Tool, match.Observation)
+		}
+		question := "What detail should I look up?"
+		if facts != nil {
+			if selectedAttr, err := facts.Select(userQuery, route.Memory.Attrs, timeout); err == nil && strings.TrimSpace(selectedAttr) != "" {
+				observation, ok, err := memoryStore.LookupAttribute(subjectID, selectedAttr)
+				if err != nil {
+					return orchtools.Result{}, err
+				}
+				if ok {
+					return resultFromObservation(memoryStore, facts, subjectID, call.Tool, observation)
+				}
+			}
+			question = facts.QuestionPrompt(route.Memory.Attrs)
+		}
+		return orchtools.Result{
+			Action:   call.Tool,
+			Status:   "needs_input",
+			Missing:  []string{"detail"},
+			Question: question,
+		}, nil
+	}
+	observation, ok, err := memoryStore.LookupAttribute(subjectID, attr)
+	if err != nil {
+		return orchtools.Result{}, err
+	}
+	if !ok {
+		return orchtools.Result{
+			Action:   call.Tool,
+			Status:   "needs_input",
+			Missing:  []string{attr},
+			Question: orchtools.ClarificationQuestion([]string{attr}),
+		}, nil
+	}
+	return resultFromObservation(memoryStore, facts, subjectID, call.Tool, observation)
+}
+
+func resultFromObservation(memoryStore *memoryctx.Store, facts factSelector, subjectID, toolName string, observation memoryctx.Observation) (orchtools.Result, error) {
+	attr := strings.TrimSpace(observation.Attribute)
+	if attr != "" {
+		latest, ok, err := memoryStore.LookupAttribute(subjectID, attr)
+		if err != nil {
+			return orchtools.Result{}, err
+		}
+		if ok {
+			observation = latest
+		}
+	}
+	value := observation.RawValue
+	if len(value) == 0 {
+		value = observation.CanonicalValue
+	}
+	outputLabel := strings.ReplaceAll(attr, "_", " ")
+	kind := "text"
+	if facts != nil {
+		if fact, ok := facts.Fact(attr); ok {
+			if strings.TrimSpace(fact.OutputLabel) != "" {
+				outputLabel = strings.TrimSpace(fact.OutputLabel)
+			}
+			if strings.TrimSpace(fact.Kind) != "" {
+				kind = strings.TrimSpace(fact.Kind)
+			}
+		}
+	}
+	if len(value) > 0 {
+		formatted, err := orchtools.FormatFactValue(kind, value)
+		if err == nil {
+			return orchtools.Result{
+				Action: toolName,
+				Output: fmt.Sprintf("%s %s", outputLabel, formatted),
+			}, nil
+		}
+	}
+	text := strings.TrimSpace(observation.ObservationText)
+	if text == "" {
+		text = strings.TrimSpace(observation.SourceTurn)
+	}
+	if text == "" {
+		text = "I don't have a clear remembered detail for that yet."
+	}
+	return orchtools.Result{
+		Action: toolName,
+		Output: text,
+	}, nil
+}
+
+func bestRecallMatch(matches []memoryctx.RecallMatch) (memoryctx.RecallMatch, bool) {
+	if len(matches) == 0 {
+		return memoryctx.RecallMatch{}, false
+	}
+	best := matches[0]
+	if best.Score < memoryRecallMinScore {
+		return memoryctx.RecallMatch{}, false
+	}
+	bestKey := recallMatchKey(best.Observation)
+	secondScore := float32(-2)
+	for idx := 1; idx < len(matches); idx++ {
+		if recallMatchKey(matches[idx].Observation) == bestKey {
+			continue
+		}
+		secondScore = matches[idx].Score
+		break
+	}
+	if secondScore > -2 && best.Score-secondScore < memoryRecallMinMargin {
+		return memoryctx.RecallMatch{}, false
+	}
+	return best, true
+}
+
+func recallMatchKey(observation memoryctx.Observation) string {
+	value := observation.CanonicalValue
+	if len(value) == 0 {
+		value = observation.RawValue
+	}
+	return strings.TrimSpace(observation.Attribute) + "::" + string(value)
+}
+
 func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb.ChatResponse, error) {
 	start := time.Now()
 	effectiveMessages := s.resolveMessages(req.GetSessionId(), req.GetMessages())
@@ -216,10 +400,15 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 	}
 	callTimeout := time.Duration(s.cfg.LLMTimeoutMs) * time.Millisecond
 	embeddingTimeout := time.Duration(s.cfg.EmbeddingTimeoutMs) * time.Millisecond
-	activeContext := chatctx.Build(effectiveMessages, contextSelectionMessages, activeContextTurns)
-	subjectContext := subjectctx.Resolve(effectiveMessages)
-	subjectSummary := subjectContext.Summary()
 	memoryStore := s.getMemoryStore()
+	activeContext := chatctx.Build(effectiveMessages, contextSelectionMessages, activeContextTurns)
+	seededSubjects, aliasErr := memoryStore.LoadSubjectAliases()
+	if aliasErr != nil {
+		fmt.Printf("orch.chat done session=%s status=error reason=subject_alias_load ms=%d err=%v\n", req.GetSessionId(), time.Since(start).Milliseconds(), aliasErr)
+		return nil, aliasErr
+	}
+	subjectContext := subjectctx.ResolveWithSeed(effectiveMessages, seededSubjects)
+	subjectSummary := subjectContext.Summary()
 	routingQuery := strings.TrimSpace(activeContext.UserEvidence)
 	if routingQuery == "" {
 		routingQuery = userQuery
@@ -238,6 +427,9 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 	originQuery := userQuery
 	if hasPending && strings.TrimSpace(pending.OriginalUserQuery) != "" {
 		originQuery = pending.OriginalUserQuery
+	}
+	if err := memoryStore.RememberSubjectAliases(req.GetSessionId(), subjectContext.Subjects); err != nil {
+		fmt.Printf("orch.chat subject_alias_ingest session=%s status=error err=%v\n", req.GetSessionId(), err)
 	}
 	if err := memoryStore.RememberUserMessage(req.GetSessionId(), currentSubjectID, userQuery); err != nil {
 		fmt.Printf("orch.chat memory_ingest session=%s status=error err=%v\n", req.GetSessionId(), err)
@@ -420,6 +612,23 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 			memoryRead = matchedRoute.Memory.Read
 			memoryWrite = matchedRoute.Memory.Write
 		}
+		if explicitTool.Tool == "memory_lookup" {
+			if len(memoryAttrs) == 0 && s.factSelector != nil {
+				memoryAttrs = s.factSelector.Attrs()
+			}
+			attr, aerr := lookupAttributeFromTool(explicitTool, matchedRoute)
+			if aerr != nil {
+				fmt.Printf("orch.chat done session=%s status=error reason=memory_lookup_attr ms=%d err=%v\n", req.GetSessionId(), time.Since(start).Milliseconds(), aerr)
+				return nil, aerr
+			}
+			if attr != "" {
+				memoryAttrs = []string{attr}
+				explicitTool.Args = memoryLookupArgs(attr)
+			} else {
+				memoryAttrs = nil
+				explicitTool.Args = json.RawMessage(`{}`)
+			}
+		}
 		if currentSubjectID != "" && memoryWrite {
 			if err := memoryStore.RememberUserMessageWithContext(req.GetSessionId(), currentSubjectID, userQuery, memoryctx.RecordContext{
 				Domain:     matchedRoute.Domain,
@@ -432,7 +641,7 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 		}
 		snapshot := map[string]json.RawMessage(nil)
 		snapshotDetails := memoryctx.SnapshotDetails{}
-		if currentSubjectID != "" && memoryRead {
+		if currentSubjectID != "" && memoryRead && len(memoryAttrs) > 0 {
 			snapshotDetails = memoryStore.SnapshotDetails(req.GetSessionId(), currentSubjectID, memoryAttrs...)
 			if snapshotDetails.Err != nil {
 				fmt.Printf("orch.chat done session=%s status=error reason=memory_snapshot ms=%d err=%v\n", req.GetSessionId(), time.Since(start).Milliseconds(), snapshotDetails.Err)
@@ -440,23 +649,27 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 			}
 			snapshot = snapshotDetails.Values
 		}
-		if currentSubjectID != "" && memoryRead {
+		if currentSubjectID != "" && memoryRead && len(memoryAttrs) > 0 {
 			conflictAttrs := conflictingMemoryAttrs(snapshotDetails.Conflicts, explicitObservationAttrs(userQuery), memoryAttrs)
 			if len(conflictAttrs) > 0 {
-				provisionalTool, rerr := orchtools.ResolveCalculatorCall(
-					toPlannedCall(explicitTool),
-					userQuery,
-					filteredSnapshot(snapshot, conflictAttrs),
-				)
-				if rerr != nil {
-					fmt.Printf("orch.chat done session=%s status=error reason=tool_resolve_conflict ms=%d err=%v\n", req.GetSessionId(), time.Since(start).Milliseconds(), rerr)
-					return nil, rerr
+				pendingArgs := cloneRawMessage(explicitTool.Args)
+				if explicitTool.Tool == "calculator" {
+					provisionalTool, rerr := orchtools.ResolveCalculatorCall(
+						toPlannedCall(explicitTool),
+						userQuery,
+						filteredSnapshot(snapshot, conflictAttrs),
+					)
+					if rerr != nil {
+						fmt.Printf("orch.chat done session=%s status=error reason=tool_resolve_conflict ms=%d err=%v\n", req.GetSessionId(), time.Since(start).Milliseconds(), rerr)
+						return nil, rerr
+					}
+					pendingArgs = cloneRawMessage(provisionalTool.Args)
 				}
 				question := orchtools.ClarificationQuestion(conflictAttrs)
 				s.setPending(req.GetSessionId(), pendingToolState{
 					OriginalUserQuery: originQuery,
 					Tool:              explicitTool.Tool,
-					Args:              cloneRawMessage(provisionalTool.Args),
+					Args:              pendingArgs,
 					Missing:           append([]string(nil), conflictAttrs...),
 					Question:          question,
 					SubjectID:         currentSubjectID,
@@ -476,32 +689,41 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 				return &pb.ChatResponse{Text: question}, nil
 			}
 		}
-		resolvedTool, rerr := orchtools.ResolveCalculatorCall(
-			toPlannedCall(explicitTool),
-			userQuery,
-			snapshot,
-		)
-		if rerr != nil {
-			fmt.Printf("orch.chat done session=%s status=error reason=tool_resolve ms=%d err=%v\n", req.GetSessionId(), time.Since(start).Milliseconds(), rerr)
-			return nil, rerr
-		}
-		tool = fromPlannedCall(resolvedTool)
-		if currentSubjectID != "" && memoryWrite {
-			if err := memoryStore.RememberToolCallWithContext(req.GetSessionId(), currentSubjectID, resolvedTool, memoryctx.RecordContext{
-				Domain:     matchedRoute.Domain,
-				Route:      matchedRoute.ID,
-				SourceTurn: userQuery,
-				SourceType: memoryctx.SourceTypeResolvedToolArgs,
-			}, memoryAttrs...); err != nil {
-				fmt.Printf("orch.chat memory_store session=%s status=error err=%v\n", req.GetSessionId(), err)
+		resolvedTool := toPlannedCall(explicitTool)
+		if explicitTool.Tool == "calculator" {
+			var rerr error
+			resolvedTool, rerr = orchtools.ResolveCalculatorCall(
+				toPlannedCall(explicitTool),
+				userQuery,
+				snapshot,
+			)
+			if rerr != nil {
+				fmt.Printf("orch.chat done session=%s status=error reason=tool_resolve ms=%d err=%v\n", req.GetSessionId(), time.Since(start).Milliseconds(), rerr)
+				return nil, rerr
+			}
+			if currentSubjectID != "" && memoryWrite {
+				if err := memoryStore.RememberToolCallWithContext(req.GetSessionId(), currentSubjectID, resolvedTool, memoryctx.RecordContext{
+					Domain:     matchedRoute.Domain,
+					Route:      matchedRoute.ID,
+					SourceTurn: userQuery,
+					SourceType: memoryctx.SourceTypeResolvedToolArgs,
+				}, memoryAttrs...); err != nil {
+					fmt.Printf("orch.chat memory_store session=%s status=error err=%v\n", req.GetSessionId(), err)
+				}
 			}
 		}
+		tool = fromPlannedCall(resolvedTool)
 		fmt.Printf("orch.chat tool_call session=%s tool=%s args=%s\n", req.GetSessionId(), tool.Tool, string(tool.Args))
-		result, err := s.tools.Execute(ctx, orchtools.Request{
-			SessionID: req.GetSessionId(),
-			Action:    tool.Tool,
-			Args:      tool.Args,
-		})
+		var result orchtools.Result
+		if tool.Tool == "memory_lookup" {
+			result, err = buildMemoryLookupResult(memoryStore, s.factSelector, currentSubjectID, userQuery, tool, matchedRoute, embeddingTimeout)
+		} else {
+			result, err = s.tools.Execute(ctx, orchtools.Request{
+				SessionID: req.GetSessionId(),
+				Action:    tool.Tool,
+				Args:      tool.Args,
+			})
+		}
 		if err != nil {
 			fmt.Printf("orch.chat done session=%s status=error reason=tool_call ms=%d err=%v\n", req.GetSessionId(), time.Since(start).Milliseconds(), err)
 			s.appendHistory(&historyEntry{
@@ -708,7 +930,11 @@ func (s *orchestratorServer) getMemoryStore() *memoryctx.Store {
 	s.memoryMu.Lock()
 	defer s.memoryMu.Unlock()
 	if s.memoryStore == nil {
-		s.memoryStore = memoryctx.NewStore()
+		s.memoryStore = memoryctx.NewStore().WithEmbeddings(
+			s.cfg.EmbeddingHTTPURL,
+			s.cfg.EmbeddingModel,
+			time.Duration(s.cfg.EmbeddingTimeoutMs)*time.Millisecond,
+		)
 	}
 	return s.memoryStore
 }
@@ -881,7 +1107,11 @@ func main() {
 		}
 		defer db.Close()
 		routeDB = db
-		memoryStore = memoryctx.NewPostgresStore(db)
+		memoryStore = memoryctx.NewPostgresStore(db).WithEmbeddings(
+			cfg.EmbeddingHTTPURL,
+			cfg.EmbeddingModel,
+			time.Duration(cfg.EmbeddingTimeoutMs)*time.Millisecond,
+		)
 		fmt.Printf("orchestrator status=database_ok migrations_dir=%s\n", cfg.DBMigrationsDir)
 	}
 
@@ -897,6 +1127,7 @@ func main() {
 
 	grpcServer := grpc.NewServer()
 	selector := routing.NewSelectorWithDB(cfg.RoutesPath, cfg.EmbeddingHTTPURL, cfg.EmbeddingModel, cfg.RouteTopK, cfg.RouteDomainTopK, routeDB)
+	facts := factsel.NewSelector(cfg.FactsPath, cfg.EmbeddingHTTPURL, cfg.EmbeddingModel)
 	if selector.Enabled() {
 		timeout := time.Duration(cfg.EmbeddingTimeoutMs) * time.Millisecond
 		if err := selector.Warmup(timeout); err != nil {
@@ -905,11 +1136,29 @@ func main() {
 		}
 		fmt.Printf("orchestrator status=route_warmup_ok routes_path=%s\n", cfg.RoutesPath)
 	}
+	if facts.Configured() {
+		timeout := time.Duration(cfg.EmbeddingTimeoutMs) * time.Millisecond
+		if err := facts.Warmup(timeout); err != nil {
+			fmt.Printf("orchestrator status=error fact_warmup err=%v\n", err)
+			return
+		}
+		fmt.Printf("orchestrator status=fact_warmup_ok facts_path=%s attrs=%v\n", cfg.FactsPath, facts.Attrs())
+	}
+	if memoryStore != nil {
+		timeout := time.Duration(cfg.EmbeddingTimeoutMs) * time.Millisecond
+		count, err := memoryStore.BackfillObservationEmbeddings(timeout)
+		if err != nil {
+			fmt.Printf("orchestrator status=error observation_backfill err=%v\n", err)
+			return
+		}
+		fmt.Printf("orchestrator status=observation_backfill_ok rows=%d\n", count)
+	}
 	pb.RegisterOrchestratorServer(grpcServer, &orchestratorServer{
 		cfg:           cfg,
 		tools:         orchtools.NewLocalExecutor(),
 		memoryStore:   memoryStore,
 		routeSelector: selector,
+		factSelector:  facts,
 	})
 	fmt.Printf("orchestrator status=listening addr=%s\n", orchAddr)
 	if err := grpcServer.Serve(lis); err != nil {

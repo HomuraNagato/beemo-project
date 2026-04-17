@@ -1,0 +1,47 @@
+facts:
+  - id: weight
+    kind: measurement
+    summary: Recall a previously stated weight for the resolved subject.
+    question_label: weight
+    output_label: weight
+    example_requests:
+      - what is my weight?
+      - what does serene weigh?
+      - how much does he weigh?
+
+  - id: height
+    kind: measurement
+    summary: Recall a previously stated height for the resolved subject.
+    question_label: height
+    output_label: height
+    example_requests:
+      - what is my height?
+      - what is serene's height?
+      - how tall is she?
+
+  - id: age_years
+    kind: years
+    summary: Recall a previously stated age in years for the resolved subject.
+    question_label: age in years
+    output_label: age in years
+    example_requests:
+      - how old is serene?
+      - what is her age?
+
+  - id: gender
+    kind: text
+    summary: Recall a previously stated gender for the resolved subject.
+    question_label: gender
+    output_label: gender
+    example_requests:
+      - what is her gender?
+      - what gender is serene?
+
+  - id: activity_level
+    kind: enum
+    summary: Recall a previously stated activity level for the resolved subject.
+    question_label: activity level
+    output_label: activity level
+    example_requests:
+      - what is her activity level?
+      - how active am i?

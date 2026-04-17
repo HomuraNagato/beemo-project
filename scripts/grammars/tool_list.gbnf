@@ -2,11 +2,13 @@ root ::= empty_list | single_call_list
 empty_list ::= "[" ws "]"
 single_call_list ::= "[" ws tool_call ws "]"
 
-tool_call ::= get_time_call | calculator_call
+tool_call ::= get_time_call | calculator_call | memory_lookup_call
 
 get_time_call ::= "{" ws "\"tool\"" ws ":" ws "\"get_time\"" ws "," ws "\"args\"" ws ":" ws "{}" ws "}"
 
 calculator_call ::= "{" ws "\"tool\"" ws ":" ws "\"calculator\"" ws "," ws "\"args\"" ws ":" ws calc_args ws "}"
+memory_lookup_call ::= "{" ws "\"tool\"" ws ":" ws "\"memory_lookup\"" ws "," ws "\"args\"" ws ":" ws memory_lookup_args ws "}"
+memory_lookup_args ::= "{}" | "{" ws "\"attribute\"" ws ":" ws string ws "}"
 
 calc_args ::= expression_args | convert_args | bmi_args | bmr_args | tdee_args | percent_of_args | percent_change_args | percent_ratio_args
 

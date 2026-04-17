@@ -364,20 +364,36 @@ func inferRouteForCall(action string, args map[string]any) (Route, bool) {
 		case "percent_ratio":
 			return Route{ID: "calculator.percent_ratio", Domain: "calculator", Handler: Handler{Type: "tool", Target: "calculator"}, DefaultArgs: map[string]any{"operation": operation}}, true
 		}
+	case "memory_lookup":
+		return syntheticMemoryLookupRoute(), true
 	}
 	return Route{}, false
 }
 
 func syntheticCalculatorRoute(id, operation string, attrs []string) Route {
 	return Route{
-		ID:         id,
-		Domain:     "calculator",
+		ID:          id,
+		Domain:      "calculator",
 		DefaultArgs: map[string]any{"operation": operation},
-		Handler:    Handler{Type: "tool", Target: "calculator"},
+		Handler:     Handler{Type: "tool", Target: "calculator"},
 		Memory: MemoryPolicy{
 			Read:  true,
 			Write: true,
 			Attrs: append([]string(nil), attrs...),
+			Scope: "subject",
+		},
+	}
+}
+
+func syntheticMemoryLookupRoute() Route {
+	return Route{
+		ID:          "facts.lookup",
+		Domain:      "facts",
+		DefaultArgs: map[string]any{},
+		Handler:     Handler{Type: "tool", Target: "memory_lookup"},
+		Memory: MemoryPolicy{
+			Read:  true,
+			Write: false,
 			Scope: "subject",
 		},
 	}
