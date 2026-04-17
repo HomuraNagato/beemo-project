@@ -197,6 +197,146 @@ when and how to update embeddings db? with all requests?
 eg. if structured response says is_important, then call embedding service with
 full context (or omit question?)
 
+** memory observations
+
+best long-term fit for beemo:
+ - do not use a single global user profile as the main memory store
+ - do not rely on a flat embedding store as the source of truth for tool inputs
+ - keep route selection separate from memory retrieval
+
+recommended memory shape:
+ - working memory
+   - current active thread, pending tool questions, recent TUI turns
+   - short-lived and session-scoped
+ - subject-scoped observation memory
+   - store observations, not permanent truths
+   - example: "subject X was described as 45kg in this session"
+   - facts can conflict over time without destructive overwrite
+ - episodic memory
+   - summaries of notable past interactions
+   - useful for recall, planning, and personalization
+
+recommended primary unit of storage:
+ - observation record keyed by session + subject + domain + route
+ - each record should keep:
+   - subject_id
+   - aliases
+   - domain
+   - route
+   - attribute
+   - value_json
+   - source_turn / source_message
+   - created_at
+   - confidence
+   - superseded_by or invalidated_at later if needed
+
+subject handling:
+ - resolve subjects from explicit language only
+ - "my brother Mark" should link "brother" and "Mark" to the same subject_id
+ - do not merge aliases from weak semantic similarity alone
+ - if multiple people could match, ask a clarification question instead of guessing
+
+retrieval strategy:
+ - step 1: use embeddings to narrow the route/domain
+ - step 2: resolve the subject for the selected route
+ - step 3: filter memory by subject + domain + route + recency
+ - step 4: optionally use embeddings only inside that filtered memory slice
+ - step 5: hydrate tool args from the retrieved observations
+ - step 6: ask only for still-missing fields
+
+why this fits beemo:
+ - calculator / tool calls need exact values, not vague semantic matches
+ - users may ask about self, family, friends, or another target in the same session
+ - values like weight, age, and activity level can change, so timeline matters
+ - route-aware retrieval works naturally with the new domain/route embedding design
+
+implementation bias:
+ - start session-local and in-memory first
+ - keep the first version simple and inspectable
+ - move to persisted Postgres storage once the session model proves out
+ - add vector retrieval only after subject resolution and filtering are working well
+
+** memory implementation path
+
+1. add a subject resolver
+   - identify self / named person / role reference like brother, sister, trainer
+   - create a session-scoped subject_id
+   - attach aliases only when the conversation explicitly links them
+
+2. add an observation store
+   - in-memory map first
+   - keyed by session_id, then subject_id
+   - values stored as append-only observations with timestamps and provenance
+
+3. add route-aware memory policy
+   - each route can declare whether it reads memory, writes memory, or both
+   - route policy should also define which attributes are relevant
+
+4. write observations after explicit user input or successful tool completion
+   - store only what the user clearly said or what was confirmed through execution
+   - avoid storing model guesses
+
+5. hydrate structured tool args before execution
+   - once a route is chosen, gather relevant observations for that subject
+   - merge the best recent observations into the route state object
+   - leave unresolved fields empty
+
+6. add clarification rules for ambiguity and conflict
+   - if subject is unclear, ask who the request is about
+   - if multiple recent values compete, ask which one to use or prefer the newest explicit value with provenance
+
+7. add episodic summaries later
+   - store compact summaries for notable interactions
+   - use these for planning, personalization, and long-horizon recall
+
+8. add persistence later
+   - move observation store from in-memory to Postgres
+   - keep append-only history and alias links
+   - use an optional pensieve Postgres service on fresh machines, but connect to an existing local Postgres server when present
+   - use `beemo` as the application database name
+   - add embedding index only for episodic recall or filtered reranking
+
+current implementation status:
+ - done:
+   - session-scoped subject resolver
+   - explicit alias linking for self, named people, and relation references
+   - possessive/direct health subject resolution for patterns like "serene's bmi"
+   - in-memory observation store keyed by session_id + subject_id
+   - route-aware memory policy in routes.yaml for calculator bmi / bmr / tdee
+   - calculator health observation writes from explicit user input
+   - calculator health hydration before execution
+   - deterministic-first resolution for bmi / bmr / tdee inputs
+   - canonicalization of health measurements before execution
+   - richer observation records with domain / route / source_turn / source_type / raw_value / canonical_value / created_at
+   - conflict detection over distinct explicit subject observations
+   - clarification questions when memory has competing values for required calculator fields
+   - preference order for health slots:
+     - explicit current turn
+     - subject snapshot
+     - model fallback
+ - partial:
+   - ambiguity handling for some alias conflicts
+   - memory behavior is still mostly specialized for calculator health routes
+   - Postgres persistence is wired for observations, and startup now bootstraps the `beemo` database if the server exists, but aliases are not yet written/read there
+   - route catalog sync currently stores one base route descriptor plus one embedding per route/model in Postgres, while live retrieval still uses the richer in-memory index
+ - not done yet:
+   - memory inspection / debugging surface
+   - general non-calculator memory hydration
+   - episodic summaries
+   - embedding retrieval over filtered episodic memory
+
+current limitation:
+ - the memory layer is intentionally narrow right now
+ - it is reliable for calculator health follow-ups in-session
+ - it is not yet the general memory system for all routes
+
+recommended next milestone from here:
+ 1. persist and read back subject aliases in Postgres
+ 2. add a small inspection/debug surface for session -> subject -> snapshot -> conflicts
+ 3. generalize route-aware memory reads/writes beyond calculator health routes
+ 4. extend the Postgres route sync so it stores the full retrieval corpus, not just one base descriptor per route
+ 5. add episodic summaries later and use embeddings only inside filtered episodic memory
+
 * STT
 ** architecture
 

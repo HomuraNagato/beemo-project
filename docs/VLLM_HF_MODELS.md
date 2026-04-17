@@ -64,6 +64,44 @@ Start with an instruct model that is known to behave well with structured output
 - `Qwen/Qwen2.5-14B-Instruct`
 - `meta-llama/Llama-3.1-8B-Instruct`
 
+## Embedding Service
+
+If you want local embeddings through vLLM, start with:
+
+- `Qwen/Qwen3-Embedding-0.6B`
+
+This is a good default for `beemo-project` because it is purpose-built for embeddings, relatively small at 0.6B parameters, multilingual, instruction-aware, and supports long inputs up to 32k tokens on the model card.
+
+Download it into the repo's `models/` directory like this:
+
+```bash
+huggingface-cli download Qwen/Qwen3-Embedding-0.6B \
+  --local-dir ./models/Qwen3-Embedding-0.6B
+```
+
+Then set or keep these env values:
+
+```env
+EMBEDDING_MODEL=Qwen3-Embedding-0.6B
+EMBEDDING_HTTP_URL=http://eve-embedding:5021/v1/embeddings
+EMBEDDING_RUNNER=pooling
+EMBEDDING_TASK=embed
+```
+
+Bring it up with:
+
+```bash
+docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up -d eve-embedding
+```
+
+Or on CPU:
+
+```bash
+docker compose -f docker-compose.yaml -f docker-compose.cpu.yaml up -d eve-embedding
+```
+
+If you need a lighter English-only fallback for CPU experiments, `BAAI/bge-small-en-v1.5` is still a reasonable option, but `Qwen/Qwen3-Embedding-0.6B` is the better first recommendation here.
+
 ## Bringing It Up
 
 After updating `.env`:
@@ -83,6 +121,7 @@ Then test:
 
 - `vllm/vllm-openai:latest` is used directly in `docker-compose.gpu.yaml`; no Dockerfile is required initially.
 - `compose/reasoning_vllm/entrypoint.sh` is the runtime launcher.
+- `compose/embedding/entrypoint.sh` is the dedicated runtime launcher for the embedding service.
 - The API model name is `REASONING_MODEL`.
 - The filesystem load path defaults to `${MODEL_DIR}/${REASONING_MODEL}` unless `REASONING_MODEL_PATH` is set.
 - If GPU memory is tight, reduce `VLLM_MAX_MODEL_LEN` or choose a smaller model.

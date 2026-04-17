@@ -1,5 +1,17 @@
 services:
 
+  eve-embedding:
+    container_name: eve-embedding
+    hostname: eve-embedding
+    image: vllm/vllm-openai-cpu:latest-x86_64
+    privileged: true
+    environment:
+      VLLM_DEVICE: cpu
+      EMBEDDING_DEVICE: cpu
+      EMBEDDING_DTYPE: ${EMBEDDING_CPU_DTYPE:-bfloat16}
+      EMBEDDING_CPU_KVCACHE_SPACE: ${EMBEDDING_CPU_KVCACHE_SPACE:-4}
+    shm_size: 4g
+
   eve-vllm:
     container_name: eve-vllm
     hostname: eve-vllm

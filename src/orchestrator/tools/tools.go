@@ -500,7 +500,75 @@ func classifyCalculatorInputError(err error) ([]string, string, bool) {
 	case "speed_missing:speed_unit":
 		return []string{"speed_unit"}, "What speed unit should I use: km_h, mph, or m_s?", true
 	default:
+		if missing, question, ok := classifyStructuredMissing(msg, "bmr_missing:"); ok {
+			return missing, question, true
+		}
+		if missing, question, ok := classifyStructuredMissing(msg, "tdee_missing:"); ok {
+			return missing, question, true
+		}
 		return nil, "", false
+	}
+}
+
+func classifyStructuredMissing(msg, prefix string) ([]string, string, bool) {
+	if !strings.HasPrefix(msg, prefix) {
+		return nil, "", false
+	}
+	body := strings.TrimSpace(strings.TrimPrefix(msg, prefix))
+	if body == "" {
+		return nil, "", false
+	}
+	rawFields := strings.Split(body, ",")
+	fields := make([]string, 0, len(rawFields))
+	for _, raw := range rawFields {
+		field := strings.TrimSpace(raw)
+		if field == "" {
+			continue
+		}
+		fields = append(fields, field)
+	}
+	if len(fields) == 0 {
+		return nil, "", false
+	}
+	return fields, buildMissingQuestion(fields), true
+}
+
+func buildMissingQuestion(fields []string) string {
+	labels := make([]string, 0, len(fields))
+	for _, field := range fields {
+		labels = append(labels, missingFieldLabel(field))
+	}
+	if len(labels) == 1 {
+		return "What is the " + labels[0] + "?"
+	}
+	return "What are the " + joinQuestionLabels(labels) + "?"
+}
+
+func ClarificationQuestion(fields []string) string {
+	return buildMissingQuestion(fields)
+}
+
+func missingFieldLabel(field string) string {
+	switch field {
+	case "age_years":
+		return "age in years"
+	case "activity_level":
+		return "activity level"
+	default:
+		return strings.ReplaceAll(field, "_", " ")
+	}
+}
+
+func joinQuestionLabels(labels []string) string {
+	switch len(labels) {
+	case 0:
+		return ""
+	case 1:
+		return labels[0]
+	case 2:
+		return labels[0] + " and " + labels[1]
+	default:
+		return strings.Join(labels[:len(labels)-1], ", ") + ", and " + labels[len(labels)-1]
 	}
 }
 

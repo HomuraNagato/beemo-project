@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"testing"
 	"time"
 )
@@ -217,6 +218,21 @@ func TestCalculatorNeedsInput(t *testing.T) {
 			question: "What is the activity level: sedentary, light, moderate, active, or very_active?",
 		},
 		{
+			name: "tdee_missing_age_gender",
+			args: map[string]any{
+				"operation": "tdee",
+				"weight": []map[string]any{
+					{"unit": "lb", "value": 134},
+				},
+				"height": []map[string]any{
+					{"unit": "cm", "value": 174},
+				},
+			},
+			status:   "needs_input",
+			missing:  []string{"age_years", "gender"},
+			question: "What are the age in years and gender?",
+		},
+		{
 			name: "bmr_mixed_height_field_without_length_becomes_missing",
 			args: map[string]any{
 				"operation": "bmr",
@@ -308,6 +324,105 @@ func TestGetTimeToolIgnoresArgs(t *testing.T) {
 	}
 	if _, err := time.Parse(time.RFC3339, result.Output); err != nil {
 		t.Fatalf("output is not RFC3339: %q err=%v", result.Output, err)
+	}
+}
+
+func TestResolveCalculatorCallCanonicalizesDuplicateEquivalentMeasurements(t *testing.T) {
+	t.Parallel()
+
+	resolved, err := ResolveCalculatorCall(PlannedCall{
+		Action: "calculator",
+		Args: json.RawMessage(`{
+			"operation":"bmr",
+			"weight":[{"unit":"lb","value":134},{"unit":"kg","value":60.88}],
+			"height":[{"unit":"cm","value":174},{"unit":"m","value":1.74}],
+			"age_years":27,
+			"gender":"female"
+		}`),
+	}, "", nil)
+	if err != nil {
+		t.Fatalf("ResolveCalculatorCall returned error: %v", err)
+	}
+
+	var args struct {
+		Operation string                 `json:"operation"`
+		Weight    []measurementComponent `json:"weight"`
+		Height    []measurementComponent `json:"height"`
+		AgeYears  float64                `json:"age_years"`
+		Gender    string                 `json:"gender"`
+	}
+	if err := json.Unmarshal(resolved.Args, &args); err != nil {
+		t.Fatalf("unmarshal resolved args: %v", err)
+	}
+
+	if got, want := args.Operation, "bmr"; got != want {
+		t.Fatalf("unexpected operation: got %q want %q", got, want)
+	}
+	if len(args.Weight) != 1 || args.Weight[0].Unit != "kg" {
+		t.Fatalf("unexpected canonicalized weight: %#v", args.Weight)
+	}
+	if diff := math.Abs(args.Weight[0].Value - 60.78137758); diff > 0.000001 {
+		t.Fatalf("unexpected canonicalized weight value: got %.8f", args.Weight[0].Value)
+	}
+	if len(args.Height) != 1 || args.Height[0].Unit != "cm" || args.Height[0].Value != 174 {
+		t.Fatalf("unexpected canonicalized height: %#v", args.Height)
+	}
+	if got, want := args.AgeYears, 27.0; got != want {
+		t.Fatalf("unexpected age_years: got %v want %v", got, want)
+	}
+	if got, want := args.Gender, "female"; got != want {
+		t.Fatalf("unexpected gender: got %q want %q", got, want)
+	}
+}
+
+func TestResolveCalculatorCallPrefersSnapshotOverModelFallback(t *testing.T) {
+	t.Parallel()
+
+	resolved, err := ResolveCalculatorCall(
+		PlannedCall{
+			Action: "calculator",
+			Args: json.RawMessage(`{
+				"operation":"bmr",
+				"weight":[{"unit":"kg","value":134}],
+				"height":[{"unit":"lb","value":134}],
+				"age_years":27,
+				"gender":"female"
+			}`),
+		},
+		"what is her bmr? she is female and 27 years old",
+		map[string]json.RawMessage{
+			"weight": json.RawMessage(`[{"unit":"kg","value":60.78137758}]`),
+			"height": json.RawMessage(`[{"unit":"cm","value":174}]`),
+		},
+	)
+	if err != nil {
+		t.Fatalf("ResolveCalculatorCall returned error: %v", err)
+	}
+
+	var args struct {
+		Weight   []measurementComponent `json:"weight"`
+		Height   []measurementComponent `json:"height"`
+		AgeYears float64                `json:"age_years"`
+		Gender   string                 `json:"gender"`
+	}
+	if err := json.Unmarshal(resolved.Args, &args); err != nil {
+		t.Fatalf("unmarshal resolved args: %v", err)
+	}
+
+	if len(args.Weight) != 1 || args.Weight[0].Unit != "kg" {
+		t.Fatalf("unexpected weight: %#v", args.Weight)
+	}
+	if diff := math.Abs(args.Weight[0].Value - 60.78137758); diff > 0.000001 {
+		t.Fatalf("unexpected weight value: got %.8f", args.Weight[0].Value)
+	}
+	if len(args.Height) != 1 || args.Height[0].Unit != "cm" || args.Height[0].Value != 174 {
+		t.Fatalf("unexpected height: %#v", args.Height)
+	}
+	if got, want := args.AgeYears, 27.0; got != want {
+		t.Fatalf("unexpected age_years: got %v want %v", got, want)
+	}
+	if got, want := args.Gender, "female"; got != want {
+		t.Fatalf("unexpected gender: got %q want %q", got, want)
 	}
 }
 

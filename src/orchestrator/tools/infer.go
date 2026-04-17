@@ -31,7 +31,7 @@ var (
 	resumeMeasurementPattern = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(mm|millimeter|millimeters|millimetre|millimetres|cm|centimeter|centimeters|centimetre|centimetres|m|meter|meters|metre|metres|km|kilometer|kilometers|kilometre|kilometres|in|inch|inches|ft|foot|feet|mi|mile|miles|mg|milligram|milligrams|kg|kgs|kilogram|kilograms|kiloggram|kiloggrams|g|gram|grams|gr|lb|lbs|pound|pounds|ml|milliliter|milliliters|millilitre|millilitres|l|liter|liters|litre|litres|s|sec|secs|second|seconds|min|mins|minute|minutes|hr|hrs|h|hour|hours|mmol|millimole|millimoles|mol|mole|moles)\b`)
 	resumeFeetInchesPattern  = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(?:ft|foot|feet|')\s*(?:(\d+(?:\.\d+)?)\s*(?:in|inch|inches|")?)?`)
 	resumeInchesQuotePattern = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*"`)
-	resumeAgeExplicitPattern = regexp.MustCompile(`(?i)\b(\d{1,3}(?:\.\d+)?)\s*(years?\s*old|years?|yrs?|yr|yo|y/o)\b`)
+	resumeAgeExplicitPattern = regexp.MustCompile(`(?i)(?:\b(\d{1,3}(?:\.\d+)?)\s*(years?\s*old|years?|yrs?|yr|yo|y/o)\b|\bage(?:\s+is)?\s+(\d{1,3}(?:\.\d+)?)\b)`)
 	resumeBareNumberPattern  = regexp.MustCompile(`^\s*(\d{1,3})(?:\.0+)?\s*[\.,!?]*\s*$`)
 )
 
@@ -180,6 +180,33 @@ func GroundCall(evidenceText string, call PlannedCall) (PlannedCall, error) {
 	}
 	call.Args = groundedArgs
 	return call, nil
+}
+
+func ExtractCalculatorObservationPatch(text string) (json.RawMessage, bool, error) {
+	update := map[string]any{}
+	if components, ok := parseWeightComponents(text); ok {
+		update["weight"] = components
+	}
+	if components, ok := parseHeightComponents(text); ok {
+		update["height"] = components
+	}
+	if age, ok := parseAgeYears(text, false); ok {
+		update["age_years"] = age
+	}
+	if gender, ok := parseGender(text); ok {
+		update["gender"] = gender
+	}
+	if level, ok := parseActivityLevel(text); ok {
+		update["activity_level"] = level
+	}
+	if len(update) == 0 {
+		return nil, false, nil
+	}
+	raw, err := json.Marshal(update)
+	if err != nil {
+		return nil, false, err
+	}
+	return raw, true, nil
 }
 
 func mergePendingArgs(action string, pendingArgs json.RawMessage, missing []string, updateRaw json.RawMessage) (json.RawMessage, error) {
@@ -342,9 +369,14 @@ func parseGenericMeasurementComponents(text string) ([]measurementComponent, boo
 func parseAgeYears(text string, allowBareNumber bool) (float64, bool) {
 	lower := strings.ToLower(text)
 	if matches := resumeAgeExplicitPattern.FindStringSubmatch(lower); len(matches) >= 2 {
-		value, err := strconv.ParseFloat(matches[1], 64)
-		if err == nil {
-			return value, true
+		for _, candidate := range []string{matches[1], matches[3]} {
+			if strings.TrimSpace(candidate) == "" {
+				continue
+			}
+			value, err := strconv.ParseFloat(candidate, 64)
+			if err == nil {
+				return value, true
+			}
 		}
 	}
 	if allowBareNumber {

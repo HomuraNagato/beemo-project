@@ -11,6 +11,7 @@ import (
 type ActiveContext struct {
 	Transcript   string
 	UserEvidence string
+	Messages     []*pb.ChatMessage
 }
 
 type turn struct {
@@ -68,6 +69,7 @@ func Build(messages []*pb.ChatMessage, maxMessages, maxTurns int) ActiveContext 
 	return ActiveContext{
 		Transcript:   formatTurns(active.turns, false),
 		UserEvidence: formatTurns(active.turns, true),
+		Messages:     flattenMessages(active.turns),
 	}
 }
 
@@ -300,4 +302,20 @@ func compactText(text string) string {
 		return normalized
 	}
 	return normalized[:maxPromptChars] + "..."
+}
+
+func flattenMessages(turns []turn) []*pb.ChatMessage {
+	flattened := make([]*pb.ChatMessage, 0, len(turns)*2)
+	for _, turn := range turns {
+		for _, message := range turn.messages {
+			if message == nil {
+				continue
+			}
+			flattened = append(flattened, &pb.ChatMessage{
+				Role:    message.GetRole(),
+				Content: message.GetContent(),
+			})
+		}
+	}
+	return flattened
 }

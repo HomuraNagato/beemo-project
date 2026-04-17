@@ -49,6 +49,41 @@ func TestTryFillPendingParsesCombinedAgeGenderAndHeightReply(t *testing.T) {
 	}
 }
 
+func TestTryFillPendingParsesAgeIsReply(t *testing.T) {
+	t.Parallel()
+
+	call, ok, err := TryFillPending(PendingFillRequest{
+		Action:  "calculator",
+		Args:    json.RawMessage(`{"operation":"tdee","weight":[{"unit":"lb","value":134}],"height":[{"unit":"cm","value":174}]}`),
+		Missing: []string{"age_years", "gender"},
+		Reply:   "her gender is female and her age is 27",
+	})
+	if err != nil {
+		t.Fatalf("TryFillPending returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected TryFillPending to parse the age is reply")
+	}
+
+	var args struct {
+		Operation string  `json:"operation"`
+		AgeYears  float64 `json:"age_years"`
+		Gender    string  `json:"gender"`
+	}
+	if err := json.Unmarshal(call.Args, &args); err != nil {
+		t.Fatalf("unmarshal merged args: %v", err)
+	}
+	if got, want := args.Operation, "tdee"; got != want {
+		t.Fatalf("unexpected operation: got %q want %q", got, want)
+	}
+	if got, want := args.AgeYears, 27.0; got != want {
+		t.Fatalf("unexpected age_years: got %v want %v", got, want)
+	}
+	if got, want := args.Gender, "female"; got != want {
+		t.Fatalf("unexpected gender: got %q want %q", got, want)
+	}
+}
+
 func TestGroundCallKeepsCentimetersSpelledOut(t *testing.T) {
 	t.Parallel()
 

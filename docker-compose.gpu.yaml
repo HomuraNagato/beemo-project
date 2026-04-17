@@ -1,5 +1,19 @@
 services:
 
+  eve-embedding:
+    container_name: eve-embedding
+    hostname: eve-embedding
+    image: vllm/vllm-openai
+    privileged: true
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
   eve-vllm:
     container_name: eve-vllm
     hostname: eve-vllm

@@ -9,8 +9,19 @@ import (
 
 	pb "eve-beemo/proto/gen/proto"
 	"eve-beemo/src/orchestrator/config"
+	"eve-beemo/src/orchestrator/memoryctx"
+	"eve-beemo/src/orchestrator/routing"
 	orchtools "eve-beemo/src/orchestrator/tools"
 )
+
+type staticRouteSelector struct {
+	candidates []routing.Candidate
+	err        error
+}
+
+func (s staticRouteSelector) Retrieve(query string, timeout time.Duration) ([]routing.Candidate, error) {
+	return s.candidates, s.err
+}
 
 func TestChatFinalResponseFlow(t *testing.T) {
 	t.Parallel()
@@ -106,6 +117,708 @@ func TestChatReturnsNeedsInputWithoutFinalLLMCall(t *testing.T) {
 	}
 	if got, want := resp.GetText(), "What is the height?"; got != want {
 		t.Fatalf("unexpected clarification: got %q want %q", got, want)
+	}
+}
+
+func TestChatUsesRoutedPromptWhenCandidatesAvailable(t *testing.T) {
+	t.Parallel()
+
+	var sawRoutePrompt bool
+	server := &orchestratorServer{
+		cfg: config.Config{
+			LLMHTTPURL:         "http://llm.test/v1/chat/completions",
+			LLMModel:           "test-model",
+			LLMTimeoutMs:       500,
+			EmbeddingTimeoutMs: 500,
+		},
+		tools: orchtools.NewLocalExecutor(),
+		routeSelector: staticRouteSelector{
+			candidates: []routing.Candidate{
+				{
+					Route: routing.Route{
+						ID:      "calculator.percent_of",
+						Title:   "Percent of a value",
+						Summary: "Compute a percent of a value.",
+						Handler: routing.Handler{Type: "tool", Target: "calculator"},
+						DefaultArgs: map[string]any{
+							"operation": "percent_of",
+						},
+						ExampleRequests: []string{"what is 20% of 85?"},
+					},
+					Score: 0.91,
+				},
+			},
+		},
+		readGrammar: func(path string) (string, error) {
+			return "root ::= \"[]\"", nil
+		},
+		callCompletion: func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+			if !strings.Contains(prompt, "Candidate routes:") {
+				t.Fatalf("expected routed prompt, got %q", prompt)
+			}
+			if !strings.Contains(prompt, "route_id: calculator.percent_of") {
+				t.Fatalf("expected routed candidate id, got %q", prompt)
+			}
+			sawRoutePrompt = true
+			return `[{"tool":"calculator","args":{"operation":"percent_of","percent":20,"value":85}}]`, nil
+		},
+		callFinalMessage: func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+			return "20% of 85 is 17.", nil
+		},
+	}
+
+	resp, err := server.Chat(context.Background(), chatRequest("what is 20% of 85?"))
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	if !sawRoutePrompt {
+		t.Fatal("expected routed prompt to be used")
+	}
+	if got, want := resp.GetText(), "20% of 85 is 17."; got != want {
+		t.Fatalf("unexpected response text: got %q want %q", got, want)
+	}
+}
+
+func TestChatIncludesResolvedSubjectContextInDecisionPrompt(t *testing.T) {
+	t.Parallel()
+
+	server := &orchestratorServer{
+		cfg: config.Config{
+			LLMHTTPURL:   "http://llm.test/v1/chat/completions",
+			LLMModel:     "test-model",
+			LLMTimeoutMs: 500,
+		},
+		tools: orchtools.NewLocalExecutor(),
+		readGrammar: func(path string) (string, error) {
+			return "root ::= \"[]\"", nil
+		},
+		callCompletion: func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+			if !strings.Contains(prompt, "Resolved subject context:\ncurrent_subject_id: person:mark\n- subject_id: person:mark aliases: brother, mark, my brother") {
+				t.Fatalf("decision prompt missing resolved subject context: %q", prompt)
+			}
+			return `[{"tool":"calculator","args":{"operation":"bmi","weight":[{"unit":"kg","value":70}],"height":[{"unit":"cm","value":180}]}}]`, nil
+		},
+		callFinalMessage: func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+			return "The BMI is 21.60.", nil
+		},
+	}
+
+	resp, err := server.Chat(context.Background(), &pb.ChatRequest{
+		SessionId: "test-session",
+		Messages: []*pb.ChatMessage{
+			{Role: "user", Content: "my brother Mark is 34 years old"},
+			{Role: "assistant", Content: "Noted."},
+			{Role: "user", Content: "what is his bmi at 70kg and 180cm?"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	if got, want := resp.GetText(), "The BMI is 21.60."; got != want {
+		t.Fatalf("unexpected response text: got %q want %q", got, want)
+	}
+}
+
+func TestChatHydratesCalculatorArgsFromSubjectMemoryAcrossTurns(t *testing.T) {
+	t.Parallel()
+
+	decisionCalls := 0
+	finalCalls := 0
+	server := &orchestratorServer{
+		cfg: config.Config{
+			LLMHTTPURL:   "http://llm.test/v1/chat/completions",
+			LLMModel:     "test-model",
+			LLMTimeoutMs: 500,
+		},
+		tools:       orchtools.NewLocalExecutor(),
+		memoryStore: memoryctx.NewStore(),
+		readGrammar: func(path string) (string, error) {
+			return "root ::= \"[]\"", nil
+		},
+		callCompletion: func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+			decisionCalls++
+			switch decisionCalls {
+			case 1:
+				return `[]`, nil
+			case 2:
+				return `[]`, nil
+			case 3:
+				if !strings.Contains(prompt, "current_subject_id: person:mark") {
+					t.Fatalf("decision prompt missing current subject: %q", prompt)
+				}
+				return `[{"tool":"calculator","args":{"operation":"bmr"}}]`, nil
+			default:
+				t.Fatalf("unexpected decision call %d", decisionCalls)
+				return "", nil
+			}
+		},
+		callFinalMessage: func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+			finalCalls++
+			switch finalCalls {
+			case 1:
+				return "Noted.", nil
+			case 2:
+				if !strings.Contains(prompt, "Tool result: tool=calculator result=BMR 1660.00 kcal/day") {
+					t.Fatalf("final prompt missing hydrated BMR result: %q", prompt)
+				}
+				return "His BMR is 1660.00 kcal/day.", nil
+			default:
+				t.Fatalf("unexpected final call %d", finalCalls)
+				return "", nil
+			}
+		},
+	}
+
+	firstResp, err := server.Chat(context.Background(), chatRequest("my brother Mark is a 34 year old male weighing 70kg and 180cm tall"))
+	if err != nil {
+		t.Fatalf("first Chat returned error: %v", err)
+	}
+	if got, want := firstResp.GetText(), "Noted."; got != want {
+		t.Fatalf("unexpected first response: got %q want %q", got, want)
+	}
+
+	secondResp, err := server.Chat(context.Background(), chatRequest("what is his bmr?"))
+	if err != nil {
+		t.Fatalf("second Chat returned error: %v", err)
+	}
+	if got, want := secondResp.GetText(), "His BMR is 1660.00 kcal/day."; got != want {
+		t.Fatalf("unexpected second response: got %q want %q", got, want)
+	}
+}
+
+func TestChatRemembersStandaloneNamedSubjectAcrossTDEETurns(t *testing.T) {
+	t.Parallel()
+
+	decisionCalls := 0
+	finalCalls := 0
+	server := &orchestratorServer{
+		cfg: config.Config{
+			LLMHTTPURL:   "http://llm.test/v1/chat/completions",
+			LLMModel:     "test-model",
+			LLMTimeoutMs: 500,
+		},
+		tools:       orchtools.NewLocalExecutor(),
+		memoryStore: memoryctx.NewStore(),
+		readGrammar: func(path string) (string, error) {
+			return "root ::= \"[]\"", nil
+		},
+		callCompletion: func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+			decisionCalls++
+			switch decisionCalls {
+			case 1:
+				if !strings.Contains(prompt, "current_subject_id: person:serene") {
+					t.Fatalf("first decision prompt missing direct named subject: %q", prompt)
+				}
+				return `[{"tool":"calculator","args":{"operation":"bmi","weight":[{"unit":"lb","value":134}],"height":[{"unit":"cm","value":174}]}}]`, nil
+			case 2:
+				if !strings.Contains(prompt, "current_subject_id: person:serene") {
+					t.Fatalf("second decision prompt missing direct named subject: %q", prompt)
+				}
+				return `[{"tool":"calculator","args":{"operation":"tdee"}}]`, nil
+			case 3:
+				if !strings.Contains(prompt, "current_subject_id: person:serene") {
+					t.Fatalf("third decision prompt missing direct named subject: %q", prompt)
+				}
+				return `[{"tool":"calculator","args":{"operation":"tdee"}}]`, nil
+			default:
+				t.Fatalf("unexpected decision call %d", decisionCalls)
+				return "", nil
+			}
+		},
+		callFinalMessage: func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+			finalCalls++
+			switch finalCalls {
+			case 1:
+				return "The BMI of Serene is 20.08.", nil
+			case 2:
+				if !strings.Contains(prompt, "Tool result: tool=calculator result=TDEE 1924.06 kcal/day") {
+					t.Fatalf("final prompt missing hydrated TDEE result: %q", prompt)
+				}
+				return "The TDEE for Serene is 1924.06 kcal/day.", nil
+			case 3:
+				if !strings.Contains(prompt, "Tool result: tool=calculator result=TDEE 1924.06 kcal/day") {
+					t.Fatalf("repeat final prompt missing hydrated TDEE result: %q", prompt)
+				}
+				return "The TDEE for Serene is 1924.06 kcal/day.", nil
+			default:
+				t.Fatalf("unexpected final call %d", finalCalls)
+				return "", nil
+			}
+		},
+	}
+
+	firstResp, err := server.Chat(context.Background(), chatRequest("what is the bmi of serene that has a height of 174cm and 134lbs?"))
+	if err != nil {
+		t.Fatalf("first Chat returned error: %v", err)
+	}
+	if got, want := firstResp.GetText(), "The BMI of Serene is 20.08."; got != want {
+		t.Fatalf("unexpected first response: got %q want %q", got, want)
+	}
+
+	secondResp, err := server.Chat(context.Background(), chatRequest("what is her tdee?"))
+	if err != nil {
+		t.Fatalf("second Chat returned error: %v", err)
+	}
+	if got, want := secondResp.GetText(), "What are the age in years and gender?"; got != want {
+		t.Fatalf("unexpected second response: got %q want %q", got, want)
+	}
+
+	thirdResp, err := server.Chat(context.Background(), chatRequest("her gender is female and her age is 27"))
+	if err != nil {
+		t.Fatalf("third Chat returned error: %v", err)
+	}
+	if got, want := thirdResp.GetText(), "What is the activity level: sedentary, light, moderate, active, or very_active?"; got != want {
+		t.Fatalf("unexpected third response: got %q want %q", got, want)
+	}
+
+	fourthResp, err := server.Chat(context.Background(), chatRequest("light"))
+	if err != nil {
+		t.Fatalf("fourth Chat returned error: %v", err)
+	}
+	if got, want := fourthResp.GetText(), "The TDEE for Serene is 1924.06 kcal/day."; got != want {
+		t.Fatalf("unexpected fourth response: got %q want %q", got, want)
+	}
+
+	fifthResp, err := server.Chat(context.Background(), chatRequest("what is the tdee of serene?"))
+	if err != nil {
+		t.Fatalf("fifth Chat returned error: %v", err)
+	}
+	if got, want := fifthResp.GetText(), "The TDEE for Serene is 1924.06 kcal/day."; got != want {
+		t.Fatalf("unexpected fifth response: got %q want %q", got, want)
+	}
+}
+
+func TestChatCanonicalizesDuplicatedHealthMeasurementsBeforeExecution(t *testing.T) {
+	t.Parallel()
+
+	server := &orchestratorServer{
+		cfg: config.Config{
+			LLMHTTPURL:   "http://llm.test/v1/chat/completions",
+			LLMModel:     "test-model",
+			LLMTimeoutMs: 500,
+		},
+		tools:       orchtools.NewLocalExecutor(),
+		memoryStore: memoryctx.NewStore(),
+		readGrammar: func(path string) (string, error) {
+			return "root ::= \"[]\"", nil
+		},
+		callCompletion: func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+			return `[{"tool":"calculator","args":{"operation":"bmr","weight":[{"unit":"lb","value":134},{"unit":"kg","value":60.88}],"height":[{"unit":"cm","value":174},{"unit":"m","value":1.74}],"age_years":27,"gender":"female"}}]`, nil
+		},
+		callFinalMessage: func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+			if !strings.Contains(prompt, "Tool result: tool=calculator result=BMR 1399.31 kcal/day") {
+				t.Fatalf("final prompt missing canonicalized BMR result: %q", prompt)
+			}
+			return "Your BMR is 1399.31 kcal/day.", nil
+		},
+	}
+
+	resp, err := server.Chat(context.Background(), chatRequest("what is my bmr at 134lbs and 174cm if I am 27 years old and female?"))
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	if got, want := resp.GetText(), "Your BMR is 1399.31 kcal/day."; got != want {
+		t.Fatalf("unexpected response text: got %q want %q", got, want)
+	}
+}
+
+func TestChatRemembersPossessiveNamedSubjectAcrossHealthTurns(t *testing.T) {
+	t.Parallel()
+
+	decisionCalls := 0
+	finalCalls := 0
+	server := &orchestratorServer{
+		cfg: config.Config{
+			LLMHTTPURL:   "http://llm.test/v1/chat/completions",
+			LLMModel:     "test-model",
+			LLMTimeoutMs: 500,
+		},
+		tools:       orchtools.NewLocalExecutor(),
+		memoryStore: memoryctx.NewStore(),
+		readGrammar: func(path string) (string, error) {
+			return "root ::= \"[]\"", nil
+		},
+		callCompletion: func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+			decisionCalls++
+			switch decisionCalls {
+			case 1:
+				if !strings.Contains(prompt, "current_subject_id: person:serene") {
+					t.Fatalf("first decision prompt missing possessive subject: %q", prompt)
+				}
+				return `[{"tool":"calculator","args":{"operation":"bmi","weight":[{"unit":"lb","value":134}],"height":[{"unit":"cm","value":174}]}}]`, nil
+			case 2:
+				if !strings.Contains(prompt, "current_subject_id: person:serene") {
+					t.Fatalf("second decision prompt missing possessive subject: %q", prompt)
+				}
+				return `[{"tool":"calculator","args":{"operation":"tdee","age_years":27,"gender":"female","activity_level":"light"}}]`, nil
+			case 3:
+				if !strings.Contains(prompt, "current_subject_id: person:serene") {
+					t.Fatalf("third decision prompt missing pronoun-resolved subject: %q", prompt)
+				}
+				return `[{"tool":"calculator","args":{"operation":"bmr"}}]`, nil
+			default:
+				t.Fatalf("unexpected decision call %d", decisionCalls)
+				return "", nil
+			}
+		},
+		callFinalMessage: func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+			finalCalls++
+			switch finalCalls {
+			case 1:
+				return "Serene's BMI is 20.08.", nil
+			case 2:
+				if !strings.Contains(prompt, "Tool result: tool=calculator result=TDEE 1924.06 kcal/day") {
+					t.Fatalf("final prompt missing hydrated TDEE result: %q", prompt)
+				}
+				return "Serene's TDEE is 1924.06 kcal/day.", nil
+			case 3:
+				if !strings.Contains(prompt, "Tool result: tool=calculator result=BMR 1399.31 kcal/day") {
+					t.Fatalf("final prompt missing hydrated BMR result: %q", prompt)
+				}
+				return "Serene's BMR is 1399.31 kcal/day.", nil
+			default:
+				t.Fatalf("unexpected final call %d", finalCalls)
+				return "", nil
+			}
+		},
+	}
+
+	firstResp, err := server.Chat(context.Background(), chatRequest("what is serene's bmi with 134lbs and 174cm?"))
+	if err != nil {
+		t.Fatalf("first Chat returned error: %v", err)
+	}
+	if got, want := firstResp.GetText(), "Serene's BMI is 20.08."; got != want {
+		t.Fatalf("unexpected first response: got %q want %q", got, want)
+	}
+
+	secondResp, err := server.Chat(context.Background(), chatRequest("what is serene's tdee? her activity level is light, she is female, and she is 27 years old"))
+	if err != nil {
+		t.Fatalf("second Chat returned error: %v", err)
+	}
+	if got, want := secondResp.GetText(), "Serene's TDEE is 1924.06 kcal/day."; got != want {
+		t.Fatalf("unexpected second response: got %q want %q", got, want)
+	}
+
+	thirdResp, err := server.Chat(context.Background(), chatRequest("what is her bmr?"))
+	if err != nil {
+		t.Fatalf("third Chat returned error: %v", err)
+	}
+	if got, want := thirdResp.GetText(), "Serene's BMR is 1399.31 kcal/day."; got != want {
+		t.Fatalf("unexpected third response: got %q want %q", got, want)
+	}
+}
+
+func TestChatPrefersSelfSnapshotOverBadModelFallback(t *testing.T) {
+	t.Parallel()
+
+	decisionCalls := 0
+	finalCalls := 0
+	server := &orchestratorServer{
+		cfg: config.Config{
+			LLMHTTPURL:   "http://llm.test/v1/chat/completions",
+			LLMModel:     "test-model",
+			LLMTimeoutMs: 500,
+		},
+		tools:       orchtools.NewLocalExecutor(),
+		memoryStore: memoryctx.NewStore(),
+		readGrammar: func(path string) (string, error) {
+			return "root ::= \"[]\"", nil
+		},
+		callCompletion: func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+			decisionCalls++
+			switch decisionCalls {
+			case 1:
+				return `[{"tool":"calculator","args":{"operation":"bmi","weight":[{"unit":"kg","value":45}],"height":[{"unit":"cm","value":162}]}}]`, nil
+			case 2:
+				return `[{"tool":"calculator","args":{"operation":"bmr","weight":[{"unit":"kg","value":45}],"height":[{"unit":"lb","value":45}]}}]`, nil
+			default:
+				t.Fatalf("unexpected decision call %d", decisionCalls)
+				return "", nil
+			}
+		},
+		callFinalMessage: func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+			finalCalls++
+			switch finalCalls {
+			case 1:
+				return "Your BMI is 17.15.", nil
+			case 2:
+				if !strings.Contains(prompt, "Tool result: tool=calculator result=BMR 1126.50 kcal/day") {
+					t.Fatalf("final prompt missing hydrated self BMR result: %q", prompt)
+				}
+				return "Your BMR is 1126.50 kcal/day.", nil
+			default:
+				t.Fatalf("unexpected final call %d", finalCalls)
+				return "", nil
+			}
+		},
+	}
+
+	firstResp, err := server.Chat(context.Background(), chatRequest("what is my bmi with weight 45kg and height 162cm"))
+	if err != nil {
+		t.Fatalf("first Chat returned error: %v", err)
+	}
+	if got, want := firstResp.GetText(), "Your BMI is 17.15."; got != want {
+		t.Fatalf("unexpected first response: got %q want %q", got, want)
+	}
+	if snapshot := server.memoryStore.Snapshot("test-session", "self"); !strings.Contains(string(snapshot["height"]), `"value":162`) || !strings.Contains(string(snapshot["weight"]), `"value":45`) {
+		t.Fatalf("unexpected self snapshot after bmi: %#v", snapshot)
+	}
+
+	secondResp, err := server.Chat(context.Background(), chatRequest("what is my bmr? I am 35 years old and female"))
+	if err != nil {
+		t.Fatalf("second Chat returned error: %v", err)
+	}
+	if got, want := secondResp.GetText(), "Your BMR is 1126.50 kcal/day."; got != want {
+		t.Fatalf("unexpected second response: got %q want %q", got, want)
+	}
+}
+
+func TestChatPrefersNamedSubjectSnapshotOverBadModelFallback(t *testing.T) {
+	t.Parallel()
+
+	decisionCalls := 0
+	finalCalls := 0
+	server := &orchestratorServer{
+		cfg: config.Config{
+			LLMHTTPURL:   "http://llm.test/v1/chat/completions",
+			LLMModel:     "test-model",
+			LLMTimeoutMs: 500,
+		},
+		tools:       orchtools.NewLocalExecutor(),
+		memoryStore: memoryctx.NewStore(),
+		readGrammar: func(path string) (string, error) {
+			return "root ::= \"[]\"", nil
+		},
+		callCompletion: func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+			decisionCalls++
+			switch decisionCalls {
+			case 1:
+				return `[{"tool":"calculator","args":{"operation":"bmi","weight":[{"unit":"lb","value":134}],"height":[{"unit":"cm","value":174}]}}]`, nil
+			case 2:
+				return `[{"tool":"calculator","args":{"operation":"bmr","weight":[{"unit":"kg","value":134}],"age_years":27,"gender":"female"}}]`, nil
+			default:
+				t.Fatalf("unexpected decision call %d", decisionCalls)
+				return "", nil
+			}
+		},
+		callFinalMessage: func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+			finalCalls++
+			switch finalCalls {
+			case 1:
+				return "Serene's BMI is 20.08.", nil
+			case 2:
+				if !strings.Contains(prompt, "Tool result: tool=calculator result=BMR 1399.31 kcal/day") {
+					t.Fatalf("final prompt missing hydrated named-subject BMR result: %q", prompt)
+				}
+				return "Serene's BMR is 1399.31 kcal/day.", nil
+			default:
+				t.Fatalf("unexpected final call %d", finalCalls)
+				return "", nil
+			}
+		},
+	}
+
+	firstResp, err := server.Chat(context.Background(), chatRequest("what is serene's bmi with weight 134lbs and 174cm?"))
+	if err != nil {
+		t.Fatalf("first Chat returned error: %v", err)
+	}
+	if got, want := firstResp.GetText(), "Serene's BMI is 20.08."; got != want {
+		t.Fatalf("unexpected first response: got %q want %q", got, want)
+	}
+	if snapshot := server.memoryStore.Snapshot("test-session", "person:serene"); !strings.Contains(string(snapshot["height"]), `"value":174`) || !strings.Contains(string(snapshot["weight"]), `"value":60.78137758`) {
+		t.Fatalf("unexpected serene snapshot after bmi: %#v", snapshot)
+	}
+
+	secondResp, err := server.Chat(context.Background(), chatRequest("what is her bmr? she is female and 27 years old"))
+	if err != nil {
+		t.Fatalf("second Chat returned error: %v", err)
+	}
+	if got, want := secondResp.GetText(), "Serene's BMR is 1399.31 kcal/day."; got != want {
+		t.Fatalf("unexpected second response: got %q want %q", got, want)
+	}
+}
+
+func TestChatDoesNotLeakNamedSubjectDemographicsIntoSelfBMR(t *testing.T) {
+	t.Parallel()
+
+	decisionCalls := 0
+	finalCalls := 0
+	server := &orchestratorServer{
+		cfg: config.Config{
+			LLMHTTPURL:   "http://llm.test/v1/chat/completions",
+			LLMModel:     "test-model",
+			LLMTimeoutMs: 500,
+		},
+		tools:       orchtools.NewLocalExecutor(),
+		memoryStore: memoryctx.NewStore(),
+		readGrammar: func(path string) (string, error) {
+			return "root ::= \"[]\"", nil
+		},
+		callCompletion: func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+			decisionCalls++
+			switch decisionCalls {
+			case 1:
+				return `[{"tool":"calculator","args":{"operation":"bmi","weight":[{"unit":"kg","value":45}],"height":[{"unit":"cm","value":162}]}}]`, nil
+			case 2:
+				return `[{"tool":"calculator","args":{"operation":"bmi","weight":[{"unit":"lb","value":134}],"height":[{"unit":"cm","value":174}]}}]`, nil
+			case 3:
+				return `[{"tool":"calculator","args":{"operation":"tdee"}}]`, nil
+			case 4:
+				return `[{"tool":"calculator","args":{"operation":"bmr"}}]`, nil
+			case 5:
+				return `[{"tool":"calculator","args":{"operation":"bmr","weight":[{"unit":"kg","value":45},{"unit":"in","value":64}],"age_years":34,"gender":"female"}}]`, nil
+			default:
+				t.Fatalf("unexpected decision call %d", decisionCalls)
+				return "", nil
+			}
+		},
+		callFinalMessage: func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+			finalCalls++
+			switch finalCalls {
+			case 1:
+				return "Your BMI is 17.15.", nil
+			case 2:
+				return "Serene's BMI is 20.08.", nil
+			case 3:
+				if !strings.Contains(prompt, "Tool result: tool=calculator result=TDEE 1924.06 kcal/day") {
+					t.Fatalf("final prompt missing serene TDEE result: %q", prompt)
+				}
+				return "Serene's TDEE is 1924.06 kcal/day.", nil
+			case 4:
+				if !strings.Contains(prompt, "Tool result: tool=calculator result=BMR 1399.31 kcal/day") {
+					t.Fatalf("final prompt missing serene BMR result: %q", prompt)
+				}
+				return "Serene's BMR is 1399.31 kcal/day.", nil
+			default:
+				t.Fatalf("unexpected final call %d", finalCalls)
+				return "", nil
+			}
+		},
+	}
+
+	firstResp, err := server.Chat(context.Background(), chatRequest("what is my bmi? I weight 45kg and 162cm"))
+	if err != nil {
+		t.Fatalf("first Chat returned error: %v", err)
+	}
+	if got, want := firstResp.GetText(), "Your BMI is 17.15."; got != want {
+		t.Fatalf("unexpected first response: got %q want %q", got, want)
+	}
+
+	secondResp, err := server.Chat(context.Background(), chatRequest("what is serene's bmi? she weights 134lbs and is 174cm tall"))
+	if err != nil {
+		t.Fatalf("second Chat returned error: %v", err)
+	}
+	if got, want := secondResp.GetText(), "Serene's BMI is 20.08."; got != want {
+		t.Fatalf("unexpected second response: got %q want %q", got, want)
+	}
+
+	thirdResp, err := server.Chat(context.Background(), chatRequest("what is her tdee?"))
+	if err != nil {
+		t.Fatalf("third Chat returned error: %v", err)
+	}
+	if got, want := thirdResp.GetText(), "What are the age in years and gender?"; got != want {
+		t.Fatalf("unexpected third response: got %q want %q", got, want)
+	}
+
+	fourthResp, err := server.Chat(context.Background(), chatRequest("she is 27 years old and female"))
+	if err != nil {
+		t.Fatalf("fourth Chat returned error: %v", err)
+	}
+	if got, want := fourthResp.GetText(), "What is the activity level: sedentary, light, moderate, active, or very_active?"; got != want {
+		t.Fatalf("unexpected fourth response: got %q want %q", got, want)
+	}
+
+	fifthResp, err := server.Chat(context.Background(), chatRequest("light"))
+	if err != nil {
+		t.Fatalf("fifth Chat returned error: %v", err)
+	}
+	if got, want := fifthResp.GetText(), "Serene's TDEE is 1924.06 kcal/day."; got != want {
+		t.Fatalf("unexpected fifth response: got %q want %q", got, want)
+	}
+
+	sixthResp, err := server.Chat(context.Background(), chatRequest("what is her bmr?"))
+	if err != nil {
+		t.Fatalf("sixth Chat returned error: %v", err)
+	}
+	if got, want := sixthResp.GetText(), "Serene's BMR is 1399.31 kcal/day."; got != want {
+		t.Fatalf("unexpected sixth response: got %q want %q", got, want)
+	}
+
+	seventhResp, err := server.Chat(context.Background(), chatRequest("what is my bmr?"))
+	if err != nil {
+		t.Fatalf("seventh Chat returned error: %v", err)
+	}
+	if got, want := seventhResp.GetText(), "What are the age in years and gender?"; got != want {
+		t.Fatalf("unexpected seventh response: got %q want %q", got, want)
+	}
+	if finalCalls != 4 {
+		t.Fatalf("unexpected final call count: got %d want %d", finalCalls, 4)
+	}
+}
+
+func TestChatAsksToDisambiguateConflictingMemoryBeforeBMR(t *testing.T) {
+	t.Parallel()
+
+	store := memoryctx.NewStore()
+	if err := store.RememberUserMessage("test-session", "self", "I weigh 45kg and I am 162cm tall"); err != nil {
+		t.Fatalf("failed to preload first weight observation: %v", err)
+	}
+	if err := store.RememberUserMessage("test-session", "self", "I weigh 50kg"); err != nil {
+		t.Fatalf("failed to preload second weight observation: %v", err)
+	}
+
+	decisionCalls := 0
+	finalCalls := 0
+	server := &orchestratorServer{
+		cfg: config.Config{
+			LLMHTTPURL:   "http://llm.test/v1/chat/completions",
+			LLMModel:     "test-model",
+			LLMTimeoutMs: 500,
+		},
+		tools:       orchtools.NewLocalExecutor(),
+		memoryStore: store,
+		readGrammar: func(path string) (string, error) {
+			return "root ::= \"[]\"", nil
+		},
+		callCompletion: func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+			decisionCalls++
+			switch decisionCalls {
+			case 1:
+				return `[{"tool":"calculator","args":{"operation":"bmr","age_years":35,"gender":"female","weight":[{"unit":"kg","value":45}]}}]`, nil
+			default:
+				t.Fatalf("unexpected decision call %d", decisionCalls)
+				return "", nil
+			}
+		},
+		callFinalMessage: func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+			finalCalls++
+			if !strings.Contains(prompt, "Tool result: tool=calculator result=BMR 1176.50 kcal/day") {
+				t.Fatalf("final prompt missing disambiguated BMR result: %q", prompt)
+			}
+			return "Your BMR is 1176.50 kcal/day.", nil
+		},
+	}
+
+	firstResp, err := server.Chat(context.Background(), chatRequest("what is my bmr? I am 35 years old and female"))
+	if err != nil {
+		t.Fatalf("first Chat returned error: %v", err)
+	}
+	if got, want := firstResp.GetText(), "What is the weight?"; got != want {
+		t.Fatalf("unexpected first response: got %q want %q", got, want)
+	}
+	if finalCalls != 0 {
+		t.Fatalf("final LLM should not run before disambiguation, got %d calls", finalCalls)
+	}
+
+	secondResp, err := server.Chat(context.Background(), chatRequest("50kg"))
+	if err != nil {
+		t.Fatalf("second Chat returned error: %v", err)
+	}
+	if got, want := secondResp.GetText(), "Your BMR is 1176.50 kcal/day."; got != want {
+		t.Fatalf("unexpected second response: got %q want %q", got, want)
+	}
+	if finalCalls != 1 {
+		t.Fatalf("unexpected final call count: got %d want %d", finalCalls, 1)
 	}
 }
 

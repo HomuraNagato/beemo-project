@@ -1,6 +1,20 @@
 
 services:
 
+  eve-embedding:
+    container_name: eve-embedding
+    hostname: eve-embedding
+    image: ${EMBEDDING_VLLM_IMAGE:-vllm/vllm-openai}
+    privileged: true
+    ports:
+      - 5021:5021
+    volumes:
+      - ./models:/models
+      - ./compose/embedding/entrypoint.sh:/entrypoint.sh
+    env_file:
+      - ./.env
+    entrypoint: /entrypoint.sh
+
   eve-orchestrator:
     container_name: eve-orchestrator
     hostname: eve-orchestrator
@@ -16,6 +30,8 @@ services:
     build:
       context: ./compose/orchestrator
       dockerfile: Dockerfile
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./:/workspace
       - eve-orchestrator-volume:/app/data

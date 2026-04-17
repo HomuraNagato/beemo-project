@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-func ToolDecision(userQuery, activeTranscript string) string {
+func ToolDecision(userQuery, activeTranscript, subjectContext string) string {
 	return `Decide which tools to use.
 Valid tools:
 - get_time: use for current or relative time/date questions
@@ -43,19 +43,59 @@ Rules:
 - For math, BMI/BMR/TDEE, pace/speed, chemistry-style unit conversions, or other unit conversion questions, use calculator.
 - If the user explicitly asks for BMI, BMR, or TDEE, use calculator with that operation even when some fields are missing.
 - For follow-up BMI, BMR, or TDEE questions, carry forward explicit measurements or demographics from the active conversation thread unless the user corrected them later in that thread.
+- For BMI, BMR, or TDEE, copy measurements exactly as the user stated them. Do not convert, normalize, or duplicate weight or height values.
+- Use multi-component measurements only when the user explicitly gave a composite value like 5 ft 4 in.
+- Use the resolved subject context for references like "my brother", "Mark", or "his". Prefer explicit subject links over guesses.
 - Use calculator convert for both simple units and compound units like mi/hr, min/mi, mg/ml, or g/l.
 - Use the active conversation thread to resolve follow-up references such as "what about tomorrow?", "same conversion", or "what about bmr?".
 - Do not answer the user.
 - Return valid JSON only.
 - If required information is missing, omit the missing fields rather than guessing.
 
+Resolved subject context:
+` + subjectContextBlock(subjectContext) + `
 Active conversation thread:
 ` + transcriptBlock(activeTranscript) + `
 User query: ` + userQuery + `
 Tool calls:`
 }
 
-func RetryToolDecision(userQuery, activeTranscript string) string {
+func RoutedToolDecision(userQuery, activeTranscript, subjectContext, routeCandidates string) string {
+	return `Decide which candidate route to use.
+You are given a short list of candidate routes that were selected by semantic retrieval.
+Choose the best matching route, then return JSON array only with at most one tool call.
+
+Return JSON array only. Each item must be:
+- "tool": tool name
+- "args": object of structured arguments
+
+Return [] only when none of the candidate routes actually fit the user request.
+Do not list alternatives. Do not answer the user.
+
+Important:
+- Use ONLY the candidate routes below.
+- Prefer the best matching route from the candidates rather than inventing a new route.
+- If a route includes default_args, preserve them unless the user explicitly provides supported values for additional fields.
+- If required information is missing, omit the missing fields rather than guessing.
+- For follow-up requests, use the active conversation thread to resolve references such as "what about tomorrow?" or "what about bmr?".
+- For BMI, BMR, or TDEE follow-ups, carry forward explicit measurements or demographics from the active conversation thread when available.
+- For BMI, BMR, or TDEE, copy measurements exactly as the user stated them. Do not convert, normalize, or duplicate weight or height values.
+- Use multi-component measurements only when the user explicitly gave a composite value like 5 ft 4 in.
+- Use the resolved subject context for references like "my brother", "Mark", or "his". Prefer explicit subject links over guesses.
+- Return valid JSON only.
+
+Candidate routes:
+` + transcriptBlock(routeCandidates) + `
+
+Resolved subject context:
+` + subjectContextBlock(subjectContext) + `
+Active conversation thread:
+` + transcriptBlock(activeTranscript) + `
+User query: ` + userQuery + `
+Tool calls:`
+}
+
+func RetryToolDecision(userQuery, activeTranscript, subjectContext string) string {
 	return `Re-check the user's request and choose a tool only if one can help.
 Valid tools:
 - get_time: use for current or relative time/date questions
@@ -68,7 +108,10 @@ Important:
 - If the user asks about current or relative time/date/day/month/year, return [{"tool":"get_time","args":{}}], not [].
 - If the user asks for math, unit conversion, BMI, BMR, TDEE, pace, speed, or percentages, return calculator.
 - For follow-up BMI, BMR, or TDEE questions, reuse explicit measurements or demographics from the active conversation thread and omit only fields that are still missing.
+- For BMI, BMR, or TDEE, copy measurements exactly as the user stated them. Do not convert, normalize, or duplicate weight or height values.
+- Use multi-component measurements only when the user explicitly gave a composite value like 5 ft 4 in.
 - Use the active conversation thread to resolve follow-up references such as "what about tomorrow?" or "what about bmr?".
+- Use the resolved subject context for references like "my brother", "Mark", or "his". Prefer explicit subject links over guesses.
 - Do not answer the user.
 
 Examples:
@@ -79,24 +122,27 @@ Examples:
 - User query "summarize this paragraph" -> []
 
 Previous answer: []
+Resolved subject context:
+` + subjectContextBlock(subjectContext) + `
 Active conversation thread:
 ` + transcriptBlock(activeTranscript) + `
 User query: ` + userQuery + `
 Tool calls:`
 }
 
-func FinalResponse(originalUserQuery, latestUserReply, activeTranscript, decision, toolResult string) string {
+func FinalResponse(originalUserQuery, latestUserReply, activeTranscript, subjectContext, decision, toolResult string) string {
 	return fmt.Sprintf(
-		"Answer the user using ONLY the provided context. Use the active conversation thread to resolve follow-up references, but do not invent facts. If Tool result is present, you MUST use it verbatim for any factual claims. If Tool result is empty, do not guess missing facts. If the question depends on the current or relative date/time and Tool result is empty, say you need the current time/date context rather than guessing.\nOriginal user query: %s\nLatest user reply: %s\nActive conversation thread:\n%s\nDecision: %s\nTool result: %s\nProvide a concise answer.",
+		"Answer the user using ONLY the provided context. Use the active conversation thread and resolved subject context to interpret follow-up references, but do not invent facts. If Tool result is present, you MUST use it verbatim for any factual claims. If Tool result is empty, do not guess missing facts. If the question depends on the current or relative date/time and Tool result is empty, say you need the current time/date context rather than guessing.\nOriginal user query: %s\nLatest user reply: %s\nResolved subject context:\n%s\nActive conversation thread:\n%s\nDecision: %s\nTool result: %s\nProvide a concise answer.",
 		originalUserQuery,
 		latestUserReply,
+		subjectContextBlock(subjectContext),
 		transcriptBlock(activeTranscript),
 		decision,
 		toolResult,
 	)
 }
 
-func ResumeToolUpdate(originalUserQuery, activeTranscript, toolName, currentArgs string, missing []string, question, latestUserReply string) string {
+func ResumeToolUpdate(originalUserQuery, activeTranscript, subjectContext, toolName, currentArgs string, missing []string, question, latestUserReply string) string {
 	return fmt.Sprintf(
 		`Resume the pending tool call.
 You are filling missing structured fields for an already chosen tool.
@@ -111,7 +157,10 @@ Rules:
 - Preserve the same calculator operation when the pending tool is calculator.
 - Fill only fields supported by the existing tool schema.
 - If the pending calculator operation is bmi, bmr, or tdee and the latest reply is just a weight or height value, map it into the missing field instead of switching to convert.
+- For pending bmi, bmr, or tdee fields, copy measurements exactly as the user stated them. Do not convert, normalize, or duplicate weight or height values.
+- Use multi-component measurements only when the user explicitly gave a composite value like 5 ft 4 in.
 - Use the active conversation thread to decide whether the latest reply is a clarification for the pending tool or a new unrelated request.
+- Use the resolved subject context for references like "my brother", "Mark", or "his". Prefer explicit subject links over guesses.
 - If the latest user reply does not supply the missing information and instead starts a new unrelated request, return [].
 - Do not answer the user.
 - Return valid JSON only.
@@ -121,6 +170,8 @@ Examples:
 - Pending bmi with missing weight + latest reply "45kg" -> [{"tool":"calculator","args":{"operation":"bmi","height":[{"unit":"in","value":64}],"weight":[{"unit":"kg","value":45}]}}]
 
 Original user query: %s
+Resolved subject context:
+%s
 Active conversation thread:
 %s
 Pending tool: %s
@@ -132,6 +183,7 @@ Latest user reply: %s
 Updated tool call:`,
 		toolName,
 		originalUserQuery,
+		subjectContextBlock(subjectContext),
 		transcriptBlock(activeTranscript),
 		toolName,
 		currentArgs,
@@ -143,6 +195,14 @@ Updated tool call:`,
 
 func transcriptBlock(recentTranscript string) string {
 	trimmed := strings.TrimSpace(recentTranscript)
+	if trimmed == "" {
+		return "(none)"
+	}
+	return trimmed
+}
+
+func subjectContextBlock(subjectContext string) string {
+	trimmed := strings.TrimSpace(subjectContext)
 	if trimmed == "" {
 		return "(none)"
 	}

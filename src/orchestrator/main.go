@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -13,8 +14,12 @@ import (
 	pb "eve-beemo/proto/gen/proto"
 	"eve-beemo/src/orchestrator/chatctx"
 	"eve-beemo/src/orchestrator/config"
+	orchestrdb "eve-beemo/src/orchestrator/db"
 	"eve-beemo/src/orchestrator/llm"
+	"eve-beemo/src/orchestrator/memoryctx"
 	"eve-beemo/src/orchestrator/prompts"
+	"eve-beemo/src/orchestrator/routing"
+	"eve-beemo/src/orchestrator/subjectctx"
 	orchtools "eve-beemo/src/orchestrator/tools"
 	"google.golang.org/grpc"
 )
@@ -23,9 +28,12 @@ type orchestratorServer struct {
 	pb.UnimplementedOrchestratorServer
 	cfg                 config.Config
 	tools               orchtools.Executor
+	routeSelector       routeSelector
 	readGrammar         func(path string) (string, error)
 	callCompletion      func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error)
 	callFinalMessage    func(httpURL, model, prompt string, timeout time.Duration) (string, error)
+	memoryMu            sync.Mutex
+	memoryStore         *memoryctx.Store
 	historyMu           sync.Mutex
 	pendingMu           sync.Mutex
 	pendingBySession    map[string]pendingToolState
@@ -44,6 +52,15 @@ type pendingToolState struct {
 	Args              json.RawMessage `json:"args"`
 	Missing           []string        `json:"missing"`
 	Question          string          `json:"question"`
+	SubjectID         string          `json:"subject_id,omitempty"`
+}
+
+type routeSelector interface {
+	Retrieve(query string, timeout time.Duration) ([]routing.Candidate, error)
+}
+
+type routeCatalog interface {
+	Routes() []routing.Route
 }
 
 const (
@@ -51,6 +68,99 @@ const (
 	activeContextTurns        = 6
 	sessionTranscriptMessages = 24
 )
+
+func useCurrentTurnGrounding(call toolCall, currentSubjectID string) bool {
+	if strings.TrimSpace(currentSubjectID) == "" || strings.TrimSpace(call.Tool) != "calculator" {
+		return false
+	}
+
+	args := map[string]json.RawMessage{}
+	if len(call.Args) > 0 {
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return false
+		}
+	}
+
+	var operation string
+	if err := json.Unmarshal(args["operation"], &operation); err != nil {
+		return false
+	}
+
+	switch strings.ToLower(strings.TrimSpace(operation)) {
+	case "bmi", "bmr", "tdee":
+		return true
+	default:
+		return false
+	}
+}
+
+func explicitObservationAttrs(text string) map[string]struct{} {
+	patch, ok, err := orchtools.ExtractCalculatorObservationPatch(text)
+	if err != nil || !ok {
+		return nil
+	}
+	values := map[string]json.RawMessage{}
+	if err := json.Unmarshal(patch, &values); err != nil {
+		return nil
+	}
+	attrs := make(map[string]struct{}, len(values))
+	for attr, raw := range values {
+		if len(raw) == 0 {
+			continue
+		}
+		attrs[attr] = struct{}{}
+	}
+	return attrs
+}
+
+func conflictingMemoryAttrs(conflicts map[string][]memoryctx.Observation, explicitAttrs map[string]struct{}, orderedAttrs []string) []string {
+	if len(conflicts) == 0 {
+		return nil
+	}
+	selected := make([]string, 0, len(conflicts))
+	seen := map[string]struct{}{}
+	for _, attr := range orderedAttrs {
+		if _, ok := conflicts[attr]; !ok {
+			continue
+		}
+		if _, explicit := explicitAttrs[attr]; explicit {
+			continue
+		}
+		selected = append(selected, attr)
+		seen[attr] = struct{}{}
+	}
+	for attr := range conflicts {
+		if _, explicit := explicitAttrs[attr]; explicit {
+			continue
+		}
+		if _, ok := seen[attr]; ok {
+			continue
+		}
+		selected = append(selected, attr)
+	}
+	return selected
+}
+
+func filteredSnapshot(snapshot map[string]json.RawMessage, excluded []string) map[string]json.RawMessage {
+	if len(snapshot) == 0 {
+		return nil
+	}
+	blocked := make(map[string]struct{}, len(excluded))
+	for _, attr := range excluded {
+		blocked[attr] = struct{}{}
+	}
+	filtered := make(map[string]json.RawMessage, len(snapshot))
+	for attr, raw := range snapshot {
+		if _, blockedAttr := blocked[attr]; blockedAttr {
+			continue
+		}
+		filtered[attr] = cloneRawMessage(raw)
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	return filtered
+}
 
 func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb.ChatResponse, error) {
 	start := time.Now()
@@ -105,14 +215,32 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 		callCompletion = llm.CallChatWithGrammar
 	}
 	callTimeout := time.Duration(s.cfg.LLMTimeoutMs) * time.Millisecond
+	embeddingTimeout := time.Duration(s.cfg.EmbeddingTimeoutMs) * time.Millisecond
 	activeContext := chatctx.Build(effectiveMessages, contextSelectionMessages, activeContextTurns)
+	subjectContext := subjectctx.Resolve(effectiveMessages)
+	subjectSummary := subjectContext.Summary()
+	memoryStore := s.getMemoryStore()
+	routingQuery := strings.TrimSpace(activeContext.UserEvidence)
+	if routingQuery == "" {
+		routingQuery = userQuery
+	}
 
 	text := ""
 	fromPending := false
 	pending, hasPending := s.getPending(req.GetSessionId())
+	currentSubjectID := subjectContext.CurrentSubjectID
+	if currentSubjectID == "" && hasPending && strings.TrimSpace(pending.SubjectID) != "" {
+		currentSubjectID = strings.TrimSpace(pending.SubjectID)
+		if strings.TrimSpace(subjectSummary) == "" {
+			subjectSummary = "current_subject_id: " + currentSubjectID
+		}
+	}
 	originQuery := userQuery
 	if hasPending && strings.TrimSpace(pending.OriginalUserQuery) != "" {
 		originQuery = pending.OriginalUserQuery
+	}
+	if err := memoryStore.RememberUserMessage(req.GetSessionId(), currentSubjectID, userQuery); err != nil {
+		fmt.Printf("orch.chat memory_ingest session=%s status=error err=%v\n", req.GetSessionId(), err)
 	}
 	if hasPending {
 		if filledCall, ok, ferr := orchtools.TryFillPending(orchtools.PendingFillRequest{
@@ -136,6 +264,7 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 		resumePrompt := prompts.ResumeToolUpdate(
 			pending.OriginalUserQuery,
 			activeContext.Transcript,
+			subjectSummary,
 			pending.Tool,
 			string(pending.Args),
 			pending.Missing,
@@ -196,8 +325,24 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 		}
 	}
 
+	var routeCandidates []routing.Candidate
+	var catalogRoutes []routing.Route
+	if selector, ok := s.routeSelector.(routeCatalog); ok {
+		catalogRoutes = selector.Routes()
+	}
 	if strings.TrimSpace(text) == "" {
-		prompt := prompts.ToolDecision(userQuery, activeContext.Transcript)
+		prompt := prompts.ToolDecision(userQuery, activeContext.Transcript, subjectSummary)
+		if s.routeSelector != nil {
+			candidates, rerr := s.routeSelector.Retrieve(routingQuery, embeddingTimeout)
+			if rerr != nil {
+				fmt.Printf("orch.chat route_retrieval session=%s status=fallback err=%v\n", req.GetSessionId(), rerr)
+			} else if len(candidates) > 0 {
+				routeCandidates = candidates
+				routeBlock := routing.FormatCandidates(candidates)
+				fmt.Printf("orch.chat route_candidates session=%s routes=%v\n", req.GetSessionId(), candidateIDs(candidates))
+				prompt = prompts.RoutedToolDecision(userQuery, activeContext.Transcript, subjectSummary, routeBlock)
+			}
+		}
 		var err error
 		text, err = callCompletion(s.cfg.LLMHTTPURL, s.cfg.LLMModel, prompt, grammar, callTimeout)
 		if err != nil {
@@ -227,7 +372,7 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 		return nil, err
 	}
 	if len(toolCalls) == 0 {
-		retryPrompt := prompts.RetryToolDecision(userQuery, activeContext.Transcript)
+		retryPrompt := prompts.RetryToolDecision(userQuery, activeContext.Transcript, subjectSummary)
 		retryText, rerr := callCompletion(s.cfg.LLMHTTPURL, s.cfg.LLMModel, retryPrompt, grammar, callTimeout)
 		if rerr != nil {
 			fmt.Printf("orch.chat retry_decision session=%s status=skipped err=%v\n", req.GetSessionId(), rerr)
@@ -249,13 +394,107 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 		}
 	}
 	for _, tool := range toolCalls {
+		explicitTool := tool
 		if !fromPending {
-			groundedTool, gerr := orchtools.GroundCall(evidenceText, toPlannedCall(tool))
+			groundingEvidence := evidenceText
+			if useCurrentTurnGrounding(tool, currentSubjectID) {
+				groundingEvidence = userQuery
+			}
+			groundedTool, gerr := orchtools.GroundCall(groundingEvidence, toPlannedCall(tool))
 			if gerr != nil {
 				fmt.Printf("orch.chat done session=%s status=error reason=tool_grounding ms=%d err=%v\n", req.GetSessionId(), time.Since(start).Milliseconds(), gerr)
 				return nil, gerr
 			}
-			tool = fromPlannedCall(groundedTool)
+			explicitTool = fromPlannedCall(groundedTool)
+		}
+		matchedRoute, matched, merr := routing.MatchCall(routeCandidates, catalogRoutes, explicitTool.Tool, explicitTool.Args)
+		if merr != nil {
+			fmt.Printf("orch.chat done session=%s status=error reason=route_match ms=%d err=%v\n", req.GetSessionId(), time.Since(start).Milliseconds(), merr)
+			return nil, merr
+		}
+		memoryAttrs := []string(nil)
+		memoryRead := false
+		memoryWrite := false
+		if matched {
+			memoryAttrs = append(memoryAttrs, matchedRoute.Memory.Attrs...)
+			memoryRead = matchedRoute.Memory.Read
+			memoryWrite = matchedRoute.Memory.Write
+		}
+		if currentSubjectID != "" && memoryWrite {
+			if err := memoryStore.RememberUserMessageWithContext(req.GetSessionId(), currentSubjectID, userQuery, memoryctx.RecordContext{
+				Domain:     matchedRoute.Domain,
+				Route:      matchedRoute.ID,
+				SourceTurn: userQuery,
+				SourceType: memoryctx.SourceTypeExplicitUser,
+			}, memoryAttrs...); err != nil {
+				fmt.Printf("orch.chat memory_ingest session=%s status=error err=%v\n", req.GetSessionId(), err)
+			}
+		}
+		snapshot := map[string]json.RawMessage(nil)
+		snapshotDetails := memoryctx.SnapshotDetails{}
+		if currentSubjectID != "" && memoryRead {
+			snapshotDetails = memoryStore.SnapshotDetails(req.GetSessionId(), currentSubjectID, memoryAttrs...)
+			if snapshotDetails.Err != nil {
+				fmt.Printf("orch.chat done session=%s status=error reason=memory_snapshot ms=%d err=%v\n", req.GetSessionId(), time.Since(start).Milliseconds(), snapshotDetails.Err)
+				return nil, snapshotDetails.Err
+			}
+			snapshot = snapshotDetails.Values
+		}
+		if currentSubjectID != "" && memoryRead {
+			conflictAttrs := conflictingMemoryAttrs(snapshotDetails.Conflicts, explicitObservationAttrs(userQuery), memoryAttrs)
+			if len(conflictAttrs) > 0 {
+				provisionalTool, rerr := orchtools.ResolveCalculatorCall(
+					toPlannedCall(explicitTool),
+					userQuery,
+					filteredSnapshot(snapshot, conflictAttrs),
+				)
+				if rerr != nil {
+					fmt.Printf("orch.chat done session=%s status=error reason=tool_resolve_conflict ms=%d err=%v\n", req.GetSessionId(), time.Since(start).Milliseconds(), rerr)
+					return nil, rerr
+				}
+				question := orchtools.ClarificationQuestion(conflictAttrs)
+				s.setPending(req.GetSessionId(), pendingToolState{
+					OriginalUserQuery: originQuery,
+					Tool:              explicitTool.Tool,
+					Args:              cloneRawMessage(provisionalTool.Args),
+					Missing:           append([]string(nil), conflictAttrs...),
+					Question:          question,
+					SubjectID:         currentSubjectID,
+				})
+				s.setTranscript(req.GetSessionId(), appendAssistantMessage(effectiveMessages, question))
+				s.appendHistory(&historyEntry{
+					Timestamp:  time.Now().Format(time.RFC3339),
+					SessionID:  req.GetSessionId(),
+					UserQuery:  userQuery,
+					Decision:   text,
+					Tools:      toolsRequested,
+					ToolResult: fmt.Sprintf("status=needs_input missing=%v question=%s", conflictAttrs, question),
+					Response:   question,
+					Status:     "needs_input",
+				})
+				fmt.Printf("orch.chat done session=%s status=needs_input tool=%s missing=%v reason=memory_conflict ms=%d\n", req.GetSessionId(), explicitTool.Tool, conflictAttrs, time.Since(start).Milliseconds())
+				return &pb.ChatResponse{Text: question}, nil
+			}
+		}
+		resolvedTool, rerr := orchtools.ResolveCalculatorCall(
+			toPlannedCall(explicitTool),
+			userQuery,
+			snapshot,
+		)
+		if rerr != nil {
+			fmt.Printf("orch.chat done session=%s status=error reason=tool_resolve ms=%d err=%v\n", req.GetSessionId(), time.Since(start).Milliseconds(), rerr)
+			return nil, rerr
+		}
+		tool = fromPlannedCall(resolvedTool)
+		if currentSubjectID != "" && memoryWrite {
+			if err := memoryStore.RememberToolCallWithContext(req.GetSessionId(), currentSubjectID, resolvedTool, memoryctx.RecordContext{
+				Domain:     matchedRoute.Domain,
+				Route:      matchedRoute.ID,
+				SourceTurn: userQuery,
+				SourceType: memoryctx.SourceTypeResolvedToolArgs,
+			}, memoryAttrs...); err != nil {
+				fmt.Printf("orch.chat memory_store session=%s status=error err=%v\n", req.GetSessionId(), err)
+			}
 		}
 		fmt.Printf("orch.chat tool_call session=%s tool=%s args=%s\n", req.GetSessionId(), tool.Tool, string(tool.Args))
 		result, err := s.tools.Execute(ctx, orchtools.Request{
@@ -283,6 +522,7 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 				Args:              cloneRawMessage(tool.Args),
 				Missing:           append([]string(nil), result.Missing...),
 				Question:          result.Question,
+				SubjectID:         currentSubjectID,
 			})
 			s.setTranscript(req.GetSessionId(), appendAssistantMessage(effectiveMessages, result.Question))
 			s.appendHistory(&historyEntry{
@@ -302,7 +542,7 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 		toolResult += fmt.Sprintf("tool=%s result=%s\n", result.Action, result.Output)
 	}
 
-	followup := prompts.FinalResponse(originQuery, userQuery, activeContext.Transcript, text, toolResult)
+	followup := prompts.FinalResponse(originQuery, userQuery, activeContext.Transcript, subjectSummary, text, toolResult)
 	callFinalMessage := s.callFinalMessage
 	if callFinalMessage == nil {
 		callFinalMessage = llm.CallOnce
@@ -464,6 +704,15 @@ func (s *orchestratorServer) resolveMessages(sessionID string, incoming []*pb.Ch
 	return trimMessages(combined)
 }
 
+func (s *orchestratorServer) getMemoryStore() *memoryctx.Store {
+	s.memoryMu.Lock()
+	defer s.memoryMu.Unlock()
+	if s.memoryStore == nil {
+		s.memoryStore = memoryctx.NewStore()
+	}
+	return s.memoryStore
+}
+
 func cloneRawMessage(raw json.RawMessage) json.RawMessage {
 	if len(raw) == 0 {
 		return json.RawMessage(`{}`)
@@ -556,6 +805,14 @@ func toolNames(calls []toolCall) []string {
 	return names
 }
 
+func candidateIDs(candidates []routing.Candidate) []string {
+	ids := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		ids = append(ids, candidate.Route.ID)
+	}
+	return ids
+}
+
 func readGrammarFile(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -614,6 +871,19 @@ func main() {
 	fmt.Println("eve-orchestrator: starting")
 
 	cfg := config.Load()
+	var memoryStore *memoryctx.Store
+	var routeDB *sql.DB
+	if strings.TrimSpace(cfg.DatabaseURL) != "" {
+		db, err := orchestrdb.OpenAndMigrate(cfg.DatabaseURL, cfg.DBMigrationsDir)
+		if err != nil {
+			fmt.Printf("orchestrator status=error database_url=%q err=%v\n", cfg.DatabaseURL, err)
+			return
+		}
+		defer db.Close()
+		routeDB = db
+		memoryStore = memoryctx.NewPostgresStore(db)
+		fmt.Printf("orchestrator status=database_ok migrations_dir=%s\n", cfg.DBMigrationsDir)
+	}
 
 	orchAddr := ":5013"
 	if cfg.OrchAddr != "" {
@@ -626,9 +896,20 @@ func main() {
 	}
 
 	grpcServer := grpc.NewServer()
+	selector := routing.NewSelectorWithDB(cfg.RoutesPath, cfg.EmbeddingHTTPURL, cfg.EmbeddingModel, cfg.RouteTopK, cfg.RouteDomainTopK, routeDB)
+	if selector.Enabled() {
+		timeout := time.Duration(cfg.EmbeddingTimeoutMs) * time.Millisecond
+		if err := selector.Warmup(timeout); err != nil {
+			fmt.Printf("orchestrator status=error route_warmup err=%v\n", err)
+			return
+		}
+		fmt.Printf("orchestrator status=route_warmup_ok routes_path=%s\n", cfg.RoutesPath)
+	}
 	pb.RegisterOrchestratorServer(grpcServer, &orchestratorServer{
-		cfg:   cfg,
-		tools: orchtools.NewLocalExecutor(),
+		cfg:           cfg,
+		tools:         orchtools.NewLocalExecutor(),
+		memoryStore:   memoryStore,
+		routeSelector: selector,
 	})
 	fmt.Printf("orchestrator status=listening addr=%s\n", orchAddr)
 	if err := grpcServer.Serve(lis); err != nil {

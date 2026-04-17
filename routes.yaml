@@ -1,0 +1,267 @@
+domains:
+  - id: time
+    title: Time and date
+    summary: Current and relative time and date handling.
+    when_to_use:
+      - Use for current time, date, weekday, month, and year requests.
+      - Use for relative date requests such as tomorrow, yesterday, or a number of days from today.
+    when_not_to_use:
+      - Do not use for arithmetic or unit conversion requests.
+    example_requests:
+      - what time is it?
+      - what date will it be five days from today?
+
+  - id: calculator
+    title: Calculator
+    summary: Arithmetic, conversions, percentage calculations, and health calculations.
+    when_to_use:
+      - Use for math, percentage, conversion, BMI, BMR, and TDEE requests.
+    when_not_to_use:
+      - Do not use for time or date questions.
+    example_requests:
+      - what is 20% of 85?
+      - convert 5 foot 4 to centimeters
+      - what is my bmi?
+
+routes:
+  - id: get_time.current_or_relative
+    domain: time
+    title: Current or relative date and time
+    summary: Answer questions about the current time, date, day, month, year, or relative dates such as tomorrow, yesterday, or a number of days from today.
+    when_to_use:
+      - The user asks what time or date it is now.
+      - The user asks for a relative day or date such as tomorrow, yesterday, next week, or five days from today.
+      - A follow-up refers to a relative date or time and needs current date context.
+    when_not_to_use:
+      - The user asks for arithmetic or unit conversion.
+      - The user wants a summary or general explanation rather than the current date or time.
+    example_requests:
+      - what time is it?
+      - what day is tomorrow?
+      - what date will it be five days from today?
+      - what month is it right now?
+    required_fields: []
+    args_guidance: Use the get_time tool with empty args.
+    default_args: {}
+    handler:
+      type: tool
+      target: get_time
+
+  - id: calculator.expression
+    domain: calculator
+    title: Arithmetic expression
+    summary: Evaluate arithmetic expressions and straightforward math questions.
+    when_to_use:
+      - The user asks to calculate or evaluate a math expression.
+      - The user asks basic arithmetic without needing a specialized calculator route.
+    when_not_to_use:
+      - The user asks for a percentage-specific operation with clear percent semantics.
+      - The user asks for unit conversion, BMI, BMR, or TDEE.
+    example_requests:
+      - what is 12 divided by 4?
+      - calculate 18 * (7 + 3)
+      - what is 144 / 12?
+    required_fields:
+      - expression
+    args_guidance: Set operation to expression and include a concrete arithmetic expression.
+    default_args:
+      operation: expression
+    handler:
+      type: tool
+      target: calculator
+
+  - id: calculator.convert
+    domain: calculator
+    title: Unit conversion
+    summary: Convert between units, including compound units such as speed, pace, and chemistry concentration.
+    when_to_use:
+      - The user asks to convert measurements from one unit to another.
+      - The user asks for pace or speed conversion such as min/mi and mi/hr.
+      - The user asks for chemistry-style rate conversions such as mg/ml to g/l.
+    when_not_to_use:
+      - The user explicitly asks for BMI, BMR, or TDEE.
+      - The user asks for a pure arithmetic percentage question.
+    example_requests:
+      - convert 5 foot 4 to centimeters
+      - what is 10 miles per hour in minutes per mile?
+      - convert 5 mg/ml to g/l
+    required_fields:
+      - input_or_value
+      - to_unit
+    args_guidance: Set operation to convert. Use input arrays when multiple measurement parts are present, otherwise use value with from_unit and to_unit.
+    default_args:
+      operation: convert
+    handler:
+      type: tool
+      target: calculator
+
+  - id: calculator.bmi
+    domain: calculator
+    title: Body mass index
+    summary: Calculate BMI from weight and height.
+    when_to_use:
+      - The user explicitly asks for BMI.
+      - A follow-up asks for BMI using previously stated measurements.
+    when_not_to_use:
+      - The user asks for BMR or TDEE.
+      - The user asks only for unit conversion.
+    example_requests:
+      - what is my bmi at 45kg and 64 inches?
+      - calculate bmi for 101 pounds and 5 foot 4
+      - what about bmi?
+    required_fields:
+      - weight
+      - height
+    args_guidance: Set operation to bmi. Include weight and height if present; omit missing fields rather than guessing.
+    default_args:
+      operation: bmi
+    memory:
+      read: true
+      write: true
+      attrs:
+        - weight
+        - height
+      scope: subject
+    handler:
+      type: tool
+      target: calculator
+
+  - id: calculator.bmr
+    domain: calculator
+    title: Basal metabolic rate
+    summary: Calculate BMR from weight, height, age, and gender.
+    when_to_use:
+      - The user explicitly asks for BMR.
+      - A follow-up asks for BMR using previously stated demographics or measurements.
+    when_not_to_use:
+      - The user asks for TDEE, which also needs activity level.
+      - The user asks for BMI only.
+    example_requests:
+      - what is my bmr if i am 34, female, 45kg, and 64 inches?
+      - calculate bmr
+      - what about bmr?
+    required_fields:
+      - weight
+      - height
+      - age_years
+      - gender
+    args_guidance: Set operation to bmr. Carry forward explicit age, gender, weight, and height from the active thread when available.
+    default_args:
+      operation: bmr
+    memory:
+      read: true
+      write: true
+      attrs:
+        - weight
+        - height
+        - age_years
+        - gender
+      scope: subject
+    handler:
+      type: tool
+      target: calculator
+
+  - id: calculator.tdee
+    domain: calculator
+    title: Total daily energy expenditure
+    summary: Calculate TDEE from BMR inputs plus activity level.
+    when_to_use:
+      - The user explicitly asks for TDEE.
+      - A follow-up asks for TDEE after sharing BMR-related measurements.
+    when_not_to_use:
+      - The user asks for BMR only.
+      - The user asks for BMI or a unit conversion.
+    example_requests:
+      - what is my tdee if i am moderately active?
+      - calculate tdee
+      - what about tdee?
+    required_fields:
+      - weight
+      - height
+      - age_years
+      - gender
+      - activity_level
+    args_guidance: Set operation to tdee. Reuse explicit BMR fields from the active thread and only omit fields that are still missing.
+    default_args:
+      operation: tdee
+    memory:
+      read: true
+      write: true
+      attrs:
+        - weight
+        - height
+        - age_years
+        - gender
+        - activity_level
+      scope: subject
+    handler:
+      type: tool
+      target: calculator
+
+  - id: calculator.percent_of
+    domain: calculator
+    title: Percent of a value
+    summary: Compute a percentage of a number, such as 20 percent of 85.
+    when_to_use:
+      - The user asks what a percentage of a value is.
+    when_not_to_use:
+      - The user asks how much a value changed by a percent.
+      - The user asks what percentage one value is of another.
+    example_requests:
+      - what is 20% of 85?
+      - what is 15 percent of 240?
+    required_fields:
+      - percent
+      - value
+    args_guidance: Set operation to percent_of with percent and value.
+    default_args:
+      operation: percent_of
+    handler:
+      type: tool
+      target: calculator
+
+  - id: calculator.percent_change
+    domain: calculator
+    title: Percent increase or decrease
+    summary: Increase or decrease a value by a percentage.
+    when_to_use:
+      - The user asks to increase or decrease a value by some percent.
+      - The user asks how much a number becomes after a percent change.
+    when_not_to_use:
+      - The user asks what percentage one value is of another.
+      - The user asks for percent of a value without change direction.
+    example_requests:
+      - increase 85 by 12 percent
+      - decrease 120 by 15%
+    required_fields:
+      - value
+      - percent
+      - direction
+    args_guidance: Set operation to percent_change and include direction as increase or decrease.
+    default_args:
+      operation: percent_change
+    handler:
+      type: tool
+      target: calculator
+
+  - id: calculator.percent_ratio
+    domain: calculator
+    title: Percentage ratio
+    summary: Determine what percentage one value is of another.
+    when_to_use:
+      - The user asks what percent one number is of another.
+    when_not_to_use:
+      - The user asks for a percent increase or decrease.
+      - The user asks for a percent of a value.
+    example_requests:
+      - what percent is 18 of 24?
+      - 30 is what percent of 50?
+    required_fields:
+      - part
+      - whole
+    args_guidance: Set operation to percent_ratio and include part and whole.
+    default_args:
+      operation: percent_ratio
+    handler:
+      type: tool
+      target: calculator

@@ -1,0 +1,25 @@
+services:
+
+  pensieve:
+    container_name: pensieve
+    hostname: pensieve
+    image: pgvector/pgvector:pg16
+    stdin_open: true
+    tty: true
+    ports:
+      - "5438:5432"
+    environment:
+      POSTGRES_USER: ${PENSIEVE_POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${PENSIEVE_POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${PENSIEVE_POSTGRES_DB:-beemo}
+    volumes:
+      - pensieve-vol:/var/lib/postgresql/data
+      - ./compose/pensieve/init:/docker-entrypoint-initdb.d:ro
+    logging:
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  pensieve-vol:
+    name: pensieve-vol

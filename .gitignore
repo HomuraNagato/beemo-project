@@ -3,6 +3,9 @@
 library
 models
 
+# individual files
+memory
+
 *~
 
 .env

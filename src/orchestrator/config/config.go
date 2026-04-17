@@ -11,6 +11,15 @@ type Config struct {
 	LLMHTTPURL          string
 	LLMModel            string
 	LLMTimeoutMs        int
+	DatabaseURL         string
+	DBMigrationsDir     string
+	EmbeddingAddr       string
+	EmbeddingHTTPURL    string
+	EmbeddingModel      string
+	EmbeddingTimeoutMs  int
+	RoutesPath          string
+	RouteTopK           int
+	RouteDomainTopK     int
 	OrchAddr            string
 	DecisionGrammarPath string
 	HistoryDir          string
@@ -27,12 +36,26 @@ func Load() Config {
 	if llmHTTPURL == "" && llmAddr != "" {
 		llmHTTPURL = "http://" + strings.TrimSpace(llmAddr) + "/v1/chat/completions"
 	}
+	embeddingAddr := os.Getenv("EMBEDDING_ADDR")
+	embeddingHTTPURL := os.Getenv("EMBEDDING_HTTP_URL")
+	if embeddingHTTPURL == "" && embeddingAddr != "" {
+		embeddingHTTPURL = "http://" + strings.TrimSpace(embeddingAddr) + "/v1/embeddings"
+	}
 
 	return Config{
 		LLMAddr:             llmAddr,
 		LLMHTTPURL:          llmHTTPURL,
 		LLMModel:            os.Getenv("REASONING_MODEL"),
 		LLMTimeoutMs:        atoiOrDefault(os.Getenv("LLM_TIMEOUT_MS"), 120000),
+		DatabaseURL:         os.Getenv("DATABASE_URL"),
+		DBMigrationsDir:     getenvOrDefault("DB_MIGRATIONS_DIR", "db/migrations"),
+		EmbeddingAddr:       embeddingAddr,
+		EmbeddingHTTPURL:    embeddingHTTPURL,
+		EmbeddingModel:      os.Getenv("EMBEDDING_MODEL"),
+		EmbeddingTimeoutMs:  atoiOrDefault(os.Getenv("EMBEDDING_TIMEOUT_MS"), 30000),
+		RoutesPath:          getenvOrDefault("ROUTES_PATH", "routes.yaml"),
+		RouteTopK:           atoiOrDefault(os.Getenv("ROUTE_TOP_K"), 5),
+		RouteDomainTopK:     atoiOrDefault(os.Getenv("ROUTE_DOMAIN_TOP_K"), 2),
 		OrchAddr:            os.Getenv("ORCH_ADDR"),
 		DecisionGrammarPath: getenvOrDefault("DECISION_GRAMMAR_PATH", "scripts/grammars/tool_list.gbnf"),
 		HistoryDir:          getenvOrDefault("HISTORY_DIR", "memory"),
