@@ -1,9 +1,14 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"math"
+	"net/http"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -266,6 +271,236 @@ func TestCalculatorNeedsInput(t *testing.T) {
 				t.Fatalf("unexpected missing fields: got %#v want %#v", result.Missing, tt.missing)
 			}
 		})
+	}
+}
+
+func TestWeatherOperations(t *testing.T) {
+	t.Parallel()
+
+	exec := NewLocalExecutorWithWeather(WeatherConfig{
+		HTTPURL:           "https://api.open-meteo.com/v1/forecast",
+		Latitude:          "40.7128",
+		Longitude:         "-74.0060",
+		Timezone:          "America/New_York",
+		LocationName:      "New York",
+		TemperatureUnit:   "fahrenheit",
+		WindSpeedUnit:     "mph",
+		PrecipitationUnit: "inch",
+		Now: func() time.Time {
+			return time.Date(2026, 4, 23, 12, 0, 0, 0, time.FixedZone("EDT", -4*60*60))
+		},
+		Fetch: func(ctx context.Context, requestURL string) ([]byte, error) {
+			return []byte(`{
+				"timezone":"America/New_York",
+				"current_units":{"temperature_2m":"°F"},
+				"current":{"time":"2026-04-23T12:00","temperature_2m":71.6,"weather_code":2},
+				"hourly_units":{"temperature_2m":"°F","precipitation_probability":"%"},
+				"hourly":{
+					"time":["2026-04-23T17:00","2026-04-23T18:00","2026-04-23T19:00","2026-04-24T06:00"],
+					"temperature_2m":[68.2,66.0,64.5,57.3],
+					"precipitation_probability":[15,25,35,45],
+					"weather_code":[2,3,61,3]
+				},
+				"daily_units":{"temperature_2m_max":"°F","temperature_2m_min":"°F","precipitation_probability_max":"%","precipitation_sum":"in"},
+				"daily":{
+					"time":["2026-04-23","2026-04-24"],
+					"weather_code":[3,61],
+					"temperature_2m_max":[73.4,69.1],
+					"temperature_2m_min":[58.2,55.0],
+					"precipitation_probability_max":[20,65],
+					"precipitation_sum":[0.02,0.31]
+				}
+			}`), nil
+		},
+	})
+
+	tests := []struct {
+		name   string
+		args   map[string]any
+		output string
+	}{
+		{
+			name:   "today_general",
+			args:   map[string]any{"when": "today", "focus": "general", "location_name": "New York", "latitude": "40.7128", "longitude": "-74.0060", "timezone": "America/New_York"},
+			output: "Today in New York: overcast skies, high 73.4°F, low 58.2°F, rain chance up to 20%.",
+		},
+		{
+			name:   "current_temperature",
+			args:   map[string]any{"when": "current", "focus": "temperature", "location_name": "New York", "latitude": "40.7128", "longitude": "-74.0060", "timezone": "America/New_York"},
+			output: "Current temperature in New York: 71.6°F.",
+		},
+		{
+			name:   "today_rain",
+			args:   map[string]any{"when": "today", "focus": "rain", "location_name": "New York", "latitude": "40.7128", "longitude": "-74.0060", "timezone": "America/New_York"},
+			output: "Rain looks unlikely in New York today. Chance up to 20% with about 0.02 in expected.",
+		},
+		{
+			name:   "tomorrow_general",
+			args:   map[string]any{"when": "tomorrow", "focus": "general", "location_name": "New York", "latitude": "40.7128", "longitude": "-74.0060", "timezone": "America/New_York"},
+			output: "Tomorrow in New York: rain, high 69.1°F, low 55°F, rain chance up to 65%.",
+		},
+		{
+			name:   "evening_general",
+			args:   map[string]any{"when": "evening", "focus": "general", "location_name": "New York", "latitude": "40.7128", "longitude": "-74.0060", "timezone": "America/New_York"},
+			output: "This evening in New York around 6 PM: overcast skies and 66°F with a 25% chance of precipitation.",
+		},
+		{
+			name:   "tomorrow_temperature_at_6am",
+			args:   map[string]any{"when": "tomorrow", "focus": "temperature", "hour_local": 6, "location_name": "New York", "latitude": "40.7128", "longitude": "-74.0060", "timezone": "America/New_York"},
+			output: "Tomorrow in New York at 6 AM: 57.3°F.",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			raw, err := json.Marshal(tt.args)
+			if err != nil {
+				t.Fatalf("marshal args: %v", err)
+			}
+			result, err := exec.Execute(context.Background(), Request{
+				Action: "weather",
+				Args:   raw,
+			})
+			if err != nil {
+				t.Fatalf("Execute returned error: %v", err)
+			}
+			if got := result.Output; got != tt.output {
+				t.Fatalf("unexpected output: got %q want %q", got, tt.output)
+			}
+		})
+	}
+}
+
+func TestGeocodeWeatherLocationRetriesNormalizedVariants(t *testing.T) {
+	t.Parallel()
+
+	queries := make([]string, 0, 4)
+	location, err := GeocodeWeatherLocation(context.Background(), WeatherConfig{
+		GeocodingURL: "https://geocoding-api.open-meteo.com/v1/search",
+		Fetch: func(ctx context.Context, requestURL string) ([]byte, error) {
+			u, err := url.Parse(requestURL)
+			if err != nil {
+				return nil, err
+			}
+			query := u.Query().Get("name")
+			queries = append(queries, query)
+			if query == "new york city" {
+				return []byte(`{"results":[{"name":"New York","latitude":40.7128,"longitude":-74.0060,"timezone":"America/New_York","country":"United States"}]}`), nil
+			}
+			return []byte(`{"results":[]}`), nil
+		},
+	}, "new york city, ny")
+	if err != nil {
+		t.Fatalf("GeocodeWeatherLocation returned error: %v", err)
+	}
+	if got, want := location.Name, "New York, United States"; got != want {
+		t.Fatalf("unexpected location name: got %q want %q", got, want)
+	}
+	if got, want := strings.Join(queries, " -> "), "new york city, ny -> new york city"; got != want {
+		t.Fatalf("unexpected geocode retry order: got %q want %q", got, want)
+	}
+}
+
+func TestResolveOlderSisterCallFillsQueryAndWebSearch(t *testing.T) {
+	t.Parallel()
+
+	call, err := ResolveOlderSisterCall(PlannedCall{
+		Action: "older_sister",
+		Args:   []byte(`{}`),
+	}, "search the internet for current vllm embedding support")
+	if err != nil {
+		t.Fatalf("ResolveOlderSisterCall returned error: %v", err)
+	}
+	got := string(call.Args)
+	for _, fragment := range []string{
+		`"query":"search the internet for current vllm embedding support"`,
+		`"web_search":true`,
+	} {
+		if !strings.Contains(got, fragment) {
+			t.Fatalf("resolved older_sister args missing %s in %s", fragment, got)
+		}
+	}
+}
+
+func TestOlderSisterCallsResponsesAPIWithWebSearch(t *testing.T) {
+	var sawAuth bool
+	var sawWebSearch bool
+	originalDo := olderSisterHTTPDo
+	t.Cleanup(func() {
+		olderSisterHTTPDo = originalDo
+	})
+	olderSisterHTTPDo = func(r *http.Request) (*http.Response, error) {
+		if got, want := r.Header.Get("Authorization"), "Bearer test-key"; got == want {
+			sawAuth = true
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		if tools, ok := payload["tools"].([]any); ok && len(tools) > 0 {
+			if first, ok := tools[0].(map[string]any); ok && first["type"] == "web_search" {
+				sawWebSearch = true
+			}
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(bytes.NewBufferString(`{"output":[{"type":"message","content":[{"type":"output_text","text":"Older sister answer."}]}]}`)),
+			Header:     make(http.Header),
+		}, nil
+	}
+
+	exec := NewLocalExecutorWithConfigs(WeatherConfig{}, OlderSisterConfig{
+		APIKey:    "test-key",
+		HTTPURL:   "https://api.openai.com/v1/responses",
+		Model:     "gpt-5-mini",
+		TimeoutMs: 500,
+		WebSearch: true,
+	})
+	raw, err := json.Marshal(map[string]any{
+		"query":      "what changed in the latest docs?",
+		"web_search": true,
+	})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	result, err := exec.Execute(context.Background(), Request{Action: "older_sister", Args: raw})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if got, want := result.Output, "Older sister answer."; got != want {
+		t.Fatalf("unexpected output: got %q want %q", got, want)
+	}
+	if !sawAuth {
+		t.Fatal("expected Authorization header")
+	}
+	if !sawWebSearch {
+		t.Fatal("expected web_search tool in request")
+	}
+}
+
+func TestResolveCalculatorCallFillsConvertArgsFromExplicitText(t *testing.T) {
+	t.Parallel()
+
+	call, err := ResolveCalculatorCall(PlannedCall{
+		Action: "calculator",
+		Args:   []byte(`{"operation":"convert"}`),
+	}, "what is 103lbs in kg?", nil)
+	if err != nil {
+		t.Fatalf("ResolveCalculatorCall returned error: %v", err)
+	}
+
+	got := string(call.Args)
+	for _, fragment := range []string{
+		`"operation":"convert"`,
+		`"input":[{"unit":"lb","value":103}]`,
+		`"to_unit":"kg"`,
+	} {
+		if !strings.Contains(got, fragment) {
+			t.Fatalf("resolved convert args missing %s in %s", fragment, got)
+		}
 	}
 }
 

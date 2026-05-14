@@ -18,6 +18,10 @@ func ResolveCalculatorCall(call PlannedCall, explicitText string, snapshot map[s
 		}
 	}
 
+	if strings.ToLower(strings.TrimSpace(stringFieldRaw(args["operation"]))) == "convert" {
+		return resolveConvertCall(call, args, explicitText)
+	}
+
 	attrs := relevantAttrsForOperation(stringFieldRaw(args["operation"]))
 	if len(attrs) == 0 {
 		return call, nil
@@ -68,6 +72,128 @@ func ResolveCalculatorCall(call PlannedCall, explicitText string, snapshot map[s
 		return call, nil
 	}
 
+	updated, err := json.Marshal(args)
+	if err != nil {
+		return PlannedCall{}, err
+	}
+	call.Args = updated
+	return call, nil
+}
+
+func ResolveWeatherCall(call PlannedCall, explicitText string) (PlannedCall, error) {
+	if strings.TrimSpace(call.Action) != "weather" {
+		return call, nil
+	}
+
+	args, err := parseWeatherArgs(call.Args)
+	if err != nil {
+		return PlannedCall{}, fmt.Errorf("invalid weather args for resolution: %w", err)
+	}
+	update := extractWeatherUpdate(explicitText)
+	if strings.TrimSpace(args.When) == "" {
+		if value, ok := update["when"].(string); ok {
+			args.When = value
+		}
+	}
+	if strings.TrimSpace(args.Focus) == "" {
+		if value, ok := update["focus"].(string); ok {
+			args.Focus = value
+		}
+	}
+	if args.HourLocal == 0 {
+		if value, ok := update["hour_local"].(int); ok {
+			args.HourLocal = value
+		}
+	}
+	if strings.TrimSpace(args.Location) == "" {
+		if value, ok := update["location"].(string); ok {
+			args.Location = value
+		}
+	}
+	args = normalizeWeatherArgs(args)
+	updated, err := json.Marshal(args)
+	if err != nil {
+		return PlannedCall{}, err
+	}
+	call.Args = updated
+	return call, nil
+}
+
+func ResolveOlderSisterCall(call PlannedCall, explicitText string) (PlannedCall, error) {
+	if strings.TrimSpace(call.Action) != "older_sister" {
+		return call, nil
+	}
+	args := olderSisterArgs{}
+	if len(call.Args) > 0 {
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return PlannedCall{}, fmt.Errorf("invalid older_sister args for resolution: %w", err)
+		}
+	}
+	if strings.TrimSpace(args.Query) == "" {
+		args.Query = strings.TrimSpace(explicitText)
+	}
+	if args.WebSearch == nil {
+		enabled := true
+		args.WebSearch = &enabled
+	}
+	updated, err := json.Marshal(args)
+	if err != nil {
+		return PlannedCall{}, err
+	}
+	call.Args = updated
+	return call, nil
+}
+
+func resolveConvertCall(call PlannedCall, args map[string]json.RawMessage, explicitText string) (PlannedCall, error) {
+	update := extractConvertUpdate(explicitText)
+	if len(update) == 0 {
+		return call, nil
+	}
+
+	changed := false
+	if _, ok := args["input"]; !ok {
+		if value, ok := update["input"]; ok {
+			raw, err := json.Marshal(value)
+			if err != nil {
+				return PlannedCall{}, err
+			}
+			args["input"] = raw
+			changed = true
+		}
+	}
+	if _, ok := args["value"]; !ok {
+		if value, ok := update["value"]; ok {
+			raw, err := json.Marshal(value)
+			if err != nil {
+				return PlannedCall{}, err
+			}
+			args["value"] = raw
+			changed = true
+		}
+	}
+	if strings.TrimSpace(stringFieldRaw(args["from_unit"])) == "" {
+		if value, ok := update["from_unit"]; ok {
+			raw, err := json.Marshal(value)
+			if err != nil {
+				return PlannedCall{}, err
+			}
+			args["from_unit"] = raw
+			changed = true
+		}
+	}
+	if strings.TrimSpace(stringFieldRaw(args["to_unit"])) == "" {
+		if value, ok := update["to_unit"]; ok {
+			raw, err := json.Marshal(value)
+			if err != nil {
+				return PlannedCall{}, err
+			}
+			args["to_unit"] = raw
+			changed = true
+		}
+	}
+	if !changed {
+		return call, nil
+	}
 	updated, err := json.Marshal(args)
 	if err != nil {
 		return PlannedCall{}, err
@@ -226,6 +352,10 @@ func stringFieldRaw(raw json.RawMessage) string {
 		return ""
 	}
 	return strings.TrimSpace(value)
+}
+
+func StringFieldRaw(raw json.RawMessage) string {
+	return stringFieldRaw(raw)
 }
 
 func cloneRaw(raw json.RawMessage) json.RawMessage {

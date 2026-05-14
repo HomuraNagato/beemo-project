@@ -77,12 +77,20 @@ if [ -n "$DTYPE" ]; then
   set -- "$@" --dtype "$DTYPE"
 fi
 
+if [ -n "$DEVICE" ] && [ "$DEVICE" != "auto" ] && vllm serve --help 2>&1 | grep -q -- '--device'; then
+  set -- "$@" --device "$DEVICE"
+fi
+
 if [ "$TRUST_REMOTE_CODE" = "true" ]; then
   set -- "$@" --trust-remote-code
 fi
 
 if [ "$DEVICE" = "cpu" ]; then
-  :
+  if vllm serve --help 2>&1 | grep -q -- '--cpu-kvcache-space'; then
+    set -- "$@" --cpu-kvcache-space "$CPU_KVCACHE_SPACE"
+  else
+    echo "warning: installed vLLM does not support --cpu-kvcache-space; skipping EMBEDDING_CPU_KVCACHE_SPACE=$CPU_KVCACHE_SPACE" >&2
+  fi
 else
   set -- "$@" --cpu-offload-gb "$CPU_OFFLOAD_GB"
 

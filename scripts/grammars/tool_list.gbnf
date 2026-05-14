@@ -2,9 +2,27 @@ root ::= empty_list | single_call_list
 empty_list ::= "[" ws "]"
 single_call_list ::= "[" ws tool_call ws "]"
 
-tool_call ::= get_time_call | calculator_call | memory_lookup_call
+tool_call ::= get_time_call | weather_call | older_sister_call | calculator_call | memory_lookup_call
 
 get_time_call ::= "{" ws "\"tool\"" ws ":" ws "\"get_time\"" ws "," ws "\"args\"" ws ":" ws "{}" ws "}"
+weather_call ::= "{" ws "\"tool\"" ws ":" ws "\"weather\"" ws "," ws "\"args\"" ws ":" ws weather_args ws "}"
+older_sister_call ::= "{" ws "\"tool\"" ws ":" ws "\"older_sister\"" ws "," ws "\"args\"" ws ":" ws older_sister_args ws "}"
+older_sister_args ::= "{}" | "{" ws older_sister_field older_sister_tail? ws "}"
+older_sister_tail ::= ws "," ws older_sister_field (ws "," ws older_sister_field)*
+older_sister_field ::= query_field | web_search_field
+query_field ::= "\"query\"" ws ":" ws string
+web_search_field ::= "\"web_search\"" ws ":" ws boolean
+weather_args ::= "{}" | "{" ws weather_field weather_tail? ws "}"
+weather_tail ::= ws "," ws weather_field (ws "," ws weather_field)*
+weather_field ::= when_field | focus_field | hour_local_field | location_field | latitude_field | longitude_field | timezone_field | location_name_field
+when_field ::= "\"when\"" ws ":" ws weather_when_string
+focus_field ::= "\"focus\"" ws ":" ws weather_focus_string
+hour_local_field ::= "\"hour_local\"" ws ":" ws number
+location_field ::= "\"location\"" ws ":" ws string
+latitude_field ::= "\"latitude\"" ws ":" ws string
+longitude_field ::= "\"longitude\"" ws ":" ws string
+timezone_field ::= "\"timezone\"" ws ":" ws string
+location_name_field ::= "\"location_name\"" ws ":" ws string
 
 calculator_call ::= "{" ws "\"tool\"" ws ":" ws "\"calculator\"" ws "," ws "\"args\"" ws ":" ws calc_args ws "}"
 memory_lookup_call ::= "{" ws "\"tool\"" ws ":" ws "\"memory_lookup\"" ws "," ws "\"args\"" ws ":" ws memory_lookup_args ws "}"
@@ -54,10 +72,13 @@ unit_expr_char ::= [a-zA-Z/]
 direction_string ::= "\"increase\"" | "\"decrease\""
 gender_string ::= "\"male\"" | "\"female\""
 activity_level_string ::= "\"sedentary\"" | "\"light\"" | "\"moderate\"" | "\"active\"" | "\"very_active\""
+weather_when_string ::= "\"current\"" | "\"today\"" | "\"tomorrow\"" | "\"evening\""
+weather_focus_string ::= "\"general\"" | "\"temperature\"" | "\"rain\""
+boolean ::= "true" | "false"
 
 string ::= "\"" chars "\""
 chars ::= char*
-char ::= [a-zA-Z0-9_ +\\*/().?-]
+char ::= [a-zA-Z0-9_ +\\*/().?,'!:-]
 
 number ::= "-"? int frac?
 int ::= "0" | [1-9] [0-9]*

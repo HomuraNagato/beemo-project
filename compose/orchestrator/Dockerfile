@@ -14,3 +14,5 @@ WORKDIR /workspace
 RUN go install github.com/fullstorydev/grpcurl/cmd/grpcurl@latest
 
 #RUN go mod tidy
+
+CMD ["go", "run", "./src/orchestrator"]

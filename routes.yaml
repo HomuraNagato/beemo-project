@@ -23,6 +23,21 @@ domains:
       - convert 5 foot 4 to centimeters
       - what is my bmi?
 
+  - id: weather
+    title: Weather
+    summary: Current and near-term weather for the configured location.
+    when_to_use:
+      - Use for today's weather, the current temperature, rain chances, tomorrow's weather, or this evening's forecast.
+    when_not_to_use:
+      - Do not use for current time or date questions.
+      - Do not use for recalled personal facts.
+    example_requests:
+      - what is today's weather?
+      - what is the temperature?
+      - will it rain today?
+      - what is the weather tomorrow?
+      - what will the weather be this evening?
+
   - id: facts
     title: Subject facts
     summary: Recall previously stated subject facts or remembered details such as weight, height, age, gender, activity level, birthdays, or start dates.
@@ -37,6 +52,20 @@ domains:
       - what is serene's height?
       - what is her activity level?
       - when did i start my new job?
+
+  - id: older_sister
+    title: Older Sister
+    summary: Delegate questions to ChatGPT with internet search when the local tools or local reasoning model are not enough.
+    when_to_use:
+      - Use for questions that require broad internet search, recent facts, current events, product information, documentation lookup, or external source checking.
+      - Use when the user explicitly asks to ask ChatGPT, ask older sister, search the internet, look something up, or verify current information.
+    when_not_to_use:
+      - Do not use for local calculator, weather, time/date, or stored memory lookups that have dedicated tools.
+      - Do not use for private local state unless the user explicitly wants external help with that content.
+    example_requests:
+      - ask older sister what changed in the latest openai api docs
+      - search the internet for the latest vllm embedding support
+      - can chatgpt look up whether this library still supports postgres 12?
 
 routes:
   - id: get_time.current_or_relative
@@ -111,6 +140,62 @@ routes:
     handler:
       type: tool
       target: memory_lookup
+
+  - id: weather.forecast
+    domain: weather
+    title: Current or near-term weather
+    summary: Answer weather questions for the configured location, including current conditions, today's forecast, tomorrow's forecast, rain chances, and this evening's weather.
+    when_to_use:
+      - The user asks what the weather is today or tomorrow.
+      - The user asks for the current temperature.
+      - The user asks whether it will rain today.
+      - The user asks what the weather will be this evening.
+    when_not_to_use:
+      - The user asks for the current time or date.
+      - The user asks to remember or recall a personal fact.
+    example_requests:
+      - what is today's weather?
+      - what is the temperature?
+      - will it rain today?
+      - what is the weather tomorrow?
+      - what will the weather be this evening?
+    required_fields: []
+    args_guidance: Use the weather tool. Args may be empty; the runtime will resolve whether the user means current weather, today, tomorrow, or this evening, and whether the focus is general weather, temperature, or rain.
+    default_args: {}
+    memory:
+      read: true
+      write: true
+      attrs:
+        - weather_location
+      scope: subject
+    handler:
+      type: tool
+      target: weather
+
+  - id: older_sister.search_or_advise
+    domain: older_sister
+    title: Ask Older Sister with web search
+    summary: Ask ChatGPT for help, especially when the request benefits from internet search or current external information.
+    when_to_use:
+      - The user asks to call ChatGPT or older sister.
+      - The user asks for internet search, current information, external documentation, news, product details, recommendations, or source-backed verification.
+      - The local model is likely to be weak because the answer depends on recent or web-only information.
+    when_not_to_use:
+      - The user asks for a supported local calculator, time, weather, or memory lookup operation.
+      - The user asks a purely local project question that can be answered from the repo without internet.
+    example_requests:
+      - ask older sister to look up the latest OpenAI web search docs
+      - search the internet for current vllm support for embedding models
+      - ask chatgpt what the latest postgres docker image recommends for initialization
+      - can older sister verify whether this error is common?
+    required_fields:
+      - query
+    args_guidance: Use older_sister. Include the user's request as query. Set web_search to true for current information, external docs, recent facts, or explicit internet-search requests.
+    default_args:
+      web_search: true
+    handler:
+      type: tool
+      target: older_sister
 
   - id: calculator.convert
     domain: calculator

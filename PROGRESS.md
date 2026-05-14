@@ -14,7 +14,7 @@
 - `src/orchestrator/factsel/` loads `facts.yaml`, embeds the fact descriptors, and selects the best stored fact attribute after `facts.lookup` is chosen.
 - `src/orchestrator/subjectctx/` resolves `self`, named people, relation aliases, and possessive health references into session-scoped subject IDs.
 - `src/orchestrator/memoryctx/` maintains the subject-scoped observation store used for calculator follow-ups, with an in-memory path and a Postgres-backed path.
-- `src/orchestrator/tools/` contains the in-process tool layer, including `get_time` and a non-trivial `calculator`.
+- `src/orchestrator/tools/` contains the in-process tool layer, including `get_time`, `weather`, `older_sister`, and a non-trivial `calculator`.
 - `src/tui/main.go` provides a working terminal chat client against the gRPC orchestrator.
 - `routes.yaml` defines the current route catalog, including domains and calculator/time routes for retrieval-assisted routing.
 - `docker-compose.yaml` wires the orchestrator to a vLLM-based reasoning service, a dedicated `eve-embedding` vLLM service, installation workflow, Python-backed `eve-asr` / `eve-wakeword` scaffolds for voice activation, and host access to an already-running local Postgres via `host.docker.internal`.
@@ -64,9 +64,20 @@
   - missing `route_embeddings` rows for the active embedding model are inserted once per `route_id + model`
   - existing rows are skipped rather than overwritten
 - A first end-to-end voice path now exists in Docker: `eve-wakeword` captures microphone audio from PulseAudio, records one utterance until silence, sends PCM to `eve-asr`, strips a configurable wake phrase, and forwards the remaining text to `Orchestrator.Chat`.
+- `eve-orchestrator` is now self-running in Docker through `compose/orchestrator/Dockerfile`, so compose starts `go run ./src/orchestrator` instead of leaving the container in an interactive shell.
+- `scripts/beemo-start.sh` now provides a button-friendly startup path:
+  - selects the GPU or CPU compose overlay
+  - optionally starts bundled Postgres with `--db`
+  - starts reasoning and embedding services sequentially to reduce GPU memory contention
+  - waits for health endpoints and fails with recent logs if a service exits
+  - force-recreates `eve-orchestrator` so stale shell containers are replaced
+- The Makefile now exposes `start`, `start-gpu`, `start-cpu`, `start-full`, `start-full-cpu`, `stop`, and `logs` targets.
+- `scripts/eve-orchestrator.sh` can now fall back to `docker exec eve-orchestrator grpcurl` when `grpcurl` is not installed on the host.
 - Current in-process tools:
   - `get_time`
   - `calculator` with support for arithmetic expressions, unit conversion, BMI, BMR, TDEE, pace, speed, and percentage calculations
+  - `weather` through Open-Meteo forecast/geocoding, with learned default weather location in subject memory
+  - `older_sister`, an OpenAI Responses API backed tool that can ask ChatGPT with web search enabled for current external information
 - Terminal interaction is usable today through the TUI and the `scripts/eve-orchestrator.sh` / `scripts/eve-tui.sh` helpers.
 - Unit and integration-style tests exist for the orchestrator flow, LLM client requests, and calculator/tool behavior.
 
@@ -91,14 +102,18 @@
 - Steps 3–8 remain mostly planned, with tools still running in-process and the other services not yet implemented as standalone Go services.
 
 ## Current Developer Workflow
-1. Start or point at an OpenAI-compatible reasoning endpoint and the local embedding endpoint via `.env`.
-2. Choose a database target:
+1. Start the core stack with `make start` or `./scripts/beemo-start.sh gpu`.
+   - Use `make start-full` or `./scripts/beemo-start.sh gpu --db` on a fresh machine that should also start bundled Postgres.
+   - Use `make start-cpu` / `make start-full-cpu` for the CPU compose overlay.
+2. Start or point at an OpenAI-compatible reasoning endpoint and the local embedding endpoint via `.env` when running pieces manually.
+   - For the `older_sister` tool, set `OPENAI_API_KEY`; optional settings are `OLDER_SISTER_MODEL`, `OLDER_SISTER_HTTP_URL`, `OLDER_SISTER_TIMEOUT_MS`, and `OLDER_SISTER_WEB_SEARCH`.
+3. Choose a database target:
    - existing local Postgres on the Docker host: `DATABASE_URL=postgres://postgres:postgres@host.docker.internal:5438/beemo?sslmode=disable`
    - bundled local Postgres on a fresh machine: `docker compose -f docker-compose.yaml -f docker-compose.pensieve.yaml up -d pensieve`, then `DATABASE_URL=postgres://postgres:postgres@pensieve:5432/beemo?sslmode=disable`
    - host-shell `go run` instead of Docker: use `127.0.0.1:5438/beemo` rather than `host.docker.internal`
-3. Run the orchestrator with `go run ./src/orchestrator` or via the existing Docker workflow.
-4. Talk to it with `go run ./src/tui` or `scripts/eve-orchestrator.sh`.
-5. Run `go test ./...` to validate the current Go codebase.
+4. Run the orchestrator manually with `go run ./src/orchestrator` only when bypassing Docker.
+5. Talk to it with `go run ./src/tui` or `scripts/eve-orchestrator.sh`.
+6. Run `go test ./...` to validate the current Go codebase.
 
 ## Recommended Next Steps (Go-first)
 1. Add a small inspection/debug surface for `subject -> snapshot -> conflicts` plus recent session provenance so the Postgres-backed memory path is easy to inspect live.

@@ -33,14 +33,41 @@ var (
 	resumeInchesQuotePattern = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*"`)
 	resumeAgeExplicitPattern = regexp.MustCompile(`(?i)(?:\b(\d{1,3}(?:\.\d+)?)\s*(years?\s*old|years?|yrs?|yr|yo|y/o)\b|\bage(?:\s+is)?\s+(\d{1,3}(?:\.\d+)?)\b)`)
 	resumeBareNumberPattern  = regexp.MustCompile(`^\s*(\d{1,3})(?:\.0+)?\s*[\.,!?]*\s*$`)
+	convertValueUnitPattern  = regexp.MustCompile(`(?i)\b(\d+(?:\.\d+)?)\s*([a-z]+(?:/[a-z]+)+|mph|kph|kmh|mps|mm|millimeters?|millimetres?|cm|centimeters?|centimetres?|m|meters?|metres?|km|kilometers?|kilometres?|in|inch|inches|ft|foot|feet|mi|mile|miles|mg|milligrams?|g|grams?|gr|kg|kgs|kilograms?|kiloggrams?|lb|lbs|pounds?|ml|milliliters?|millilitres?|l|liters?|litres?|s|secs?|seconds?|min|mins?|minutes?|hr|hrs?|hours?|mmol|millimoles?|mol|moles?)\b`)
+	convertTargetUnitPattern = regexp.MustCompile(`(?i)\b(?:to|into|in)\s+([a-z]+(?:/[a-z]+)+|[a-z]+(?:\s+per\s+[a-z]+)?)\s*[\.\?!,]*$`)
+	weatherHourPattern       = regexp.MustCompile(`(?i)\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b`)
 )
 
 func TryFillPending(req PendingFillRequest) (PlannedCall, bool, error) {
+	if req.Action == "weather" {
+		reply := strings.TrimSpace(req.Reply)
+		if reply == "" {
+			return PlannedCall{}, false, nil
+		}
+		for _, field := range req.Missing {
+			if field == "location" {
+				raw, err := json.Marshal(map[string]string{"location": reply})
+				if err != nil {
+					return PlannedCall{}, false, err
+				}
+				merged, err := mergePendingArgs(req.Action, req.Args, req.Missing, raw)
+				if err != nil {
+					return PlannedCall{}, false, err
+				}
+				return PlannedCall{Action: req.Action, Args: merged}, true, nil
+			}
+		}
+		return PlannedCall{}, false, nil
+	}
 	if req.Action != "calculator" {
 		return PlannedCall{}, false, nil
 	}
 
 	update := map[string]any{}
+	pendingOp := pendingOperation(req.Args)
+	if pendingOp == "convert" {
+		mergeConvertUpdate(update, req.Reply)
+	}
 	for _, field := range req.Missing {
 		switch field {
 		case "weight":
@@ -211,10 +238,36 @@ func ExtractCalculatorObservationPatch(text string) (json.RawMessage, bool, erro
 
 func mergePendingArgs(action string, pendingArgs json.RawMessage, missing []string, updateRaw json.RawMessage) (json.RawMessage, error) {
 	if action != "calculator" {
-		if len(updateRaw) == 0 {
-			return json.RawMessage(`{}`), nil
+		base := map[string]any{}
+		if len(pendingArgs) > 0 {
+			if err := json.Unmarshal(pendingArgs, &base); err != nil {
+				return nil, fmt.Errorf("invalid pending args: %w", err)
+			}
 		}
-		return updateRaw, nil
+		if len(updateRaw) == 0 {
+			if len(base) == 0 {
+				return json.RawMessage(`{}`), nil
+			}
+			merged, err := json.Marshal(base)
+			if err != nil {
+				return nil, err
+			}
+			return merged, nil
+		}
+		update := map[string]any{}
+		if err := json.Unmarshal(updateRaw, &update); err != nil {
+			return nil, fmt.Errorf("invalid resume args: %w", err)
+		}
+		for key, value := range update {
+			if value != nil {
+				base[key] = value
+			}
+		}
+		merged, err := json.Marshal(base)
+		if err != nil {
+			return nil, err
+		}
+		return merged, nil
 	}
 
 	base := map[string]any{}
@@ -245,6 +298,13 @@ func mergePendingArgs(action string, pendingArgs json.RawMessage, missing []stri
 	allowed["operation"] = struct{}{}
 	for _, field := range missing {
 		allowed[field] = struct{}{}
+	}
+	if pendingOp == "convert" {
+		allowed["input"] = struct{}{}
+		allowed["value"] = struct{}{}
+		allowed["from_unit"] = struct{}{}
+		allowed["to_unit"] = struct{}{}
+		allowed["per"] = struct{}{}
 	}
 
 	for key, value := range update {
@@ -288,6 +348,86 @@ func coerceResumeArgsForPending(pendingOp string, missing []string, update map[s
 func stringField(v any) string {
 	s, _ := v.(string)
 	return s
+}
+
+func pendingOperation(raw json.RawMessage) string {
+	args := map[string]any{}
+	if len(raw) == 0 {
+		return ""
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(stringField(args["operation"])))
+}
+
+func extractWeatherUpdate(text string) map[string]any {
+	update := map[string]any{}
+	lower := strings.ToLower(strings.TrimSpace(text))
+	switch {
+	case strings.Contains(lower, "tomorrow"):
+		update["when"] = "tomorrow"
+	case strings.Contains(lower, "this evening"), strings.Contains(lower, "tonight"), strings.Contains(lower, "evening"):
+		update["when"] = "evening"
+	case strings.Contains(lower, "today"):
+		update["when"] = "today"
+	case strings.Contains(lower, "temperature"), strings.Contains(lower, "temp"):
+		update["when"] = "current"
+	case strings.Contains(lower, "weather"), strings.Contains(lower, "forecast"):
+		update["when"] = "current"
+	}
+
+	switch {
+	case strings.Contains(lower, "rain"), strings.Contains(lower, "precip"):
+		update["focus"] = "rain"
+	case strings.Contains(lower, "temperature"), strings.Contains(lower, "temp"):
+		update["focus"] = "temperature"
+	case strings.Contains(lower, "weather"), strings.Contains(lower, "forecast"):
+		update["focus"] = "general"
+	}
+	if hour, ok := parseWeatherHour(text); ok {
+		update["hour_local"] = hour
+		if _, ok := update["when"]; !ok {
+			update["when"] = "today"
+		}
+	}
+	if location := ExtractWeatherLocation(text); location != "" {
+		update["location"] = location
+	}
+	return update
+}
+
+func parseWeatherHour(text string) (int, bool) {
+	matches := weatherHourPattern.FindStringSubmatch(text)
+	if len(matches) < 2 {
+		return 0, false
+	}
+	hour, err := strconv.Atoi(matches[1])
+	if err != nil {
+		return 0, false
+	}
+	if len(matches) >= 3 && strings.TrimSpace(matches[2]) != "" && matches[2] != "00" {
+		return 0, false
+	}
+	suffix := strings.ToLower(strings.TrimSpace(matches[3]))
+	switch suffix {
+	case "am":
+		if hour == 12 {
+			hour = 0
+		}
+	case "pm":
+		if hour != 12 {
+			hour += 12
+		}
+	default:
+		if hour < 0 || hour > 23 {
+			return 0, false
+		}
+	}
+	if hour < 0 || hour > 23 {
+		return 0, false
+	}
+	return hour, true
 }
 
 func parseWeightComponents(text string) ([]measurementComponent, bool) {
@@ -364,6 +504,55 @@ func parseGenericMeasurementComponents(text string) ([]measurementComponent, boo
 		return []measurementComponent{{Unit: unit, Value: value}}, true
 	}
 	return nil, false
+}
+
+func extractConvertUpdate(text string) map[string]any {
+	update := map[string]any{}
+	if components, ok := parseGenericMeasurementComponents(text); ok {
+		update["input"] = components
+	} else if value, fromUnit, ok := parseValueWithUnitExpression(text); ok {
+		update["value"] = value
+		update["from_unit"] = fromUnit
+	}
+	if unit, ok := parseConvertTargetUnit(text); ok {
+		update["to_unit"] = unit
+	}
+	if len(update) == 0 {
+		return nil
+	}
+	return update
+}
+
+func mergeConvertUpdate(dst map[string]any, text string) {
+	for key, value := range extractConvertUpdate(text) {
+		dst[key] = value
+	}
+}
+
+func parseValueWithUnitExpression(text string) (float64, string, bool) {
+	matches := convertValueUnitPattern.FindStringSubmatch(strings.ToLower(text))
+	if len(matches) < 3 {
+		return 0, "", false
+	}
+	value, err := strconv.ParseFloat(matches[1], 64)
+	if err != nil {
+		return 0, "", false
+	}
+	unit, ok := parseUnitOnly(matches[2])
+	if !ok {
+		return 0, "", false
+	}
+	return value, unit, true
+}
+
+func parseConvertTargetUnit(text string) (string, bool) {
+	if matches := convertTargetUnitPattern.FindStringSubmatch(strings.ToLower(strings.TrimSpace(text))); len(matches) >= 2 {
+		candidate := strings.ReplaceAll(matches[1], " per ", "/")
+		if unit, ok := parseUnitOnly(candidate); ok {
+			return unit, true
+		}
+	}
+	return "", false
 }
 
 func parseAgeYears(text string, allowBareNumber bool) (float64, bool) {

@@ -344,6 +344,18 @@ func inferRouteForCall(action string, args map[string]any) (Route, bool) {
 			Domain:  "time",
 			Handler: Handler{Type: "tool", Target: "get_time"},
 		}, true
+	case "weather":
+		return Route{
+			ID:      "weather.forecast",
+			Domain:  "weather",
+			Handler: Handler{Type: "tool", Target: "weather"},
+			Memory: MemoryPolicy{
+				Read:  true,
+				Write: true,
+				Attrs: []string{"weather_location"},
+				Scope: "subject",
+			},
+		}, true
 	case "calculator":
 		operation := strings.TrimSpace(stringField(args["operation"]))
 		switch operation {
@@ -366,6 +378,13 @@ func inferRouteForCall(action string, args map[string]any) (Route, bool) {
 		}
 	case "memory_lookup":
 		return syntheticMemoryLookupRoute(), true
+	case "older_sister":
+		return Route{
+			ID:          "older_sister.search_or_advise",
+			Domain:      "older_sister",
+			DefaultArgs: map[string]any{"web_search": true},
+			Handler:     Handler{Type: "tool", Target: "older_sister"},
+		}, true
 	}
 	return Route{}, false
 }

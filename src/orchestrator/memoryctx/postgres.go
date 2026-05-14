@@ -26,31 +26,7 @@ func (s *Store) applyPatchDB(sessionID, subjectID string, patch json.RawMessage,
 		return nil
 	}
 
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	now := time.Now().UTC()
-	if err := ensureSubjectRowTx(tx, subjectID, now); err != nil {
-		return err
-	}
-
-	for _, observation := range observations {
-		previous, ok, err := latestObservationTx(tx, subjectID, observation.Attribute)
-		if err != nil {
-			return err
-		}
-		if ok && observationsEqual(previous, observation) {
-			continue
-		}
-		if err := insertObservationTx(tx, sessionID, subjectID, observation); err != nil {
-			return err
-		}
-	}
-
-	return tx.Commit()
+	return s.insertObservationsDB(sessionID, subjectID, observations)
 }
 
 func (s *Store) snapshotDetailsDB(sessionID, subjectID string, attrs ...string) SnapshotDetails {
@@ -483,6 +459,38 @@ func insertObservationTx(tx *sql.Tx, sessionID, subjectID string, observation Ob
 		return fmt.Errorf("insert observation: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) insertObservationsDB(sessionID, subjectID string, observations []Observation) error {
+	if s.db == nil || strings.TrimSpace(subjectID) == "" || len(observations) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC()
+	if err := ensureSubjectRowTx(tx, subjectID, now); err != nil {
+		return err
+	}
+
+	for _, observation := range observations {
+		previous, ok, err := latestObservationTx(tx, subjectID, observation.Attribute)
+		if err != nil {
+			return err
+		}
+		if ok && observationsEqual(previous, observation) {
+			continue
+		}
+		if err := insertObservationTx(tx, sessionID, subjectID, observation); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
 }
 
 func (s *Store) rememberSubjectAliasesDB(sessionID string, subjects []subjectctx.Subject) error {

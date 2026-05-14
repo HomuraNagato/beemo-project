@@ -368,6 +368,62 @@ recommended next milestone from here:
  5. extend the Postgres route sync so it stores the full retrieval corpus, not just one base descriptor per route
  6. add episodic summaries later and use embeddings only inside filtered episodic memory
 
+** older sister tool
+
+ - `older_sister` is an external advisor tool backed by the OpenAI Responses API
+ - use it when the user explicitly asks to ask ChatGPT / older sister, or when the request needs current internet search, external documentation, source-backed verification, or broad web context
+ - local tools should still win for exact local operations:
+   - `calculator` for math, conversions, BMI/BMR/TDEE
+   - `weather` for forecast questions
+   - `get_time` for current or relative time/date
+   - `memory_lookup` for stored subject facts
+ - env settings:
+   - `OPENAI_API_KEY`
+   - `OLDER_SISTER_HTTP_URL`
+   - `OLDER_SISTER_MODEL`
+   - `OLDER_SISTER_TIMEOUT_MS`
+   - `OLDER_SISTER_WEB_SEARCH`
+
+* startup
+** service startup
+
+Beemo now has a single startup script intended for a physical-button style launch:
+
+ - `./scripts/beemo-start.sh gpu`
+ - `./scripts/beemo-start.sh cpu`
+ - `./scripts/beemo-start.sh gpu --db`
+ - `./scripts/beemo-start.sh cpu --db`
+
+The Makefile wraps these as:
+
+ - `make start`
+ - `make start-gpu`
+ - `make start-cpu`
+ - `make start-full`
+ - `make start-full-cpu`
+
+Current behavior:
+
+ - chooses the base compose file plus the CPU or GPU overlay
+ - optionally includes `docker-compose.pensieve.yaml` for bundled Postgres on a fresh machine
+ - starts `eve-vllm` first, waits for health, then starts `eve-embedding`
+ - starts `eve-orchestrator` after reasoning and embeddings are reachable
+ - force-recreates `eve-orchestrator` so old interactive-shell containers are replaced
+ - starts voice services unless `--no-voice` is provided
+ - prints recent service logs if a dependency exits before becoming healthy
+
+`eve-orchestrator` is now self-running from its Dockerfile with `go run ./src/orchestrator`.
+The host helper `scripts/eve-orchestrator.sh` falls back to running `grpcurl` inside the
+orchestrator container, so a fresh host does not need a separate `grpcurl` install for a
+basic smoke test.
+
+The GPU defaults were adjusted so the local reasoning server and local embedding server can
+coexist more reliably on a constrained GPU:
+
+ - `VLLM_KV_CACHE_MEMORY_BYTES=2G`
+ - `EMBEDDING_GPU_MEMORY_UTILIZATION=0.18`
+ - `EMBEDDING_MAX_MODEL_LEN=2048`
+
 * STT
 ** architecture
 

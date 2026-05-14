@@ -1600,6 +1600,245 @@ func TestChatUsesMemoryLookupForStoredHeight(t *testing.T) {
 	}
 }
 
+func TestChatResolvesSimpleConvertFromInitialQuery(t *testing.T) {
+	t.Parallel()
+
+	server := &orchestratorServer{
+		cfg: config.Config{
+			LLMHTTPURL:   "http://llm.test/v1/chat/completions",
+			LLMModel:     "test-model",
+			LLMTimeoutMs: 500,
+		},
+		tools: orchtools.NewLocalExecutor(),
+		readGrammar: func(path string) (string, error) {
+			return "root ::= \"[]\"", nil
+		},
+		callCompletion: func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+			if strings.Contains(prompt, "Resume the pending tool call.") {
+				t.Fatalf("resume LLM should not be needed when pending convert reply is explicit")
+			}
+			return `[{"tool":"calculator","args":{"operation":"convert","to_unit":"kg"}}]`, nil
+		},
+		callFinalMessage: func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+			if !strings.Contains(prompt, "Tool result: tool=calculator result=103 lb = 46.72001411 kg") {
+				t.Fatalf("final prompt missing convert result: %q", prompt)
+			}
+			return "103 lb = 46.72001411 kg.", nil
+		},
+	}
+
+	resp, err := server.Chat(context.Background(), chatRequest("what is 103lbs in kg?"))
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	if got, want := resp.GetText(), "103 lb = 46.72001411 kg."; got != want {
+		t.Fatalf("unexpected response: got %q want %q", got, want)
+	}
+}
+
+func TestChatHandlesWeatherTool(t *testing.T) {
+	t.Parallel()
+
+	server := &orchestratorServer{
+		cfg: config.Config{
+			LLMHTTPURL:          "http://llm.test/v1/chat/completions",
+			LLMModel:            "test-model",
+			LLMTimeoutMs:        500,
+			WeatherGeocodingURL: "https://geocoding-api.open-meteo.com/v1/search",
+		},
+		tools: orchtools.NewLocalExecutorWithWeather(orchtools.WeatherConfig{
+			HTTPURL:           "https://api.open-meteo.com/v1/forecast",
+			GeocodingURL:      "https://geocoding-api.open-meteo.com/v1/search",
+			TemperatureUnit:   "fahrenheit",
+			WindSpeedUnit:     "mph",
+			PrecipitationUnit: "inch",
+			Now: func() time.Time {
+				return time.Date(2026, 4, 23, 10, 0, 0, 0, time.FixedZone("EDT", -4*60*60))
+			},
+			Fetch: func(ctx context.Context, requestURL string) ([]byte, error) {
+				if strings.Contains(requestURL, "geocoding-api.open-meteo.com") {
+					return []byte(`{"results":[{"name":"New York","latitude":40.7128,"longitude":-74.0060,"timezone":"America/New_York","country":"United States"}]}`), nil
+				}
+				return []byte(`{
+					"timezone":"America/New_York",
+					"current_units":{"temperature_2m":"°F"},
+					"current":{"time":"2026-04-23T10:00","temperature_2m":68.4,"weather_code":2},
+					"hourly_units":{"temperature_2m":"°F","precipitation_probability":"%"},
+					"hourly":{"time":["2026-04-23T18:00"],"temperature_2m":[64.0],"precipitation_probability":[30],"weather_code":[3]},
+					"daily_units":{"temperature_2m_max":"°F","temperature_2m_min":"°F","precipitation_probability_max":"%","precipitation_sum":"in"},
+					"daily":{"time":["2026-04-23","2026-04-24"],"weather_code":[3,61],"temperature_2m_max":[72.1,66.0],"temperature_2m_min":[57.0,53.5],"precipitation_probability_max":[15,70],"precipitation_sum":[0.01,0.27]}
+				}`), nil
+			},
+		}),
+		readGrammar: func(path string) (string, error) {
+			return "root ::= \"[]\"", nil
+		},
+		callCompletion: func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+			return `[{"tool":"weather","args":{"location":"New York"}}]`, nil
+		},
+		callFinalMessage: func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+			if !strings.Contains(prompt, "Tool result: tool=weather result=Tomorrow in New York, United States: rain, high 66°F, low 53.5°F, rain chance up to 70%.") {
+				t.Fatalf("final prompt missing weather result: %q", prompt)
+			}
+			return "Tomorrow in New York, United States: rain, high 66°F, low 53.5°F, rain chance up to 70%.", nil
+		},
+	}
+
+	resp, err := server.Chat(context.Background(), chatRequest("what is the weather tomorrow?"))
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	if got, want := resp.GetText(), "Tomorrow in New York, United States: rain, high 66°F, low 53.5°F, rain chance up to 70%."; got != want {
+		t.Fatalf("unexpected response: got %q want %q", got, want)
+	}
+}
+
+func TestChatLearnsDefaultWeatherLocation(t *testing.T) {
+	t.Parallel()
+
+	fetch := func(ctx context.Context, requestURL string) ([]byte, error) {
+		switch {
+		case strings.Contains(requestURL, "geocoding-api.open-meteo.com"):
+			return []byte(`{"results":[{"name":"Tokyo","latitude":35.6895,"longitude":139.6917,"timezone":"Asia/Tokyo","country":"Japan"}]}`), nil
+		default:
+			return []byte(`{
+				"timezone":"Asia/Tokyo",
+				"current_units":{"temperature_2m":"°F"},
+				"current":{"time":"2026-04-23T10:00","temperature_2m":66.2,"weather_code":1},
+				"hourly_units":{"temperature_2m":"°F","precipitation_probability":"%"},
+				"hourly":{"time":["2026-04-23T18:00"],"temperature_2m":[61.0],"precipitation_probability":[20],"weather_code":[2]},
+				"daily_units":{"temperature_2m_max":"°F","temperature_2m_min":"°F","precipitation_probability_max":"%","precipitation_sum":"in"},
+				"daily":{"time":["2026-04-23","2026-04-24"],"weather_code":[1,3],"temperature_2m_max":[71.0,69.0],"temperature_2m_min":[58.0,57.0],"precipitation_probability_max":[15,20],"precipitation_sum":[0.0,0.02]}
+			}`), nil
+		}
+	}
+
+	decisionCalls := 0
+	finalCalls := 0
+	server := &orchestratorServer{
+		cfg: config.Config{
+			LLMHTTPURL:          "http://llm.test/v1/chat/completions",
+			LLMModel:            "test-model",
+			LLMTimeoutMs:        500,
+			EmbeddingTimeoutMs:  500,
+			WeatherGeocodingURL: "https://geocoding-api.open-meteo.com/v1/search",
+		},
+		tools: orchtools.NewLocalExecutorWithWeather(orchtools.WeatherConfig{
+			HTTPURL:           "https://api.open-meteo.com/v1/forecast",
+			GeocodingURL:      "https://geocoding-api.open-meteo.com/v1/search",
+			TemperatureUnit:   "fahrenheit",
+			WindSpeedUnit:     "mph",
+			PrecipitationUnit: "inch",
+			Now: func() time.Time {
+				return time.Date(2026, 4, 23, 10, 0, 0, 0, time.FixedZone("JST", 9*60*60))
+			},
+			Fetch: fetch,
+		}),
+		memoryStore: memoryctx.NewStore(),
+		readGrammar: func(path string) (string, error) {
+			return "root ::= \"[]\"", nil
+		},
+		callCompletion: func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+			decisionCalls++
+			return `[{"tool":"weather","args":{}}]`, nil
+		},
+		callFinalMessage: func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+			finalCalls++
+			switch finalCalls {
+			case 1:
+				if !strings.Contains(prompt, "Tool result: tool=weather result=Today in Tokyo, Japan: mostly clear skies, high 71°F, low 58°F, rain chance up to 15%.") {
+					t.Fatalf("first final prompt missing Tokyo forecast: %q", prompt)
+				}
+				return "Today in Tokyo, Japan: mostly clear skies, high 71°F, low 58°F, rain chance up to 15%.", nil
+			case 2:
+				if !strings.Contains(prompt, "Tool result: tool=weather result=Current temperature in Tokyo, Japan: 66.2°F.") {
+					t.Fatalf("second final prompt missing stored weather location result: %q", prompt)
+				}
+				return "Current temperature in Tokyo, Japan: 66.2°F.", nil
+			default:
+				t.Fatalf("unexpected final call %d", finalCalls)
+				return "", nil
+			}
+		},
+	}
+
+	firstResp, err := server.Chat(context.Background(), chatRequest("what is today's weather?"))
+	if err != nil {
+		t.Fatalf("first Chat returned error: %v", err)
+	}
+	if got, want := firstResp.GetText(), "What location should I use for the weather?"; got != want {
+		t.Fatalf("unexpected first response: got %q want %q", got, want)
+	}
+
+	secondResp, err := server.Chat(context.Background(), chatRequestWithSession("test-session", "Tokyo"))
+	if err != nil {
+		t.Fatalf("second Chat returned error: %v", err)
+	}
+	if got, want := secondResp.GetText(), "Today in Tokyo, Japan: mostly clear skies, high 71°F, low 58°F, rain chance up to 15%."; got != want {
+		t.Fatalf("unexpected second response: got %q want %q", got, want)
+	}
+
+	thirdResp, err := server.Chat(context.Background(), chatRequestWithSession("new-session", "what is the temperature?"))
+	if err != nil {
+		t.Fatalf("third Chat returned error: %v", err)
+	}
+	if got, want := thirdResp.GetText(), "Current temperature in Tokyo, Japan: 66.2°F."; got != want {
+		t.Fatalf("unexpected third response: got %q want %q", got, want)
+	}
+}
+
+func TestChatWeatherSupportsExplicitForecastHour(t *testing.T) {
+	t.Parallel()
+
+	server := &orchestratorServer{
+		cfg: config.Config{
+			LLMHTTPURL:   "http://llm.test/v1/chat/completions",
+			LLMModel:     "test-model",
+			LLMTimeoutMs: 500,
+		},
+		tools: orchtools.NewLocalExecutorWithWeather(orchtools.WeatherConfig{
+			HTTPURL:           "https://api.open-meteo.com/v1/forecast",
+			TemperatureUnit:   "fahrenheit",
+			WindSpeedUnit:     "mph",
+			PrecipitationUnit: "inch",
+			Now: func() time.Time {
+				return time.Date(2026, 4, 23, 10, 0, 0, 0, time.FixedZone("EDT", -4*60*60))
+			},
+			Fetch: func(ctx context.Context, requestURL string) ([]byte, error) {
+				return []byte(`{
+					"timezone":"America/New_York",
+					"current_units":{"temperature_2m":"°F"},
+					"current":{"time":"2026-04-23T10:00","temperature_2m":68.4,"weather_code":2},
+					"hourly_units":{"temperature_2m":"°F","precipitation_probability":"%"},
+					"hourly":{"time":["2026-04-24T06:00"],"temperature_2m":[57.3],"precipitation_probability":[45],"weather_code":[3]},
+					"daily_units":{"temperature_2m_max":"°F","temperature_2m_min":"°F","precipitation_probability_max":"%","precipitation_sum":"in"},
+					"daily":{"time":["2026-04-23","2026-04-24"],"weather_code":[3,61],"temperature_2m_max":[72.1,66.0],"temperature_2m_min":[57.0,53.5],"precipitation_probability_max":[15,70],"precipitation_sum":[0.01,0.27]}
+				}`), nil
+			},
+		}),
+		readGrammar: func(path string) (string, error) {
+			return "root ::= \"[]\"", nil
+		},
+		callCompletion: func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+			return `[{"tool":"weather","args":{"when":"tomorrow","focus":"temperature","hour_local":6,"location_name":"New York City","latitude":"40.7128","longitude":"-74.0060","timezone":"America/New_York"}}]`, nil
+		},
+		callFinalMessage: func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+			if !strings.Contains(prompt, "Tool result: tool=weather result=Tomorrow in New York City at 6 AM: 57.3°F.") {
+				t.Fatalf("final prompt missing hourly weather result: %q", prompt)
+			}
+			return "Tomorrow in New York City at 6 AM: 57.3°F.", nil
+		},
+	}
+
+	resp, err := server.Chat(context.Background(), chatRequest("what is the temperature tomorrow at 6am?"))
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	if got, want := resp.GetText(), "Tomorrow in New York City at 6 AM: 57.3°F."; got != want {
+		t.Fatalf("unexpected response: got %q want %q", got, want)
+	}
+}
+
 func TestChatUsesSemanticMemoryRecallForStoredHeight(t *testing.T) {
 	t.Parallel()
 

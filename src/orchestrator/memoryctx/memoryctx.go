@@ -173,6 +173,20 @@ func (s *Store) RememberToolCallWithContext(sessionID, subjectID string, call or
 	return s.applyPatch(sessionID, subjectID, patch, ctx, attrs...)
 }
 
+func (s *Store) RememberObservationWithContext(sessionID, subjectID, attr string, rawValue, canonicalValue json.RawMessage, ctx RecordContext) error {
+	if strings.TrimSpace(subjectID) == "" || strings.TrimSpace(attr) == "" {
+		return nil
+	}
+	observation := s.buildObservation(sessionID, attr, rawValue, canonicalValue, ctx)
+	if observation == nil {
+		return nil
+	}
+	if s.db != nil {
+		return s.insertObservationsDB(sessionID, subjectID, []Observation{*observation})
+	}
+	return s.insertObservations(subjectID, []Observation{*observation})
+}
+
 func (s *Store) HydrateCall(sessionID, subjectID string, call orchtools.PlannedCall) (orchtools.PlannedCall, error) {
 	if strings.TrimSpace(call.Action) != "calculator" || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(subjectID) == "" {
 		return call, nil
@@ -333,24 +347,7 @@ func (s *Store) applyPatch(sessionID, subjectID string, patch json.RawMessage, c
 		return nil
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	subject := s.subjects[subjectID]
-	if subject == nil {
-		subject = &subjectState{observations: map[string][]Observation{}}
-		s.subjects[subjectID] = subject
-	}
-
-	for _, observation := range observations {
-		attr := observation.Attribute
-		history := subject.observations[attr]
-		if len(history) > 0 && observationsEqual(history[len(history)-1], observation) {
-			continue
-		}
-		subject.observations[attr] = append(history, observation)
-	}
-	return nil
+	return s.insertObservations(subjectID, observations)
 }
 
 func (s *Store) observationsFromPatch(sessionID string, patch json.RawMessage, ctx RecordContext, attrs ...string) ([]Observation, error) {
@@ -374,30 +371,75 @@ func (s *Store) observationsFromPatch(sessionID string, patch json.RawMessage, c
 		if !hasValue(attr, raw) {
 			continue
 		}
-		raw = cloneRaw(raw)
-		canonical, err := orchtools.CanonicalizeObservationValue(attr, raw)
+		observation, err := s.buildObservationFromRaw(sessionID, attr, raw, ctx)
 		if err != nil {
 			return nil, err
 		}
-		observation := Observation{
-			SessionID:       strings.TrimSpace(sessionID),
-			Attribute:       attr,
-			Domain:          strings.TrimSpace(ctx.Domain),
-			Route:           strings.TrimSpace(ctx.Route),
-			RawValue:        raw,
-			CanonicalValue:  cloneRaw(canonical),
-			ObservationText: observationText(attr, raw, canonical, ctx),
-			SourceTurn:      strings.TrimSpace(ctx.SourceTurn),
-			SourceType:      strings.TrimSpace(ctx.SourceType),
-			CreatedAt:       now,
+		if observation == nil {
+			continue
 		}
-		observations = append(observations, observation)
+		observation.CreatedAt = now
+		observations = append(observations, *observation)
 	}
 	if len(observations) == 0 {
 		return nil, nil
 	}
-	s.attachObservationEmbeddings(observations, s.timeout)
 	return observations, nil
+}
+
+func (s *Store) buildObservationFromRaw(sessionID, attr string, raw json.RawMessage, ctx RecordContext) (*Observation, error) {
+	raw = cloneRaw(raw)
+	canonical, err := orchtools.CanonicalizeObservationValue(attr, raw)
+	if err != nil {
+		return nil, err
+	}
+	return s.buildObservation(sessionID, attr, raw, canonical, ctx), nil
+}
+
+func (s *Store) buildObservation(sessionID, attr string, rawValue, canonicalValue json.RawMessage, ctx RecordContext) *Observation {
+	if !hasValue(attr, rawValue) && !hasValue(attr, canonicalValue) {
+		return nil
+	}
+	observation := Observation{
+		SessionID:       strings.TrimSpace(sessionID),
+		Attribute:       strings.TrimSpace(attr),
+		Domain:          strings.TrimSpace(ctx.Domain),
+		Route:           strings.TrimSpace(ctx.Route),
+		RawValue:        cloneRaw(rawValue),
+		CanonicalValue:  cloneRaw(canonicalValue),
+		ObservationText: observationText(attr, rawValue, canonicalValue, ctx),
+		SourceTurn:      strings.TrimSpace(ctx.SourceTurn),
+		SourceType:      strings.TrimSpace(ctx.SourceType),
+		CreatedAt:       time.Now().UTC(),
+	}
+	items := []Observation{observation}
+	s.attachObservationEmbeddings(items, s.timeout)
+	observation = items[0]
+	return &observation
+}
+
+func (s *Store) insertObservations(subjectID string, observations []Observation) error {
+	if strings.TrimSpace(subjectID) == "" || len(observations) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	subject := s.subjects[subjectID]
+	if subject == nil {
+		subject = &subjectState{observations: map[string][]Observation{}}
+		s.subjects[subjectID] = subject
+	}
+
+	for _, observation := range observations {
+		attr := observation.Attribute
+		history := subject.observations[attr]
+		if len(history) > 0 && observationsEqual(history[len(history)-1], observation) {
+			continue
+		}
+		subject.observations[attr] = append(history, observation)
+	}
+	return nil
 }
 
 func (s *Store) RememberSubjectAliases(sessionID string, subjects []subjectctx.Subject) error {
@@ -774,7 +816,7 @@ func hasValue(attr string, raw json.RawMessage) bool {
 	case "gender", "activity_level":
 		return strings.TrimSpace(stringFieldRaw(raw)) != ""
 	default:
-		return false
+		return strings.TrimSpace(string(raw)) != "" && strings.TrimSpace(string(raw)) != "null"
 	}
 }
 

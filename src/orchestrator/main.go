@@ -72,12 +72,17 @@ type factSelector interface {
 	QuestionPrompt(attrs []string) string
 }
 
+type weatherConfigProvider interface {
+	WeatherConfig() orchtools.WeatherConfig
+}
+
 const (
 	contextSelectionMessages  = 24
 	activeContextTurns        = 6
 	sessionTranscriptMessages = 24
 	memoryRecallMinScore      = 0.48
 	memoryRecallMinMargin     = 0.03
+	weatherLocationAttr       = "weather_location"
 )
 
 func useCurrentTurnGrounding(call toolCall, currentSubjectID string) bool {
@@ -264,6 +269,66 @@ func buildMemoryLookupResult(memoryStore *memoryctx.Store, facts factSelector, s
 		}, nil
 	}
 	return resultFromObservation(memoryStore, facts, subjectID, call.Tool, observation)
+}
+
+func effectiveWeatherSubjectID(currentSubjectID string) string {
+	currentSubjectID = strings.TrimSpace(currentSubjectID)
+	if currentSubjectID == "" {
+		return "self"
+	}
+	return currentSubjectID
+}
+
+func decodeWeatherLocationSnapshot(snapshot map[string]json.RawMessage) (orchtools.WeatherLocation, bool) {
+	if len(snapshot) == 0 {
+		return orchtools.WeatherLocation{}, false
+	}
+	raw, ok := snapshot[weatherLocationAttr]
+	if !ok {
+		return orchtools.WeatherLocation{}, false
+	}
+	return orchtools.DecodeWeatherLocation(raw)
+}
+
+func mergeWeatherLocationArgs(call orchtools.PlannedCall, location orchtools.WeatherLocation) (orchtools.PlannedCall, error) {
+	args := map[string]any{}
+	if len(call.Args) > 0 {
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return orchtools.PlannedCall{}, fmt.Errorf("invalid weather args for merge: %w", err)
+		}
+	}
+	if strings.TrimSpace(location.Query) != "" {
+		args["location"] = strings.TrimSpace(location.Query)
+	}
+	args["location_name"] = strings.TrimSpace(location.Name)
+	args["latitude"] = strings.TrimSpace(location.Latitude)
+	args["longitude"] = strings.TrimSpace(location.Longitude)
+	if strings.TrimSpace(location.Timezone) != "" {
+		args["timezone"] = strings.TrimSpace(location.Timezone)
+	}
+	updated, err := json.Marshal(args)
+	if err != nil {
+		return orchtools.PlannedCall{}, err
+	}
+	call.Args = updated
+	return call, nil
+}
+
+func rememberWeatherDefault(memoryStore *memoryctx.Store, sessionID, subjectID, sourceTurn string, location orchtools.WeatherLocation) error {
+	raw, err := orchtools.WeatherLocationRawJSON(firstNonEmpty(location.Query, location.Name))
+	if err != nil {
+		return err
+	}
+	canonical, err := orchtools.WeatherLocationCanonicalJSON(location)
+	if err != nil {
+		return err
+	}
+	return memoryStore.RememberObservationWithContext(sessionID, subjectID, weatherLocationAttr, raw, canonical, memoryctx.RecordContext{
+		Domain:     "weather",
+		Route:      "weather.forecast",
+		SourceTurn: sourceTurn,
+		SourceType: memoryctx.SourceTypeExplicitUser,
+	})
 }
 
 func resultFromObservation(memoryStore *memoryctx.Store, facts factSelector, subjectID, toolName string, observation memoryctx.Observation) (orchtools.Result, error) {
@@ -604,6 +669,9 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 			fmt.Printf("orch.chat done session=%s status=error reason=route_match ms=%d err=%v\n", req.GetSessionId(), time.Since(start).Milliseconds(), merr)
 			return nil, merr
 		}
+		if explicitTool.Tool == "weather" {
+			currentSubjectID = effectiveWeatherSubjectID(currentSubjectID)
+		}
 		memoryAttrs := []string(nil)
 		memoryRead := false
 		memoryWrite := false
@@ -710,6 +778,65 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 				}, memoryAttrs...); err != nil {
 					fmt.Printf("orch.chat memory_store session=%s status=error err=%v\n", req.GetSessionId(), err)
 				}
+			}
+		} else if explicitTool.Tool == "weather" {
+			var rerr error
+			resolvedTool, rerr = orchtools.ResolveWeatherCall(
+				toPlannedCall(explicitTool),
+				userQuery,
+			)
+			if rerr != nil {
+				fmt.Printf("orch.chat done session=%s status=error reason=weather_resolve ms=%d err=%v\n", req.GetSessionId(), time.Since(start).Milliseconds(), rerr)
+				return nil, rerr
+			}
+			argsMap := map[string]json.RawMessage{}
+			if len(resolvedTool.Args) > 0 {
+				if err := json.Unmarshal(resolvedTool.Args, &argsMap); err != nil {
+					fmt.Printf("orch.chat done session=%s status=error reason=weather_args ms=%d err=%v\n", req.GetSessionId(), time.Since(start).Milliseconds(), err)
+					return nil, err
+				}
+			}
+			locationQuery := strings.TrimSpace(orchtools.StringFieldRaw(argsMap["location"]))
+			if locationQuery != "" {
+				weatherCfg := orchtools.WeatherConfig{GeocodingURL: s.cfg.WeatherGeocodingURL}
+				if provider, ok := s.tools.(weatherConfigProvider); ok {
+					weatherCfg = provider.WeatherConfig()
+					if strings.TrimSpace(weatherCfg.GeocodingURL) == "" {
+						weatherCfg.GeocodingURL = s.cfg.WeatherGeocodingURL
+					}
+				}
+				location, lerr := orchtools.GeocodeWeatherLocation(ctx, weatherCfg, locationQuery)
+				if lerr != nil {
+					fmt.Printf("orch.chat done session=%s status=error reason=weather_geocode ms=%d err=%v\n", req.GetSessionId(), time.Since(start).Milliseconds(), lerr)
+					return nil, lerr
+				}
+				resolvedTool, rerr = mergeWeatherLocationArgs(resolvedTool, location)
+				if rerr != nil {
+					fmt.Printf("orch.chat done session=%s status=error reason=weather_location_merge ms=%d err=%v\n", req.GetSessionId(), time.Since(start).Milliseconds(), rerr)
+					return nil, rerr
+				}
+				_, hasStored := decodeWeatherLocationSnapshot(snapshot)
+				if !hasStored {
+					if err := rememberWeatherDefault(memoryStore, req.GetSessionId(), currentSubjectID, userQuery, location); err != nil {
+						fmt.Printf("orch.chat weather_default_store session=%s status=error err=%v\n", req.GetSessionId(), err)
+					}
+				}
+			} else if location, ok := decodeWeatherLocationSnapshot(snapshot); ok {
+				resolvedTool, rerr = mergeWeatherLocationArgs(resolvedTool, location)
+				if rerr != nil {
+					fmt.Printf("orch.chat done session=%s status=error reason=weather_snapshot_merge ms=%d err=%v\n", req.GetSessionId(), time.Since(start).Milliseconds(), rerr)
+					return nil, rerr
+				}
+			}
+		} else if explicitTool.Tool == "older_sister" {
+			var rerr error
+			resolvedTool, rerr = orchtools.ResolveOlderSisterCall(
+				toPlannedCall(explicitTool),
+				userQuery,
+			)
+			if rerr != nil {
+				fmt.Printf("orch.chat done session=%s status=error reason=older_sister_resolve ms=%d err=%v\n", req.GetSessionId(), time.Since(start).Milliseconds(), rerr)
+				return nil, rerr
 			}
 		}
 		tool = fromPlannedCall(resolvedTool)
@@ -1039,6 +1166,15 @@ func candidateIDs(candidates []routing.Candidate) []string {
 	return ids
 }
 
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func readGrammarFile(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -1154,8 +1290,24 @@ func main() {
 		fmt.Printf("orchestrator status=observation_backfill_ok rows=%d\n", count)
 	}
 	pb.RegisterOrchestratorServer(grpcServer, &orchestratorServer{
-		cfg:           cfg,
-		tools:         orchtools.NewLocalExecutor(),
+		cfg: cfg,
+		tools: orchtools.NewLocalExecutorWithConfigs(orchtools.WeatherConfig{
+			HTTPURL:           cfg.WeatherHTTPURL,
+			GeocodingURL:      cfg.WeatherGeocodingURL,
+			Latitude:          cfg.WeatherLatitude,
+			Longitude:         cfg.WeatherLongitude,
+			Timezone:          cfg.WeatherTimezone,
+			LocationName:      cfg.WeatherLocationName,
+			TemperatureUnit:   cfg.WeatherTemperatureUnit,
+			WindSpeedUnit:     cfg.WeatherWindSpeedUnit,
+			PrecipitationUnit: cfg.WeatherPrecipitationUnit,
+		}, orchtools.OlderSisterConfig{
+			APIKey:    cfg.OlderSisterAPIKey,
+			HTTPURL:   cfg.OlderSisterHTTPURL,
+			Model:     cfg.OlderSisterModel,
+			TimeoutMs: cfg.OlderSisterTimeoutMs,
+			WebSearch: cfg.OlderSisterWebSearch,
+		}),
 		memoryStore:   memoryStore,
 		routeSelector: selector,
 		factSelector:  facts,

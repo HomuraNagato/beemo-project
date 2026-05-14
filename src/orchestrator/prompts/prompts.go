@@ -9,6 +9,8 @@ func ToolDecision(userQuery, activeTranscript, subjectContext string) string {
 	return `Decide which tools to use.
 Valid tools:
 - get_time: use for current or relative time/date questions
+- weather: use for current or near-term weather questions for the configured location
+- older_sister: use to ask ChatGPT, especially for internet search, current external facts, documentation lookup, or source-backed verification
 - calculator: use for arithmetic, health calculations, and supported unit conversions
 - memory_lookup: use for direct recall of a previously stated subject fact or remembered detail such as weight, height, age, gender, activity level, birthday, or a start date
 
@@ -26,6 +28,13 @@ Examples:
 - User query "what day is tomorrow?" -> [{"tool":"get_time","args":{}}]
 - User query "what month is it?" -> [{"tool":"get_time","args":{}}]
 - User query "what is five days from today?" -> [{"tool":"get_time","args":{}}]
+- User query "what is today's weather?" -> [{"tool":"weather","args":{}}]
+- User query "will it rain today?" -> [{"tool":"weather","args":{}}]
+- User query "what will the weather be this evening?" -> [{"tool":"weather","args":{}}]
+- User query "what is the temperature tomorrow at 6am?" -> [{"tool":"weather","args":{"when":"tomorrow","focus":"temperature","hour_local":6}}]
+- User query "what is the weather in nyc, ny tomorrow?" -> [{"tool":"weather","args":{"location":"nyc, ny","when":"tomorrow","focus":"general"}}]
+- User query "ask older sister to search for the latest vllm embedding docs" -> [{"tool":"older_sister","args":{"query":"search for the latest vllm embedding docs","web_search":true}}]
+- User query "can chatgpt verify whether postgres 12 still supports this extension?" -> [{"tool":"older_sister","args":{"query":"verify whether postgres 12 still supports this extension","web_search":true}}]
 - User query "what is my weight?" -> [{"tool":"memory_lookup","args":{}}]
 - User query "what is her height?" -> [{"tool":"memory_lookup","args":{}}]
 - User query "when did i start my new job?" -> [{"tool":"memory_lookup","args":{}}]
@@ -44,6 +53,15 @@ Examples:
 Rules:
 - For current or relative time/date questions, including time, day, date, month, year, today, tomorrow, yesterday, or "X days from now/today", use get_time.
 - A question about the current or relative date/time should never return [].
+- For current or near-term weather questions such as today's weather, current temperature, whether it will rain today, tomorrow's weather, or this evening's weather, use weather.
+- For explicit requests to ask ChatGPT, ask older sister, search the internet, look up external documentation, or verify current information, use older_sister.
+- For older_sister, include the user's request as query and set web_search to true when the request depends on current or internet information.
+- For weather, infer structured arguments when possible:
+  location for explicit places like "tokyo" or "nyc, ny"
+  when for terms like "current", "today", "tomorrow", or "evening"
+  hour_local for explicit local forecast times like "6am" or "6 pm"
+  focus for "general", "temperature", or "rain"
+- For weather, prefer returning structured location/time args rather than leaving them empty when the user already provided them.
 - For direct recall of a previously stated subject fact or remembered detail, use memory_lookup rather than calculator.
 - For direct recall, args may be empty. Do not guess or invent an attribute when the request is ambiguous.
 - For math, BMI/BMR/TDEE, pace/speed, chemistry-style unit conversions, or other unit conversion questions, use calculator.
@@ -86,6 +104,7 @@ Important:
 - For direct recall routes such as stored weight, height, birthday, or a remembered date/event, use memory_lookup instead of calculator.
 - For direct recall, args may be empty. Do not guess or invent an attribute when the request is ambiguous.
 - For follow-up requests, use the active conversation thread to resolve references such as "what about tomorrow?" or "what about bmr?".
+- For weather, infer structured location, when, hour_local, and focus whenever the user provides them.
 - For BMI, BMR, or TDEE follow-ups, carry forward explicit measurements or demographics from the active conversation thread when available.
 - For BMI, BMR, or TDEE, copy measurements exactly as the user stated them. Do not convert, normalize, or duplicate weight or height values.
 - Use multi-component measurements only when the user explicitly gave a composite value like 5 ft 4 in.
@@ -107,6 +126,8 @@ func RetryToolDecision(userQuery, activeTranscript, subjectContext string) strin
 	return `Re-check the user's request and choose a tool only if one can help.
 Valid tools:
 - get_time: use for current or relative time/date questions
+- weather: use for current or near-term weather questions for the configured location
+- older_sister: use to ask ChatGPT, especially for internet search, current external facts, documentation lookup, or source-backed verification
 - calculator: use for arithmetic, health calculations, and supported unit conversions
 - memory_lookup: use for direct recall of a previously stated subject fact or remembered detail such as weight, height, age, gender, activity level, birthday, or a start date
 
@@ -115,6 +136,10 @@ Return [] only when neither tool applies.
 
 Important:
 - If the user asks about current or relative time/date/day/month/year, return [{"tool":"get_time","args":{}}], not [].
+- If the user asks about today's weather, the current temperature, whether it will rain today, tomorrow's weather, or this evening's weather, return weather.
+- If the user explicitly asks to ask ChatGPT, ask older sister, search the internet, look up external documentation, or verify current information, return older_sister.
+- For older_sister, include the user's request as query and set web_search to true for current or internet-backed requests.
+- For weather, include structured args when the user already gave them, for example a place like "nyc, ny" or a forecast hour like "6am".
 - If the user asks to recall a known subject fact or remembered detail like weight, height, age, gender, activity level, birthday, or a start date, return memory_lookup.
 - If the user asks for math, unit conversion, BMI, BMR, TDEE, pace, speed, or percentages, return calculator.
 - For follow-up BMI, BMR, or TDEE questions, reuse explicit measurements or demographics from the active conversation thread and omit only fields that are still missing.
@@ -128,6 +153,10 @@ Examples:
 - User query "what time is it?" -> [{"tool":"get_time","args":{}}]
 - User query "what date will it be 5 days from today?" -> [{"tool":"get_time","args":{}}]
 - User query "what day is tomorrow?" -> [{"tool":"get_time","args":{}}]
+- User query "what is today's weather?" -> [{"tool":"weather","args":{}}]
+- User query "what is the temperature?" -> [{"tool":"weather","args":{}}]
+- User query "what is the temperature tomorrow at 6am?" -> [{"tool":"weather","args":{"when":"tomorrow","focus":"temperature","hour_local":6}}]
+- User query "ask older sister to search for the latest vllm embedding docs" -> [{"tool":"older_sister","args":{"query":"search for the latest vllm embedding docs","web_search":true}}]
 - User query "what is my height?" -> [{"tool":"memory_lookup","args":{}}]
 - User query "when did i start my new job?" -> [{"tool":"memory_lookup","args":{}}]
 - User query "what is 20% of 85?" -> [{"tool":"calculator","args":{"operation":"percent_of","percent":20,"value":85}}]
@@ -170,6 +199,7 @@ Rules:
 - Fill only fields supported by the existing tool schema.
 - If the pending calculator operation is bmi, bmr, or tdee and the latest reply is just a weight or height value, map it into the missing field instead of switching to convert.
 - If the pending tool is memory_lookup and the latest reply clarifies which fact to look up, keep the same memory_lookup call.
+- If the pending tool is weather and the latest reply is just a place name, keep the same weather call and fill the location.
 - For pending bmi, bmr, or tdee fields, copy measurements exactly as the user stated them. Do not convert, normalize, or duplicate weight or height values.
 - Use multi-component measurements only when the user explicitly gave a composite value like 5 ft 4 in.
 - Use the active conversation thread to decide whether the latest reply is a clarification for the pending tool or a new unrelated request.
@@ -182,6 +212,7 @@ Examples:
 - Pending bmi with missing height + latest reply "64 inches" -> [{"tool":"calculator","args":{"operation":"bmi","weight":[{"unit":"kg","value":45}],"height":[{"unit":"in","value":64}]}}]
 - Pending bmi with missing weight + latest reply "45kg" -> [{"tool":"calculator","args":{"operation":"bmi","height":[{"unit":"in","value":64}],"weight":[{"unit":"kg","value":45}]}}]
 - Pending memory_lookup asking "What fact should I look up?" + latest reply "weight" -> [{"tool":"memory_lookup","args":{"attribute":"weight"}}]
+- Pending weather asking "What location should I use for the weather?" + latest reply "Tokyo" -> [{"tool":"weather","args":{"location":"Tokyo"}}]
 
 Original user query: %s
 Resolved subject context:

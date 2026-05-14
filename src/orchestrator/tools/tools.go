@@ -28,7 +28,32 @@ type Executor interface {
 	Execute(ctx context.Context, req Request) (Result, error)
 }
 
-type LocalExecutor struct{}
+type WeatherConfig struct {
+	HTTPURL           string
+	GeocodingURL      string
+	Latitude          string
+	Longitude         string
+	Timezone          string
+	LocationName      string
+	TemperatureUnit   string
+	WindSpeedUnit     string
+	PrecipitationUnit string
+	Now               func() time.Time
+	Fetch             WeatherFetchFunc
+}
+
+type OlderSisterConfig struct {
+	APIKey    string
+	HTTPURL   string
+	Model     string
+	TimeoutMs int
+	WebSearch bool
+}
+
+type LocalExecutor struct {
+	weatherConfig     WeatherConfig
+	olderSisterConfig OlderSisterConfig
+}
 
 type measurementComponent struct {
 	Unit  string  `json:"unit"`
@@ -62,6 +87,21 @@ func NewLocalExecutor() *LocalExecutor {
 	return &LocalExecutor{}
 }
 
+func NewLocalExecutorWithWeather(cfg WeatherConfig) *LocalExecutor {
+	return &LocalExecutor{weatherConfig: cfg}
+}
+
+func NewLocalExecutorWithConfigs(weather WeatherConfig, olderSister OlderSisterConfig) *LocalExecutor {
+	return &LocalExecutor{
+		weatherConfig:     weather,
+		olderSisterConfig: olderSister,
+	}
+}
+
+func (e *LocalExecutor) WeatherConfig() WeatherConfig {
+	return e.weatherConfig
+}
+
 func (e *LocalExecutor) Execute(ctx context.Context, req Request) (Result, error) {
 	select {
 	case <-ctx.Done():
@@ -75,6 +115,10 @@ func (e *LocalExecutor) Execute(ctx context.Context, req Request) (Result, error
 			Action: req.Action,
 			Output: time.Now().Format(time.RFC3339),
 		}, nil
+	case "weather":
+		return executeWeather(ctx, req, e.weatherConfig)
+	case "older_sister":
+		return executeOlderSister(ctx, req, e.olderSisterConfig)
 	case "calculator":
 		return executeCalculator(req)
 	default:
