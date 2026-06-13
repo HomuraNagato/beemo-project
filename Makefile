@@ -1,7 +1,16 @@
-.PHONY: proto start start-gpu start-cpu start-full start-full-cpu stop logs
+.PHONY: proto init init-cpu init-gpu start start-gpu start-cpu start-full start-full-cpu stop logs
 
 proto:
 	./scripts/gen_proto.sh
+
+init:
+	./scripts/beemo-init.sh cpu
+
+init-cpu:
+	./scripts/beemo-init.sh cpu
+
+init-gpu:
+	./scripts/beemo-init.sh gpu
 
 start:
 	./scripts/beemo-start.sh gpu

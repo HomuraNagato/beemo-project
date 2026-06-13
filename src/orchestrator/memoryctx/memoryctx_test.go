@@ -1,6 +1,7 @@
 package memoryctx
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -191,8 +192,173 @@ func TestStoreRemembersSubjectAliasesAcrossSessions(t *testing.T) {
 	if got, want := subjects[0].ID, "person:serene"; got != want {
 		t.Fatalf("unexpected subject id: got %q want %q", got, want)
 	}
-	if got, want := strings.Join(subjects[0].Aliases, ","), "my sister,serene,sister"; got != want {
+	if got, want := strings.Join(subjects[0].Aliases, ","), "serene"; got != want {
 		t.Fatalf("unexpected aliases: got %q want %q", got, want)
+	}
+}
+
+func TestStoreRemembersSubjectRelationshipsAcrossSessions(t *testing.T) {
+	t.Parallel()
+
+	store := NewStore()
+	err := store.RememberSubjectRelationships([]subjectctx.Relationship{
+		{OwnerID: "person:serene", Relation: "girlfriend", SubjectID: "scoped:person_serene:girlfriend:sabrina"},
+		{OwnerID: "person:sabrina", Relation: "girlfriend", SubjectID: "scoped:person_sabrina:girlfriend:serene"},
+		{OwnerID: "self", Relation: "girlfriend", SubjectID: "person:sabrina"},
+	})
+	if err != nil {
+		t.Fatalf("RememberSubjectRelationships returned error: %v", err)
+	}
+
+	relationships, err := store.LoadSubjectRelationships()
+	if err != nil {
+		t.Fatalf("LoadSubjectRelationships returned error: %v", err)
+	}
+	if len(relationships) != 2 {
+		t.Fatalf("unexpected relationships: %#v", relationships)
+	}
+	if got, want := relationships[0], (subjectctx.Relationship{OwnerID: "person:sabrina", Relation: "girlfriend", SubjectID: "scoped:person_sabrina:girlfriend:serene"}); got != want {
+		t.Fatalf("unexpected first relationship: got %#v want %#v", got, want)
+	}
+	if got, want := relationships[1], (subjectctx.Relationship{OwnerID: "person:serene", Relation: "girlfriend", SubjectID: "scoped:person_serene:girlfriend:sabrina"}); got != want {
+		t.Fatalf("unexpected second relationship: got %#v want %#v", got, want)
+	}
+}
+
+func TestStoreMirrorsFactsAndRelationshipsIntoDirectMemoryGraph(t *testing.T) {
+	t.Parallel()
+
+	store := NewStore()
+	if err := store.RememberUserMessage("session-1", "person:serene", "My weight is 130lbs and my height is 5'8\""); err != nil {
+		t.Fatalf("RememberUserMessage returned error: %v", err)
+	}
+	if err := store.RememberSubjectRelationships([]subjectctx.Relationship{
+		{OwnerID: "person:serene", Relation: "girlfriend", SubjectID: "scoped:person_serene:girlfriend:sabrina"},
+	}); err != nil {
+		t.Fatalf("RememberSubjectRelationships returned error: %v", err)
+	}
+	if err := store.RememberUserMessage("session-1", "scoped:person_serene:girlfriend:sabrina", "Sabrina weighs 46kg and is 162cm tall"); err != nil {
+		t.Fatalf("RememberUserMessage girlfriend returned error: %v", err)
+	}
+
+	sereneEdges, err := store.MemoryEdges("person:serene")
+	if err != nil {
+		t.Fatalf("MemoryEdges returned error: %v", err)
+	}
+	wantEdges := map[string]MemoryEdge{
+		"girlfriend": {
+			OwnerID:  "person:serene",
+			Label:    "girlfriend",
+			TargetID: "scoped:person_serene:girlfriend:sabrina",
+		},
+		"height": {
+			OwnerID:  "person:serene",
+			Label:    "height",
+			TargetID: memoryValueNodeID("person:serene", "height"),
+		},
+		"weight": {
+			OwnerID:  "person:serene",
+			Label:    "weight",
+			TargetID: memoryValueNodeID("person:serene", "weight"),
+		},
+	}
+	if len(sereneEdges) != len(wantEdges) {
+		t.Fatalf("unexpected Serene graph edges: %#v", sereneEdges)
+	}
+	for _, edge := range sereneEdges {
+		want, ok := wantEdges[edge.Label]
+		if !ok {
+			t.Fatalf("unexpected graph edge: %#v", edge)
+		}
+		if edge != want {
+			t.Fatalf("unexpected %s edge: got %#v want %#v", edge.Label, edge, want)
+		}
+	}
+
+	sereneWeightValues, err := store.MemoryValues(memoryValueNodeID("person:serene", "weight"))
+	if err != nil {
+		t.Fatalf("MemoryValues Serene weight returned error: %v", err)
+	}
+	if len(sereneWeightValues) != 1 || !strings.Contains(string(sereneWeightValues[0].CanonicalValue), `"value":58.9670081`) {
+		t.Fatalf("unexpected Serene weight values: %#v", sereneWeightValues)
+	}
+
+	girlfriendEdges, err := store.MemoryEdges("scoped:person_serene:girlfriend:sabrina")
+	if err != nil {
+		t.Fatalf("MemoryEdges girlfriend returned error: %v", err)
+	}
+	wantGirlfriendEdges := map[string]string{
+		"height": memoryValueNodeID("scoped:person_serene:girlfriend:sabrina", "height"),
+		"weight": memoryValueNodeID("scoped:person_serene:girlfriend:sabrina", "weight"),
+	}
+	if len(girlfriendEdges) != len(wantGirlfriendEdges) {
+		t.Fatalf("unexpected girlfriend graph edges: %#v", girlfriendEdges)
+	}
+	for _, edge := range girlfriendEdges {
+		if got, want := edge.TargetID, wantGirlfriendEdges[edge.Label]; got != want {
+			t.Fatalf("unexpected girlfriend edge %#v want target %q", edge, want)
+		}
+	}
+}
+
+func TestStoreRetainsManyGenericFactsForOneIdentity(t *testing.T) {
+	t.Parallel()
+
+	store := NewStore()
+	for idx := 1; idx <= 100; idx++ {
+		text := fmt.Sprintf("my detail %03d is value-%03d", idx, idx)
+		if err := store.RememberUserMessage("long-session", "person:serene", text); err != nil {
+			t.Fatalf("RememberUserMessage %d returned error: %v", idx, err)
+		}
+	}
+
+	snapshot := store.Snapshot("long-session", "person:serene")
+	if len(snapshot) != 100 {
+		t.Fatalf("unexpected snapshot size: got %d want 100", len(snapshot))
+	}
+	for _, idx := range []int{1, 42, 100} {
+		attr := fmt.Sprintf("detail_%03d", idx)
+		want := fmt.Sprintf(`"value-%03d"`, idx)
+		if got := string(snapshot[attr]); got != want {
+			t.Fatalf("unexpected %s value: got %s want %s", attr, got, want)
+		}
+	}
+
+	edges, err := store.MemoryEdges("person:serene")
+	if err != nil {
+		t.Fatalf("MemoryEdges returned error: %v", err)
+	}
+	if len(edges) != 100 {
+		t.Fatalf("unexpected edge count: got %d want 100", len(edges))
+	}
+}
+
+func TestStoreRecordsConversationMessages(t *testing.T) {
+	t.Parallel()
+
+	store := NewStore()
+	if err := store.RecordConversationMessage("session-1", "person:serene", "user", "first"); err != nil {
+		t.Fatalf("RecordConversationMessage first returned error: %v", err)
+	}
+	if err := store.RecordConversationMessage("session-1", "", "assistant", "second"); err != nil {
+		t.Fatalf("RecordConversationMessage second returned error: %v", err)
+	}
+	if err := store.RecordConversationMessage("session-1", "person:serene", "user", "third"); err != nil {
+		t.Fatalf("RecordConversationMessage third returned error: %v", err)
+	}
+
+	messages, err := store.ConversationMessages("session-1", 2)
+	if err != nil {
+		t.Fatalf("ConversationMessages returned error: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("unexpected message count: %#v", messages)
+	}
+	if got, want := messages[0].Content, "second"; got != want {
+		t.Fatalf("unexpected first returned message: got %q want %q", got, want)
+	}
+	if got, want := messages[1].Content, "third"; got != want {
+		t.Fatalf("unexpected second returned message: got %q want %q", got, want)
 	}
 }
 
@@ -255,6 +421,40 @@ func TestStoreLookupAttributePrefersLatestExplicitRawObservation(t *testing.T) {
 	}
 	if got, want := string(observation.RawValue), `[{"unit":"in","value":64}]`; got != want {
 		t.Fatalf("unexpected raw height: got %s want %s", got, want)
+	}
+}
+
+func TestStoreRemembersTextFactsFromUserMessages(t *testing.T) {
+	t.Parallel()
+
+	store := NewStore()
+	if err := store.RememberUserMessage("session-1", "self", "my birthday is June 4"); err != nil {
+		t.Fatalf("RememberUserMessage returned error: %v", err)
+	}
+	if err := store.RememberUserMessage("session-1", "self", "I started my new job on January 8, 2026"); err != nil {
+		t.Fatalf("RememberUserMessage returned error: %v", err)
+	}
+
+	birthday, ok, err := store.LookupAttribute("self", "birthday")
+	if err != nil {
+		t.Fatalf("LookupAttribute birthday returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected birthday observation")
+	}
+	if got, want := string(birthday.RawValue), `"June 4"`; got != want {
+		t.Fatalf("unexpected birthday: got %s want %s", got, want)
+	}
+
+	startDate, ok, err := store.LookupAttribute("self", "start_date")
+	if err != nil {
+		t.Fatalf("LookupAttribute start_date returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected start_date observation")
+	}
+	if got, want := string(startDate.RawValue), `"January 8, 2026"`; got != want {
+		t.Fatalf("unexpected start date: got %s want %s", got, want)
 	}
 }
 

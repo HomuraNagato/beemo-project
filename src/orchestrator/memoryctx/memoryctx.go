@@ -53,6 +53,20 @@ type RecallMatch struct {
 	Score       float32
 }
 
+type MemoryEdge struct {
+	OwnerID  string
+	Label    string
+	TargetID string
+}
+
+type ConversationMessage struct {
+	SessionID string
+	SubjectID string
+	Role      string
+	Content   string
+	CreatedAt time.Time
+}
+
 func (s *Store) LookupAttribute(subjectID, attr string) (Observation, bool, error) {
 	if s.db != nil {
 		return s.lookupAttributeDB(subjectID, attr)
@@ -73,14 +87,19 @@ func (s *Store) LookupAttribute(subjectID, attr string) (Observation, bool, erro
 }
 
 type Store struct {
-	mu       sync.Mutex
-	subjects map[string]*subjectState
-	aliases  map[string]map[string]struct{}
-	db       *sql.DB
-	httpURL  string
-	model    string
-	timeout  time.Duration
-	embedFn  func(httpURL, model string, inputs []string, timeout time.Duration) ([][]float32, error)
+	mu             sync.Mutex
+	subjects       map[string]*subjectState
+	aliases        map[string]map[string]struct{}
+	relationships  map[string]map[string]map[string]struct{}
+	memoryEdges    map[string]map[string]map[string]MemoryEdge
+	memoryValues   map[string][]Observation
+	activeSpeakers map[string]string
+	messages       []ConversationMessage
+	db             *sql.DB
+	httpURL        string
+	model          string
+	timeout        time.Duration
+	embedFn        func(httpURL, model string, inputs []string, timeout time.Duration) ([][]float32, error)
 }
 
 type subjectState struct {
@@ -89,9 +108,12 @@ type subjectState struct {
 
 func NewStore() *Store {
 	return &Store{
-		subjects: map[string]*subjectState{},
-		aliases:  map[string]map[string]struct{}{},
-		embedFn:  embedding.Call,
+		subjects:      map[string]*subjectState{},
+		aliases:       map[string]map[string]struct{}{},
+		relationships: map[string]map[string]map[string]struct{}{},
+		memoryEdges:   map[string]map[string]map[string]MemoryEdge{},
+		memoryValues:  map[string][]Observation{},
+		embedFn:       embedding.Call,
 	}
 }
 
@@ -130,8 +152,61 @@ func (s *Store) RememberUserMessage(sessionID, subjectID, text string, attrs ...
 	}, attrs...)
 }
 
+func (s *Store) RecordConversationMessage(sessionID, subjectID, role, content string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	subjectID = strings.TrimSpace(subjectID)
+	role = strings.ToLower(strings.TrimSpace(role))
+	content = strings.TrimSpace(content)
+	if sessionID == "" || role == "" || content == "" {
+		return nil
+	}
+	message := ConversationMessage{
+		SessionID: sessionID,
+		SubjectID: subjectID,
+		Role:      role,
+		Content:   content,
+		CreatedAt: time.Now().UTC(),
+	}
+	if s.db != nil {
+		return s.insertConversationMessageDB(message)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.messages = append(s.messages, message)
+	return nil
+}
+
+func (s *Store) ConversationMessages(sessionID string, limit int) ([]ConversationMessage, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	if s.db != nil {
+		return s.conversationMessagesDB(sessionID, limit)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	matches := make([]ConversationMessage, 0, limit)
+	for idx := len(s.messages) - 1; idx >= 0 && len(matches) < limit; idx-- {
+		if s.messages[idx].SessionID != sessionID {
+			continue
+		}
+		matches = append(matches, s.messages[idx])
+	}
+	for left, right := 0, len(matches)-1; left < right; left, right = left+1, right-1 {
+		matches[left], matches[right] = matches[right], matches[left]
+	}
+	return matches, nil
+}
+
 func (s *Store) RememberUserMessageWithContext(sessionID, subjectID, text string, ctx RecordContext, attrs ...string) error {
-	patch, ok, err := orchtools.ExtractCalculatorObservationPatch(text)
+	patch, ok, err := orchtools.ExtractObservationPatch(text)
 	if err != nil || !ok {
 		return err
 	}
@@ -233,6 +308,82 @@ func (s *Store) HydrateCall(sessionID, subjectID string, call orchtools.PlannedC
 
 func (s *Store) Snapshot(sessionID, subjectID string, attrs ...string) map[string]json.RawMessage {
 	return s.SnapshotDetails(sessionID, subjectID, attrs...).Values
+}
+
+func (s *Store) HasSessionSubject(sessionID, subjectID string) bool {
+	details := s.SnapshotDetails(sessionID, subjectID)
+	return details.Err == nil && len(details.Values) > 0
+}
+
+func (s *Store) SingleSessionSubject(sessionID string) (string, bool, error) {
+	if s.db != nil {
+		return s.singleSessionSubjectDB(sessionID)
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "", false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var found string
+	for subjectID, subject := range s.subjects {
+		subjectID = strings.TrimSpace(subjectID)
+		if subjectID == "" || subjectID == "self" || subject == nil {
+			continue
+		}
+		hasSessionObservation := false
+		for _, observations := range subject.observations {
+			for _, observation := range observations {
+				if strings.TrimSpace(observation.SessionID) == sessionID {
+					hasSessionObservation = true
+					break
+				}
+			}
+			if hasSessionObservation {
+				break
+			}
+		}
+		if !hasSessionObservation {
+			continue
+		}
+		if found != "" && found != subjectID {
+			return "", false, nil
+		}
+		found = subjectID
+	}
+	return found, found != "", nil
+}
+
+func (s *Store) RememberActiveSpeaker(sessionID, subjectID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	subjectID = strings.TrimSpace(subjectID)
+	if sessionID == "" || subjectID == "" || subjectID == "self" {
+		return nil
+	}
+	if s.db != nil {
+		return s.rememberActiveSpeakerDB(sessionID, subjectID)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.activeSpeakers == nil {
+		s.activeSpeakers = map[string]string{}
+	}
+	s.activeSpeakers[sessionID] = subjectID
+	return nil
+}
+
+func (s *Store) ActiveSpeaker(sessionID string) (string, bool, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "", false, nil
+	}
+	if s.db != nil {
+		return s.activeSpeakerDB(sessionID)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	subjectID := strings.TrimSpace(s.activeSpeakers[sessionID])
+	return subjectID, subjectID != "", nil
 }
 
 func (s *Store) Recall(subjectID, query string, limit int, timeout time.Duration) ([]RecallMatch, error) {
@@ -438,6 +589,7 @@ func (s *Store) insertObservations(subjectID string, observations []Observation)
 			continue
 		}
 		subject.observations[attr] = append(history, observation)
+		s.rememberObservationGraphLocked(subjectID, observation)
 	}
 	return nil
 }
@@ -468,6 +620,36 @@ func (s *Store) RememberSubjectAliases(sessionID string, subjects []subjectctx.S
 			}
 			s.aliases[subjectID][alias] = struct{}{}
 		}
+	}
+	return nil
+}
+
+func (s *Store) RememberSubjectRelationships(relationships []subjectctx.Relationship) error {
+	if s.db != nil {
+		return s.rememberSubjectRelationshipsDB(relationships)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.relationships == nil {
+		s.relationships = map[string]map[string]map[string]struct{}{}
+	}
+	for _, relationship := range relationships {
+		ownerID := strings.TrimSpace(relationship.OwnerID)
+		relation := normalizeAliasForStorage(relationship.Relation)
+		targetID := strings.TrimSpace(relationship.SubjectID)
+		if !shouldPersistRelationship(ownerID, relation, targetID) {
+			continue
+		}
+		if s.relationships[ownerID] == nil {
+			s.relationships[ownerID] = map[string]map[string]struct{}{}
+		}
+		if s.relationships[ownerID][relation] == nil {
+			s.relationships[ownerID][relation] = map[string]struct{}{}
+		}
+		s.relationships[ownerID][relation][targetID] = struct{}{}
+		s.rememberMemoryEdgeLocked(ownerID, relation, targetID)
 	}
 	return nil
 }
@@ -508,6 +690,106 @@ func (s *Store) LoadSubjectAliases() ([]subjectctx.Subject, error) {
 	return subjects, nil
 }
 
+func (s *Store) LoadSubjectRelationships() ([]subjectctx.Relationship, error) {
+	if s.db != nil {
+		return s.loadSubjectRelationshipsDB()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(s.relationships) == 0 {
+		return nil, nil
+	}
+	ownerIDs := make([]string, 0, len(s.relationships))
+	for ownerID := range s.relationships {
+		ownerIDs = append(ownerIDs, ownerID)
+	}
+	sort.Strings(ownerIDs)
+
+	relationships := []subjectctx.Relationship{}
+	for _, ownerID := range ownerIDs {
+		relationNames := make([]string, 0, len(s.relationships[ownerID]))
+		for relation := range s.relationships[ownerID] {
+			relationNames = append(relationNames, relation)
+		}
+		sort.Strings(relationNames)
+		for _, relation := range relationNames {
+			targetIDs := make([]string, 0, len(s.relationships[ownerID][relation]))
+			for targetID := range s.relationships[ownerID][relation] {
+				targetIDs = append(targetIDs, targetID)
+			}
+			sort.Strings(targetIDs)
+			for _, targetID := range targetIDs {
+				relationships = append(relationships, subjectctx.Relationship{
+					OwnerID:   ownerID,
+					Relation:  relation,
+					SubjectID: targetID,
+				})
+			}
+		}
+	}
+	return relationships, nil
+}
+
+func (s *Store) MemoryEdges(ownerID string) ([]MemoryEdge, error) {
+	if s.db != nil {
+		return s.memoryEdgesDB(ownerID)
+	}
+	ownerID = strings.TrimSpace(ownerID)
+	if ownerID == "" {
+		return nil, nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	byLabel := s.memoryEdges[ownerID]
+	if len(byLabel) == 0 {
+		return nil, nil
+	}
+	labels := make([]string, 0, len(byLabel))
+	for label := range byLabel {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+
+	edges := []MemoryEdge{}
+	for _, label := range labels {
+		targetIDs := make([]string, 0, len(byLabel[label]))
+		for targetID := range byLabel[label] {
+			targetIDs = append(targetIDs, targetID)
+		}
+		sort.Strings(targetIDs)
+		for _, targetID := range targetIDs {
+			edges = append(edges, byLabel[label][targetID])
+		}
+	}
+	return edges, nil
+}
+
+func (s *Store) MemoryValues(nodeID string) ([]Observation, error) {
+	if s.db != nil {
+		return s.memoryValuesDB(nodeID)
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil, nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	values := append([]Observation(nil), s.memoryValues[nodeID]...)
+	sort.SliceStable(values, func(i, j int) bool {
+		if values[i].CreatedAt.Equal(values[j].CreatedAt) {
+			return values[i].SourceTurn < values[j].SourceTurn
+		}
+		return values[i].CreatedAt.After(values[j].CreatedAt)
+	})
+	return values, nil
+}
+
 func attrSet(attrs []string) map[string]struct{} {
 	normalized := make(map[string]struct{}, len(attrs))
 	for _, attr := range attrs {
@@ -518,6 +800,44 @@ func attrSet(attrs []string) map[string]struct{} {
 		normalized[attr] = struct{}{}
 	}
 	return normalized
+}
+
+func (s *Store) rememberObservationGraphLocked(subjectID string, observation Observation) {
+	subjectID = strings.TrimSpace(subjectID)
+	label := normalizeMemoryLabel(observation.Attribute)
+	if subjectID == "" || label == "" {
+		return
+	}
+	valueNodeID := memoryValueNodeID(subjectID, label)
+	s.rememberMemoryEdgeLocked(subjectID, label, valueNodeID)
+	history := s.memoryValues[valueNodeID]
+	if len(history) > 0 && observationsEqual(history[len(history)-1], observation) {
+		return
+	}
+	s.memoryValues[valueNodeID] = append(history, cloneObservation(observation))
+}
+
+func (s *Store) rememberMemoryEdgeLocked(ownerID, label, targetID string) {
+	ownerID = strings.TrimSpace(ownerID)
+	label = normalizeMemoryLabel(label)
+	targetID = strings.TrimSpace(targetID)
+	if ownerID == "" || label == "" || targetID == "" || ownerID == targetID {
+		return
+	}
+	if s.memoryEdges == nil {
+		s.memoryEdges = map[string]map[string]map[string]MemoryEdge{}
+	}
+	if s.memoryEdges[ownerID] == nil {
+		s.memoryEdges[ownerID] = map[string]map[string]MemoryEdge{}
+	}
+	if s.memoryEdges[ownerID][label] == nil {
+		s.memoryEdges[ownerID][label] = map[string]MemoryEdge{}
+	}
+	s.memoryEdges[ownerID][label][targetID] = MemoryEdge{
+		OwnerID:  ownerID,
+		Label:    label,
+		TargetID: targetID,
+	}
 }
 
 func patchFromCalculatorCall(raw json.RawMessage) (json.RawMessage, bool, error) {
@@ -666,6 +986,30 @@ func normalizeAliasForStorage(alias string) string {
 	return strings.TrimSpace(alias)
 }
 
+func normalizeMemoryLabel(label string) string {
+	label = strings.ToLower(strings.TrimSpace(label))
+	label = strings.ReplaceAll(label, "-", "_")
+	label = strings.ReplaceAll(label, " ", "_")
+	return label
+}
+
+func memoryValueNodeID(subjectID, label string) string {
+	return "node:" + memoryIDPart(subjectID) + ":" + memoryIDPart(label)
+}
+
+func memoryIDPart(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	replaced := strings.Map(func(r rune) rune {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			return r
+		default:
+			return '_'
+		}
+	}, value)
+	return strings.Join(strings.FieldsFunc(replaced, func(r rune) bool { return r == '_' }), "_")
+}
+
 func shouldPersistAlias(subjectID, alias string) bool {
 	alias = strings.TrimSpace(alias)
 	if alias == "" {
@@ -674,12 +1018,23 @@ func shouldPersistAlias(subjectID, alias string) bool {
 	if subjectID == "self" {
 		return false
 	}
+	if strings.HasPrefix(alias, "my ") {
+		return false
+	}
 	switch alias {
-	case "he", "him", "his", "she", "her", "hers", "they", "them", "their", "theirs", "i", "me", "my", "mine":
+	case "he", "him", "his", "she", "her", "hers", "they", "them", "their", "theirs", "i", "me", "my", "mine",
+		"brother", "dad", "daughter", "father", "friend", "girlfriend", "boyfriend", "husband", "mom", "mother", "partner", "sister", "son", "trainer", "wife":
 		return false
 	default:
 		return true
 	}
+}
+
+func shouldPersistRelationship(ownerID, relation, targetID string) bool {
+	ownerID = strings.TrimSpace(ownerID)
+	relation = strings.TrimSpace(relation)
+	targetID = strings.TrimSpace(targetID)
+	return ownerID != "" && relation != "" && targetID != "" && ownerID != "self" && targetID != "self" && ownerID != targetID
 }
 
 func (s *Store) embeddingEnabled() bool {

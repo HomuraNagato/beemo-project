@@ -41,8 +41,9 @@ func main() {
 
 	var transcript []transcriptEntry
 	var messages []*pb.ChatMessage
+	currentExpression := defaultExpression()
 
-	render(*addr, *sessionID, transcript)
+	render(*addr, *sessionID, currentExpression, transcript)
 
 	for {
 		fmt.Print("> ")
@@ -53,31 +54,58 @@ func main() {
 
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
-			render(*addr, *sessionID, transcript)
+			render(*addr, *sessionID, currentExpression, transcript)
 			continue
 		}
 
-		switch line {
-		case "/quit", "/exit":
+		switch {
+		case line == "/quit" || line == "/exit":
 			return
-		case "/clear":
+		case line == "/clear":
 			transcript = nil
 			messages = nil
+			currentExpression = defaultExpression()
 			*sessionID = fmt.Sprintf("%s-%d", baseSessionID, time.Now().UnixNano())
-			render(*addr, *sessionID, transcript)
+			render(*addr, *sessionID, currentExpression, transcript)
 			continue
-		case "/help":
+		case line == "/help":
 			transcript = append(transcript, transcriptEntry{
 				role:    "system",
-				content: "Commands: /help, /clear, /quit",
+				content: "Commands: /help, /clear, /faces, /face <emotion>, /quit",
 			})
-			render(*addr, *sessionID, transcript)
+			render(*addr, *sessionID, currentExpression, transcript)
+			continue
+		case line == "/faces":
+			transcript = append(transcript, transcriptEntry{
+				role:    "system",
+				content: faceList(),
+			})
+			render(*addr, *sessionID, currentExpression, transcript)
+			continue
+		case strings.HasPrefix(line, "/face "):
+			emotion := strings.TrimSpace(strings.TrimPrefix(line, "/face "))
+			nextExpression := expressionForEmotion(emotion)
+			if nextExpression.Emotion != normalizeEmotion(emotion) {
+				transcript = append(transcript, transcriptEntry{
+					role:    "system",
+					content: fmt.Sprintf("Unknown expression %q. %s", emotion, faceList()),
+				})
+				render(*addr, *sessionID, currentExpression, transcript)
+				continue
+			}
+			currentExpression = nextExpression
+			transcript = append(transcript, transcriptEntry{
+				role:    "system",
+				content: fmt.Sprintf("Expression set to %s.", currentExpression.Emotion),
+			})
+			render(*addr, *sessionID, currentExpression, transcript)
 			continue
 		}
 
 		transcript = append(transcript, transcriptEntry{role: "user", content: line})
 		messages = append(messages, &pb.ChatMessage{Role: "user", Content: line})
-		render(*addr, *sessionID, transcript)
+		currentExpression = expressionForEmotion("thinking")
+		render(*addr, *sessionID, currentExpression, transcript)
 
 		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 		resp, err := client.Chat(ctx, &pb.ChatRequest{
@@ -87,11 +115,12 @@ func main() {
 		cancel()
 
 		if err != nil {
+			currentExpression = expressionForEmotion("error")
 			transcript = append(transcript, transcriptEntry{
 				role:    "system",
 				content: fmt.Sprintf("request failed: %v", err),
 			})
-			render(*addr, *sessionID, transcript)
+			render(*addr, *sessionID, currentExpression, transcript)
 			continue
 		}
 
@@ -99,18 +128,24 @@ func main() {
 		if reply == "" {
 			reply = "(empty response)"
 		}
+		currentExpression = expressionForAssistantReply(reply)
+		reply = stripExpressionTag(reply)
 		transcript = append(transcript, transcriptEntry{role: "assistant", content: reply})
 		messages = append(messages, &pb.ChatMessage{Role: "assistant", Content: reply})
-		render(*addr, *sessionID, transcript)
+		render(*addr, *sessionID, currentExpression, transcript)
 	}
 }
 
-func render(addr, sessionID string, transcript []transcriptEntry) {
+func render(addr, sessionID string, expr expression, transcript []transcriptEntry) {
 	fmt.Print("\033[H\033[2J")
-	fmt.Println("eve-orchestrator tui")
+	fmt.Println("beemo console")
+	for _, line := range expr.Face {
+		fmt.Println(line)
+	}
+	fmt.Printf("expression: %s (%s)\n", expr.Emotion, expr.Label)
 	fmt.Printf("addr: %s\n", addr)
 	fmt.Printf("session: %s\n", sessionID)
-	fmt.Println("commands: /help /clear /quit")
+	fmt.Println("commands: /help /clear /faces /face <emotion> /quit")
 	fmt.Println(strings.Repeat("-", 72))
 	if len(transcript) == 0 {
 		fmt.Println("No messages yet.")
@@ -121,6 +156,10 @@ func render(addr, sessionID string, transcript []transcriptEntry) {
 	for _, entry := range transcript {
 		fmt.Printf("%s: %s\n\n", strings.ToUpper(entry.role), entry.content)
 	}
+}
+
+func faceList() string {
+	return "Expressions: " + strings.Join(expressionOrder, ", ")
 }
 
 func getenvOrDefault(key, def string) string {

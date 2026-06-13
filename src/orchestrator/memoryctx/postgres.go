@@ -41,7 +41,7 @@ func (s *Store) snapshotDetailsDB(sessionID, subjectID string, attrs ...string) 
 	`
 	args := []any{subjectID}
 	if len(attrs) > 0 {
-		query += ` AND attribute = ANY($2)`
+		query += fmt.Sprintf(` AND attribute = ANY($%d)`, len(args)+1)
 		args = append(args, pq.Array(attrs))
 	}
 	query += ` ORDER BY attribute ASC, created_at DESC, id DESC`
@@ -162,6 +162,143 @@ func (s *Store) lookupAttributeDB(subjectID, attr string) (Observation, bool, er
 		ascending = append(ascending, observations[idx])
 	}
 	return preferredObservationFromAscendingHistory(ascending)
+}
+
+func (s *Store) singleSessionSubjectDB(sessionID string) (string, bool, error) {
+	if s.db == nil || strings.TrimSpace(sessionID) == "" {
+		return "", false, nil
+	}
+	rows, err := s.db.Query(`
+		SELECT DISTINCT subject_id
+		FROM observations
+		WHERE session_id = $1 AND subject_id <> 'self'
+		ORDER BY subject_id ASC
+	`, strings.TrimSpace(sessionID))
+	if err != nil {
+		return "", false, err
+	}
+	defer rows.Close()
+
+	var found string
+	for rows.Next() {
+		var subjectID string
+		if err := rows.Scan(&subjectID); err != nil {
+			return "", false, err
+		}
+		subjectID = strings.TrimSpace(subjectID)
+		if subjectID == "" {
+			continue
+		}
+		if found != "" && found != subjectID {
+			return "", false, nil
+		}
+		found = subjectID
+	}
+	if err := rows.Err(); err != nil {
+		return "", false, err
+	}
+	return found, found != "", nil
+}
+
+func (s *Store) insertConversationMessageDB(message ConversationMessage) error {
+	if s.db == nil {
+		return nil
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO conversation_messages (
+			session_id,
+			subject_id,
+			role,
+			content,
+			created_at
+		) VALUES ($1, $2, $3, $4, $5)
+	`, strings.TrimSpace(message.SessionID), strings.TrimSpace(message.SubjectID), strings.TrimSpace(message.Role), strings.TrimSpace(message.Content), message.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("insert conversation message: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) conversationMessagesDB(sessionID string, limit int) ([]ConversationMessage, error) {
+	if s.db == nil || strings.TrimSpace(sessionID) == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.Query(`
+		SELECT session_id, subject_id, role, content, created_at
+		FROM (
+			SELECT id, session_id, subject_id, role, content, created_at
+			FROM conversation_messages
+			WHERE session_id = $1
+			ORDER BY created_at DESC, id DESC
+			LIMIT $2
+		) recent
+		ORDER BY created_at ASC, id ASC
+	`, strings.TrimSpace(sessionID), limit)
+	if err != nil {
+		return nil, fmt.Errorf("select conversation messages: %w", err)
+	}
+	defer rows.Close()
+
+	messages := []ConversationMessage{}
+	for rows.Next() {
+		var message ConversationMessage
+		if err := rows.Scan(&message.SessionID, &message.SubjectID, &message.Role, &message.Content, &message.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan conversation message: %w", err)
+		}
+		messages = append(messages, message)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate conversation messages: %w", err)
+	}
+	return messages, nil
+}
+
+func (s *Store) rememberActiveSpeakerDB(sessionID, subjectID string) error {
+	if s.db == nil || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(subjectID) == "" {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC()
+	if err := ensureSubjectRowTx(tx, strings.TrimSpace(subjectID), now); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO active_speakers (session_id, subject_id, updated_at)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (session_id)
+		DO UPDATE SET subject_id = EXCLUDED.subject_id, updated_at = EXCLUDED.updated_at
+	`, strings.TrimSpace(sessionID), strings.TrimSpace(subjectID), now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) activeSpeakerDB(sessionID string) (string, bool, error) {
+	if s.db == nil || strings.TrimSpace(sessionID) == "" {
+		return "", false, nil
+	}
+	var subjectID string
+	err := s.db.QueryRow(`
+		SELECT subject_id
+		FROM active_speakers
+		WHERE session_id = $1
+	`, strings.TrimSpace(sessionID)).Scan(&subjectID)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	subjectID = strings.TrimSpace(subjectID)
+	return subjectID, subjectID != "", nil
 }
 
 func (s *Store) recallDB(subjectID, query string, limit int, timeout time.Duration) ([]RecallMatch, error) {
@@ -348,6 +485,145 @@ func ensureSubjectRowTx(tx *sql.Tx, subjectID string, now time.Time) error {
 	return nil
 }
 
+func ensureMemoryNodeRowTx(tx *sql.Tx, nodeID, nodeKind string, now time.Time) error {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil
+	}
+	_, err := tx.Exec(`
+		INSERT INTO memory_nodes (node_id, created_at, updated_at)
+		VALUES ($1, $2, $2)
+		ON CONFLICT (node_id)
+		DO UPDATE SET updated_at = EXCLUDED.updated_at
+	`, nodeID, now)
+	if err != nil {
+		return fmt.Errorf("upsert memory node: %w", err)
+	}
+	return nil
+}
+
+func insertMemoryEdgeTx(tx *sql.Tx, ownerID, label, targetID string, now time.Time) error {
+	ownerID = strings.TrimSpace(ownerID)
+	label = normalizeMemoryLabel(label)
+	targetID = strings.TrimSpace(targetID)
+	if ownerID == "" || label == "" || targetID == "" || ownerID == targetID {
+		return nil
+	}
+	_, err := tx.Exec(`
+		INSERT INTO memory_edges (owner_node_id, label, target_node_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $4)
+		ON CONFLICT (owner_node_id, label, target_node_id)
+		DO UPDATE SET updated_at = EXCLUDED.updated_at
+	`, ownerID, label, targetID, now)
+	if err != nil {
+		return fmt.Errorf("insert memory edge %s/%s/%s: %w", ownerID, label, targetID, err)
+	}
+	return nil
+}
+
+func insertObservationGraphTx(tx *sql.Tx, sessionID, subjectID string, observation Observation, observationID int64, now time.Time) error {
+	subjectID = strings.TrimSpace(subjectID)
+	label := normalizeMemoryLabel(observation.Attribute)
+	if subjectID == "" || label == "" {
+		return nil
+	}
+	valueNodeID := memoryValueNodeID(subjectID, label)
+	if err := ensureMemoryNodeRowTx(tx, valueNodeID, "node", now); err != nil {
+		return err
+	}
+	if err := insertMemoryEdgeTx(tx, subjectID, label, valueNodeID, now); err != nil {
+		return err
+	}
+	if err := insertMemoryValueTx(tx, sessionID, valueNodeID, observation, observationID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func insertMemoryValueTx(tx *sql.Tx, sessionID, nodeID string, observation Observation, observationID int64) error {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil
+	}
+	if observationID > 0 {
+		if _, err := tx.Exec(`
+			INSERT INTO memory_node_values (
+				node_id,
+				observation_id,
+				created_at
+			) VALUES ($1, $2, $3)
+		`, nodeID, observationID, observation.CreatedAt); err != nil {
+			return fmt.Errorf("insert memory node value observation ref: %w", err)
+		}
+		return nil
+	}
+
+	args := []any{
+		nodeID,
+		strings.TrimSpace(sessionID),
+		observation.Domain,
+		observation.Route,
+		string(observation.RawValue),
+		string(observation.CanonicalValue),
+		observation.ObservationText,
+		observation.EmbeddingModel,
+		observation.SourceTurn,
+		observation.SourceType,
+		observation.CreatedAt,
+	}
+	query := `
+		INSERT INTO memory_node_values (
+			node_id,
+			session_id,
+			domain,
+			route,
+			raw_value,
+			canonical_value,
+			observation_text,
+			embedding_model,
+			source_turn,
+			source_type,
+			created_at
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11)
+	`
+	if len(observation.Embedding) > 0 {
+		query = `
+			INSERT INTO memory_node_values (
+				node_id,
+				session_id,
+				domain,
+				route,
+				raw_value,
+				canonical_value,
+				observation_text,
+				embedding_model,
+				embedding,
+				source_turn,
+				source_type,
+				created_at
+			) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9::vector, $10, $11, $12)
+		`
+		args = []any{
+			nodeID,
+			strings.TrimSpace(sessionID),
+			observation.Domain,
+			observation.Route,
+			string(observation.RawValue),
+			string(observation.CanonicalValue),
+			observation.ObservationText,
+			observation.EmbeddingModel,
+			vectorLiteral(observation.Embedding),
+			observation.SourceTurn,
+			observation.SourceType,
+			observation.CreatedAt,
+		}
+	}
+	if _, err := tx.Exec(query, args...); err != nil {
+		return fmt.Errorf("insert memory node value: %w", err)
+	}
+	return nil
+}
+
 func latestObservationTx(tx *sql.Tx, subjectID, attr string) (Observation, bool, error) {
 	row := tx.QueryRow(`
 		SELECT session_id, domain, route, raw_value::text, canonical_value::text, observation_text, embedding_model, source_turn, source_type, created_at
@@ -389,7 +665,7 @@ func latestObservationTx(tx *sql.Tx, subjectID, attr string) (Observation, bool,
 	}, true, nil
 }
 
-func insertObservationTx(tx *sql.Tx, sessionID, subjectID string, observation Observation) error {
+func insertObservationTx(tx *sql.Tx, sessionID, subjectID string, observation Observation) (int64, error) {
 	args := []any{
 		strings.TrimSpace(sessionID),
 		subjectID,
@@ -419,6 +695,7 @@ func insertObservationTx(tx *sql.Tx, sessionID, subjectID string, observation Ob
 			source_type,
 			created_at
 		) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12)
+		RETURNING id
 	`
 	if len(observation.Embedding) > 0 {
 		query = `
@@ -437,6 +714,7 @@ func insertObservationTx(tx *sql.Tx, sessionID, subjectID string, observation Ob
 				source_type,
 				created_at
 			) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10::vector, $11, $12, $13)
+			RETURNING id
 		`
 		args = []any{
 			strings.TrimSpace(sessionID),
@@ -454,11 +732,11 @@ func insertObservationTx(tx *sql.Tx, sessionID, subjectID string, observation Ob
 			observation.CreatedAt,
 		}
 	}
-	_, err := tx.Exec(query, args...)
-	if err != nil {
-		return fmt.Errorf("insert observation: %w", err)
+	var id int64
+	if err := tx.QueryRow(query, args...).Scan(&id); err != nil {
+		return 0, fmt.Errorf("insert observation: %w", err)
 	}
-	return nil
+	return id, nil
 }
 
 func (s *Store) insertObservationsDB(sessionID, subjectID string, observations []Observation) error {
@@ -476,6 +754,9 @@ func (s *Store) insertObservationsDB(sessionID, subjectID string, observations [
 	if err := ensureSubjectRowTx(tx, subjectID, now); err != nil {
 		return err
 	}
+	if err := ensureMemoryNodeRowTx(tx, subjectID, "node", now); err != nil {
+		return err
+	}
 
 	for _, observation := range observations {
 		previous, ok, err := latestObservationTx(tx, subjectID, observation.Attribute)
@@ -485,7 +766,11 @@ func (s *Store) insertObservationsDB(sessionID, subjectID string, observations [
 		if ok && observationsEqual(previous, observation) {
 			continue
 		}
-		if err := insertObservationTx(tx, sessionID, subjectID, observation); err != nil {
+		observationID, err := insertObservationTx(tx, sessionID, subjectID, observation)
+		if err != nil {
+			return err
+		}
+		if err := insertObservationGraphTx(tx, sessionID, subjectID, observation, observationID, now); err != nil {
 			return err
 		}
 	}
@@ -523,6 +808,9 @@ func (s *Store) rememberSubjectAliasesDB(sessionID string, subjects []subjectctx
 		if err := ensureSubjectRowTx(tx, subjectID, now); err != nil {
 			return err
 		}
+		if err := ensureMemoryNodeRowTx(tx, subjectID, "node", now); err != nil {
+			return err
+		}
 		for _, alias := range subject.Aliases {
 			alias = normalizeAliasForStorage(alias)
 			if !shouldPersistAlias(subjectID, alias) {
@@ -531,6 +819,59 @@ func (s *Store) rememberSubjectAliasesDB(sessionID string, subjects []subjectctx
 			if _, err := stmt.Exec(subjectID, alias, now); err != nil {
 				return fmt.Errorf("insert subject alias %s/%s: %w", subjectID, alias, err)
 			}
+		}
+	}
+
+	return tx.Commit()
+}
+
+func (s *Store) rememberSubjectRelationshipsDB(relationships []subjectctx.Relationship) error {
+	if s.db == nil || len(relationships) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC()
+	stmt, err := tx.Prepare(`
+		INSERT INTO identity_relationships (owner_subject_id, relation, target_subject_id, updated_at)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (owner_subject_id, relation, target_subject_id)
+		DO UPDATE SET updated_at = EXCLUDED.updated_at
+	`)
+	if err != nil {
+		return fmt.Errorf("prepare identity relationship insert: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, relationship := range relationships {
+		ownerID := strings.TrimSpace(relationship.OwnerID)
+		relation := normalizeAliasForStorage(relationship.Relation)
+		targetID := strings.TrimSpace(relationship.SubjectID)
+		if !shouldPersistRelationship(ownerID, relation, targetID) {
+			continue
+		}
+		if err := ensureSubjectRowTx(tx, ownerID, now); err != nil {
+			return err
+		}
+		if err := ensureSubjectRowTx(tx, targetID, now); err != nil {
+			return err
+		}
+		if err := ensureMemoryNodeRowTx(tx, ownerID, "node", now); err != nil {
+			return err
+		}
+		if err := ensureMemoryNodeRowTx(tx, targetID, "node", now); err != nil {
+			return err
+		}
+		if _, err := stmt.Exec(ownerID, relation, targetID, now); err != nil {
+			return fmt.Errorf("insert identity relationship %s/%s/%s: %w", ownerID, relation, targetID, err)
+		}
+		if err := insertMemoryEdgeTx(tx, ownerID, relation, targetID, now); err != nil {
+			return err
 		}
 	}
 
@@ -559,6 +900,10 @@ func (s *Store) loadSubjectAliasesDB() ([]subjectctx.Subject, error) {
 		if err := rows.Scan(&subjectID, &alias); err != nil {
 			return nil, fmt.Errorf("scan subject alias: %w", err)
 		}
+		alias = normalizeAliasForStorage(alias)
+		if !shouldPersistAlias(subjectID, alias) {
+			continue
+		}
 		aliasesBySubject[subjectID] = append(aliasesBySubject[subjectID], alias)
 	}
 	if err := rows.Err(); err != nil {
@@ -582,6 +927,130 @@ func (s *Store) loadSubjectAliasesDB() ([]subjectctx.Subject, error) {
 		})
 	}
 	return subjects, nil
+}
+
+func (s *Store) loadSubjectRelationshipsDB() ([]subjectctx.Relationship, error) {
+	if s.db == nil {
+		return nil, nil
+	}
+
+	rows, err := s.db.Query(`
+		SELECT owner_subject_id, relation, target_subject_id
+		FROM identity_relationships
+		ORDER BY owner_subject_id ASC, relation ASC, target_subject_id ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("select identity relationships: %w", err)
+	}
+	defer rows.Close()
+
+	relationships := []subjectctx.Relationship{}
+	for rows.Next() {
+		var ownerID string
+		var relation string
+		var targetID string
+		if err := rows.Scan(&ownerID, &relation, &targetID); err != nil {
+			return nil, fmt.Errorf("scan identity relationship: %w", err)
+		}
+		if !shouldPersistRelationship(ownerID, relation, targetID) {
+			continue
+		}
+		relationships = append(relationships, subjectctx.Relationship{
+			OwnerID:   ownerID,
+			Relation:  relation,
+			SubjectID: targetID,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate identity relationships: %w", err)
+	}
+	return relationships, nil
+}
+
+func (s *Store) memoryEdgesDB(ownerID string) ([]MemoryEdge, error) {
+	if s.db == nil || strings.TrimSpace(ownerID) == "" {
+		return nil, nil
+	}
+
+	rows, err := s.db.Query(`
+		SELECT owner_node_id, label, target_node_id
+		FROM memory_edges
+		WHERE owner_node_id = $1
+		ORDER BY label ASC, target_node_id ASC
+	`, strings.TrimSpace(ownerID))
+	if err != nil {
+		return nil, fmt.Errorf("select memory edges: %w", err)
+	}
+	defer rows.Close()
+
+	edges := []MemoryEdge{}
+	for rows.Next() {
+		var edge MemoryEdge
+		if err := rows.Scan(&edge.OwnerID, &edge.Label, &edge.TargetID); err != nil {
+			return nil, fmt.Errorf("scan memory edge: %w", err)
+		}
+		edges = append(edges, edge)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate memory edges: %w", err)
+	}
+	return edges, nil
+}
+
+func (s *Store) memoryValuesDB(nodeID string) ([]Observation, error) {
+	if s.db == nil || strings.TrimSpace(nodeID) == "" {
+		return nil, nil
+	}
+
+	rows, err := s.db.Query(`
+		SELECT
+			COALESCE(o.session_id, mnv.session_id, ''),
+			COALESCE(o.domain, mnv.domain, ''),
+			COALESCE(o.route, mnv.route, ''),
+			COALESCE(o.raw_value, mnv.raw_value, 'null'::jsonb)::text,
+			COALESCE(o.canonical_value, mnv.canonical_value, 'null'::jsonb)::text,
+			COALESCE(o.observation_text, mnv.observation_text, ''),
+			COALESCE(o.embedding_model, mnv.embedding_model, ''),
+			COALESCE(o.source_turn, mnv.source_turn, ''),
+			COALESCE(o.source_type, mnv.source_type, ''),
+			COALESCE(o.created_at, mnv.created_at)
+		FROM memory_node_values mnv
+		LEFT JOIN observations o ON o.id = mnv.observation_id
+		WHERE mnv.node_id = $1
+		ORDER BY COALESCE(o.created_at, mnv.created_at) DESC, mnv.id DESC
+	`, strings.TrimSpace(nodeID))
+	if err != nil {
+		return nil, fmt.Errorf("select memory node values: %w", err)
+	}
+	defer rows.Close()
+
+	values := []Observation{}
+	for rows.Next() {
+		var observation Observation
+		var rawText string
+		var canonicalText string
+		if err := rows.Scan(
+			&observation.SessionID,
+			&observation.Domain,
+			&observation.Route,
+			&rawText,
+			&canonicalText,
+			&observation.ObservationText,
+			&observation.EmbeddingModel,
+			&observation.SourceTurn,
+			&observation.SourceType,
+			&observation.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan memory node value: %w", err)
+		}
+		observation.RawValue = cloneRaw(json.RawMessage(rawText))
+		observation.CanonicalValue = cloneRaw(json.RawMessage(canonicalText))
+		values = append(values, observation)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate memory node values: %w", err)
+	}
+	return values, nil
 }
 
 func vectorLiteral(values []float32) string {

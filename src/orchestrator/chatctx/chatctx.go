@@ -26,7 +26,7 @@ type thread struct {
 	anchors map[string]struct{}
 }
 
-const maxPromptChars = 280
+const maxPromptChars = 180
 
 var (
 	tokenPattern = regexp.MustCompile(`[A-Za-z0-9_./:-]+`)

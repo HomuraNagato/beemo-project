@@ -180,64 +180,38 @@ func FormatCandidates(candidates []Candidate) string {
 		domain := candidate.Domain
 		fmt.Fprintf(&b, "Candidate %d\n", i+1)
 		fmt.Fprintf(&b, "- route_id: %s\n", route.ID)
-		fmt.Fprintf(&b, "- score: %.4f\n", candidate.Score)
 		if domain.ID != "" {
 			fmt.Fprintf(&b, "- domain_id: %s\n", domain.ID)
 		}
-		if domain.Title != "" {
-			fmt.Fprintf(&b, "- domain_title: %s\n", domain.Title)
-		}
-		if route.ParentRoute != "" {
-			fmt.Fprintf(&b, "- parent_route: %s\n", route.ParentRoute)
-		}
-		fmt.Fprintf(&b, "- title: %s\n", route.Title)
-		fmt.Fprintf(&b, "- handler_type: %s\n", route.Handler.Type)
-		fmt.Fprintf(&b, "- handler_target: %s\n", route.Handler.Target)
+		fmt.Fprintf(&b, "- tool: %s\n", route.Handler.Target)
 		if len(route.DefaultArgs) > 0 {
 			if raw, err := json.Marshal(route.DefaultArgs); err == nil {
 				fmt.Fprintf(&b, "- default_args: %s\n", raw)
 			}
 		}
-		if route.Memory.Read || route.Memory.Write || len(route.Memory.Attrs) > 0 || route.Memory.Scope != "" {
-			fmt.Fprintf(&b, "- memory_read: %t\n", route.Memory.Read)
-			fmt.Fprintf(&b, "- memory_write: %t\n", route.Memory.Write)
-			if len(route.Memory.Attrs) > 0 {
-				fmt.Fprintf(&b, "- memory_attrs: %s\n", strings.Join(route.Memory.Attrs, ", "))
-			}
-			if route.Memory.Scope != "" {
-				fmt.Fprintf(&b, "- memory_scope: %s\n", route.Memory.Scope)
-			}
-		}
-		if summary := strings.TrimSpace(route.Summary); summary != "" {
-			fmt.Fprintf(&b, "- summary: %s\n", summary)
-		}
 		if len(route.RequiredFields) > 0 {
 			fmt.Fprintf(&b, "- required_fields: %s\n", strings.Join(route.RequiredFields, ", "))
 		}
-		if guidance := strings.TrimSpace(route.ArgsGuidance); guidance != "" {
-			fmt.Fprintf(&b, "- args_guidance: %s\n", guidance)
+		if len(route.Memory.Attrs) > 0 {
+			fmt.Fprintf(&b, "- memory_attrs: %s\n", strings.Join(route.Memory.Attrs, ", "))
 		}
-		if len(route.WhenToUse) > 0 {
-			fmt.Fprintf(&b, "- when_to_use:\n")
-			for _, item := range route.WhenToUse {
-				fmt.Fprintf(&b, "  - %s\n", item)
-			}
-		}
-		if len(route.WhenNotToUse) > 0 {
-			fmt.Fprintf(&b, "- when_not_to_use:\n")
-			for _, item := range route.WhenNotToUse {
-				fmt.Fprintf(&b, "  - %s\n", item)
-			}
+		if summary := compactField(route.Summary, 140); summary != "" {
+			fmt.Fprintf(&b, "- summary: %s\n", summary)
 		}
 		if len(route.ExampleRequests) > 0 {
-			fmt.Fprintf(&b, "- example_requests:\n")
-			for _, item := range route.ExampleRequests {
-				fmt.Fprintf(&b, "  - %s\n", item)
-			}
+			fmt.Fprintf(&b, "- example: %s\n", compactField(route.ExampleRequests[0], 100))
 		}
 	}
 
 	return strings.TrimSpace(b.String())
+}
+
+func compactField(text string, maxLen int) string {
+	normalized := strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+	if normalized == "" || maxLen <= 0 || len(normalized) <= maxLen {
+		return normalized
+	}
+	return normalized[:maxLen] + "..."
 }
 
 func queryInstruction(query string) string {

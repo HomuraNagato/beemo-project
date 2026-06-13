@@ -41,6 +41,8 @@ type orchestratorServer struct {
 	pendingBySession    map[string]pendingToolState
 	transcriptMu        sync.Mutex
 	transcriptBySession map[string][]*pb.ChatMessage
+	speakerMu           sync.Mutex
+	speakerBySession    map[string]string
 }
 
 type toolCall struct {
@@ -77,9 +79,9 @@ type weatherConfigProvider interface {
 }
 
 const (
-	contextSelectionMessages  = 24
-	activeContextTurns        = 6
-	sessionTranscriptMessages = 24
+	contextSelectionMessages  = 16
+	activeContextTurns        = 4
+	sessionTranscriptMessages = 18
 	memoryRecallMinScore      = 0.48
 	memoryRecallMinMargin     = 0.03
 	weatherLocationAttr       = "weather_location"
@@ -214,6 +216,174 @@ func memoryLookupArgs(attr string) json.RawMessage {
 	return raw
 }
 
+func pendingInterruptedByNewCall(pending pendingToolState, inferred orchtools.PlannedCall) bool {
+	pendingTool := strings.TrimSpace(pending.Tool)
+	inferredAction := strings.TrimSpace(inferred.Action)
+	if pendingTool == "" || inferredAction == "" {
+		return false
+	}
+	if pendingTool != inferredAction {
+		return true
+	}
+	if pendingTool == "memory_lookup" {
+		pendingAttr := normalizedMemoryAttrFromRaw(pending.Args)
+		inferredAttr := normalizedMemoryAttrFromRaw(inferred.Args)
+		return inferredAttr != "" && inferredAttr != pendingAttr
+	}
+	return false
+}
+
+func coerceMemoryLookupTool(call toolCall) (toolCall, bool, error) {
+	if strings.TrimSpace(call.Tool) != "memory_lookup" {
+		return call, false, nil
+	}
+	attr := normalizedMemoryAttrFromRaw(call.Args)
+	switch attr {
+	case "bmi", "body_mass_index":
+		return calculatorOperationTool("bmi")
+	case "bmr", "basal_metabolic_rate":
+		return calculatorOperationTool("bmr")
+	case "tdee", "total_daily_energy_expenditure":
+		return calculatorOperationTool("tdee")
+	default:
+		return call, false, nil
+	}
+}
+
+func calculatorOperationTool(operation string) (toolCall, bool, error) {
+	raw, err := json.Marshal(map[string]string{"operation": operation})
+	if err != nil {
+		return toolCall{}, false, err
+	}
+	return toolCall{
+		Tool: "calculator",
+		Args: raw,
+	}, true, nil
+}
+
+func normalizedMemoryAttrFromRaw(raw json.RawMessage) string {
+	args := map[string]json.RawMessage{}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return ""
+		}
+	}
+	value := strings.TrimSpace(strings.Trim(string(args["attribute"]), `"`))
+	value = strings.ToLower(value)
+	value = strings.ReplaceAll(value, "-", "_")
+	value = strings.ReplaceAll(value, " ", "_")
+	return value
+}
+
+func invalidMemoryLookupAttribute(attr string) bool {
+	attr = strings.TrimSpace(strings.ToLower(attr))
+	return strings.HasPrefix(attr, "person:") || strings.Contains(attr, ":")
+}
+
+func filterInvalidMemoryLookupCalls(calls []toolCall) []toolCall {
+	filtered := calls[:0]
+	for _, call := range calls {
+		if strings.TrimSpace(call.Tool) == "memory_lookup" && invalidMemoryLookupAttribute(normalizedMemoryAttrFromRaw(call.Args)) {
+			continue
+		}
+		filtered = append(filtered, call)
+	}
+	return filtered
+}
+
+func shouldUseDeterministicInferredCall(call orchtools.PlannedCall) bool {
+	switch strings.TrimSpace(call.Action) {
+	case "memory_lookup":
+		attr := normalizedMemoryAttrFromRaw(call.Args)
+		return attr != "" && !invalidMemoryLookupAttribute(attr) && !isCoreMemoryAttribute(attr)
+	default:
+		return false
+	}
+}
+
+func shouldUseDeterministicInferredCallForTurn(call orchtools.PlannedCall, userQuery, currentSubjectID string) bool {
+	if shouldUseDeterministicInferredCall(call) {
+		return true
+	}
+	if strings.TrimSpace(call.Action) == "get_time" && isSimpleCurrentTimeQuery(userQuery) {
+		return true
+	}
+	if strings.TrimSpace(call.Action) == "calculator" &&
+		strings.TrimSpace(currentSubjectID) != "" &&
+		textReferencesSpeakerRelation(userQuery) {
+		return true
+	}
+	return false
+}
+
+func isSimpleCurrentTimeQuery(text string) bool {
+	lower := strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(text)), " "))
+	if lower == "" {
+		return false
+	}
+	for _, term := range []string{
+		"tomorrow", "yesterday", "next ", "last ", "after", "before", "from today",
+		"in ", " ago", "later", "will ", "days", "weeks", "months", "years",
+	} {
+		if strings.Contains(lower, term) {
+			return false
+		}
+	}
+	return strings.Contains(lower, "what time") ||
+		strings.Contains(lower, "what is the time") ||
+		strings.Contains(lower, "what's the time") ||
+		strings.Contains(lower, "whats the time") ||
+		strings.Contains(lower, "tell me the time") ||
+		strings.Contains(lower, "current time") ||
+		strings.Contains(lower, "time is it") ||
+		strings.Contains(lower, "right now") ||
+		strings.Contains(lower, "today's date") ||
+		strings.Contains(lower, "todays date") ||
+		strings.Contains(lower, "current date") ||
+		strings.Contains(lower, "what date") ||
+		strings.Contains(lower, "what day") ||
+		strings.Contains(lower, "what month") ||
+		strings.Contains(lower, "what year") ||
+		lower == "time" ||
+		lower == "date"
+}
+
+func isCoreMemoryAttribute(attr string) bool {
+	switch strings.TrimSpace(strings.ToLower(attr)) {
+	case "weight", "height", "age_years", "gender", "activity_level", "birthday", "start_date", "favorite_color", "name", weatherLocationAttr:
+		return true
+	default:
+		return false
+	}
+}
+
+func pendingFieldsSatisfied(missing []string, args json.RawMessage) bool {
+	if len(missing) == 0 {
+		return true
+	}
+	values := map[string]json.RawMessage{}
+	if len(args) > 0 {
+		if err := json.Unmarshal(args, &values); err != nil {
+			return false
+		}
+	}
+	for _, field := range missing {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		if raw, ok := values[field]; ok && rawValuePresent(raw) {
+			return true
+		}
+	}
+	return false
+}
+
+func rawValuePresent(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed != "" && trimmed != "null" && trimmed != "[]" && trimmed != `""`
+}
+
 func buildMemoryLookupResult(memoryStore *memoryctx.Store, facts factSelector, subjectID, userQuery string, call toolCall, route routing.Route, timeout time.Duration) (orchtools.Result, error) {
 	if strings.TrimSpace(subjectID) == "" {
 		return orchtools.Result{
@@ -272,11 +442,309 @@ func buildMemoryLookupResult(memoryStore *memoryctx.Store, facts factSelector, s
 }
 
 func effectiveWeatherSubjectID(currentSubjectID string) string {
-	currentSubjectID = strings.TrimSpace(currentSubjectID)
-	if currentSubjectID == "" {
-		return "self"
+	return normalizeCurrentSubjectID(currentSubjectID)
+}
+
+func textReferencesSelf(text string) bool {
+	padded := " " + strings.ToLower(strings.TrimSpace(text)) + " "
+	for _, marker := range []string{" i ", " me ", " my ", " mine "} {
+		if strings.Contains(padded, marker) {
+			return true
+		}
 	}
-	return currentSubjectID
+	return false
+}
+
+func textReferencesSpeakerRelation(text string) bool {
+	return firstSpeakerRelation(text) != ""
+}
+
+func firstSpeakerRelation(text string) string {
+	words := strings.Fields(normalizeSpeakerText(text))
+	for idx := 0; idx < len(words); idx++ {
+		relationWord := words[idx]
+		if words[idx] == "my" || words[idx] == "mine" {
+			if idx+1 >= len(words) {
+				continue
+			}
+			relationWord = words[idx+1]
+		}
+		if isSpeakerRelation(relationWord) {
+			if relationWord == "mother" {
+				return "mom"
+			}
+			if relationWord == "father" {
+				return "dad"
+			}
+			return relationWord
+		}
+	}
+	return ""
+}
+
+func isSpeakerRelation(word string) bool {
+	word = strings.TrimSpace(word)
+	if strings.HasPrefix(word, "friend") && len(word) > len("friend") {
+		suffix := strings.TrimPrefix(word, "friend")
+		for _, r := range suffix {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	switch word {
+	case "brother", "dad", "daughter", "father", "friend", "girlfriend", "boyfriend", "husband", "mom", "mother", "partner", "sister", "son", "trainer", "wife":
+		return true
+	default:
+		return false
+	}
+}
+
+func introducedSpeakerID(text string) string {
+	words := strings.Fields(normalizeSpeakerText(text))
+	for idx := 0; idx < len(words); idx++ {
+		var nameWords []string
+		switch {
+		case idx+2 < len(words) && words[idx] == "i" && (words[idx+1] == "am" || words[idx+1] == "m"):
+			nameWords = words[idx+2:]
+		case idx+3 < len(words) && words[idx] == "my" && words[idx+1] == "name" && words[idx+2] == "is":
+			nameWords = words[idx+3:]
+		case idx+2 < len(words) && words[idx] == "this" && words[idx+1] == "is":
+			nameWords = words[idx+2:]
+		case idx+2 < len(words) && words[idx] == "it" && (words[idx+1] == "is" || words[idx+1] == "s"):
+			nameWords = words[idx+2:]
+		case idx+1 < len(words) && words[idx] == "its":
+			nameWords = words[idx+1:]
+		default:
+			continue
+		}
+		if name := firstNameToken(nameWords); name != "" {
+			return "person:" + name
+		}
+	}
+	return ""
+}
+
+func shouldUseIntroducedSpeakerAsSubject(currentSubjectID, previousActiveSpeakerID, introducedSpeakerID string) bool {
+	currentSubjectID = strings.TrimSpace(currentSubjectID)
+	previousActiveSpeakerID = strings.TrimSpace(previousActiveSpeakerID)
+	introducedSpeakerID = strings.TrimSpace(introducedSpeakerID)
+	return currentSubjectID == "" ||
+		currentSubjectID == "self" ||
+		currentSubjectID == introducedSpeakerID ||
+		(previousActiveSpeakerID != "" && currentSubjectID == previousActiveSpeakerID)
+}
+
+func normalizeSpeakerText(text string) string {
+	replaced := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			return r + ('a' - 'A')
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			return r
+		default:
+			return ' '
+		}
+	}, text)
+	return strings.Join(strings.Fields(replaced), " ")
+}
+
+func firstNameToken(words []string) string {
+	for _, word := range words {
+		if _, stop := speakerNameStopwords[word]; stop {
+			return ""
+		}
+		if !isSpeakerNameToken(word) {
+			continue
+		}
+		return word
+	}
+	return ""
+}
+
+func isSpeakerNameToken(word string) bool {
+	if word == "" {
+		return false
+	}
+	for idx, r := range word {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case idx > 0 && r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+var speakerNameStopwords = map[string]struct{}{
+	"a": {}, "an": {}, "and": {}, "are": {}, "bmi": {}, "bmr": {}, "height": {}, "my": {},
+	"again": {}, "female": {}, "male": {}, "old": {}, "tdee": {}, "the": {}, "weight": {}, "what": {},
+	"who": {}, "with": {}, "year": {}, "years": {},
+}
+
+func mergeSubjectSummary(prefix, summary string) string {
+	prefix = strings.TrimSpace(prefix)
+	summary = strings.TrimSpace(summary)
+	switch {
+	case prefix == "":
+		return summary
+	case summary == "":
+		return prefix
+	default:
+		return prefix + "\n" + summary
+	}
+}
+
+func looksContextualUserReply(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	for _, prefix := range []string{
+		"what about", "how about", "and ", "also ", "same ", "then ",
+		"for that", "for this", "that ", "this ", "it ", "its ", "that's ", "it's ",
+		"he ", "his ", "him ", "she ", "her ", "they ", "their ", "them ",
+	} {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	words := strings.Fields(lower)
+	return len(words) <= 4 && (strings.Contains(lower, "it") || strings.Contains(lower, "that") || strings.Contains(lower, "same") || strings.Contains(lower, " her") || strings.Contains(lower, " his"))
+}
+
+func looksStandaloneGenericRequest(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" || looksContextualUserReply(lower) {
+		return false
+	}
+	if strings.Contains(lower, "?") {
+		return false
+	}
+	for _, keyword := range []string{
+		"bmi", "bmr", "tdee", "weight", "height", "birthday", "time", "date", "weather",
+		"remember", "recall", "calculate", "convert", "percent",
+	} {
+		if strings.Contains(lower, keyword) {
+			return false
+		}
+	}
+	switch {
+	case strings.HasPrefix(lower, "tell me something"):
+		return true
+	case strings.HasPrefix(lower, "say something"):
+		return true
+	case strings.HasPrefix(lower, "give me something"):
+		return true
+	case lower == "hi" || lower == "hello" || lower == "hey" || strings.HasPrefix(lower, "hi "):
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldAcknowledgeIdentityStatement(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" || containsRequestIntent(lower) {
+		return false
+	}
+	if introducedSpeakerID(text) != "" {
+		return true
+	}
+	if _, ok, err := orchtools.ExtractObservationPatch(text); err == nil && ok {
+		return true
+	}
+	return false
+}
+
+func containsRequestIntent(lower string) bool {
+	padded := " " + strings.Join(strings.Fields(lower), " ") + " "
+	if strings.Contains(padded, "?") {
+		return true
+	}
+	for _, marker := range []string{
+		" what ", " what is ", " what's ", " how ", " when ", " where ", " why ", " who ",
+		" do you remember ", " remember my ", " calculate ", " convert ", " tell me ",
+	} {
+		if strings.Contains(padded, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldDeferToFactLookup(facts factSelector, text string) bool {
+	if facts == nil {
+		return false
+	}
+	normalized := " " + normalizeSpeakerText(text) + " "
+	for _, attr := range facts.Attrs() {
+		label := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(attr)), "_", " ")
+		if label != "" && strings.Contains(normalized, " "+label+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldDirectAcknowledgeIdentityTurn(facts factSelector, text string) bool {
+	if !shouldAcknowledgeIdentityStatement(text) {
+		return false
+	}
+	if introducedSpeakerID(text) != "" || textReferencesSpeakerRelation(text) {
+		return !shouldDeferToFactLookup(facts, text)
+	}
+	return false
+}
+
+func shouldDirectAcknowledgeStoredFactTurn(text string) bool {
+	if introducedSpeakerID(text) == "" && !textReferencesSelf(text) && !textReferencesSpeakerRelation(text) {
+		return false
+	}
+	_, ok, err := orchtools.ExtractObservationPatch(text)
+	if err != nil || !ok {
+		return false
+	}
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if containsRequestIntent(lower) && !looksMemoryStoreInstruction(lower) {
+		return false
+	}
+	return true
+}
+
+func looksMemoryStoreInstruction(lower string) bool {
+	lower = strings.TrimSpace(lower)
+	if lower == "" || strings.Contains(lower, "?") {
+		return false
+	}
+	for _, marker := range []string{
+		"remember my ",
+		"remember that my ",
+		"please remember my ",
+		"please remember that my ",
+		"set my ",
+		"update my ",
+		"change my ",
+		"correct my ",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldDirectAcknowledgeResolvedStoredFactTurn(text, currentSubjectID string) bool {
+	if strings.TrimSpace(currentSubjectID) == "" {
+		return false
+	}
+	if containsRequestIntent(strings.ToLower(strings.TrimSpace(text))) {
+		return false
+	}
+	_, ok, err := orchtools.ExtractObservationPatch(text)
+	return err == nil && ok
 }
 
 func decodeWeatherLocationSnapshot(snapshot map[string]json.RawMessage) (orchtools.WeatherLocation, bool) {
@@ -361,6 +829,12 @@ func resultFromObservation(memoryStore *memoryctx.Store, facts factSelector, sub
 	if len(value) > 0 {
 		formatted, err := orchtools.FormatFactValue(kind, value)
 		if err == nil {
+			if strings.TrimSpace(toolName) == "memory_lookup" {
+				return orchtools.Result{
+					Action: toolName,
+					Output: fmt.Sprintf("%s: %s", outputLabel, formatted),
+				}, nil
+			}
 			return orchtools.Result{
 				Action: toolName,
 				Output: fmt.Sprintf("%s %s", outputLabel, formatted),
@@ -378,6 +852,111 @@ func resultFromObservation(memoryStore *memoryctx.Store, facts factSelector, sub
 		Action: toolName,
 		Output: text,
 	}, nil
+}
+
+func directToolResponse(results []orchtools.Result, userQuery string) (string, bool) {
+	if len(results) != 1 {
+		return "", false
+	}
+	result := results[0]
+	output := strings.TrimSpace(result.Output)
+	if output == "" {
+		return "", false
+	}
+	switch strings.TrimSpace(result.Action) {
+	case "get_time":
+		if !isSimpleCurrentTimeQuery(userQuery) {
+			return "", false
+		}
+		timestamp, err := time.Parse(time.RFC3339, output)
+		if err != nil {
+			return output, true
+		}
+		return fmt.Sprintf("It is %s.", timestamp.Format("3:04 PM on January 2, 2006")), true
+	case "memory_lookup":
+	default:
+		return "", false
+	}
+	label, value, ok := parseMemoryOutput(output)
+	if !ok {
+		return output, true
+	}
+	label = strings.ReplaceAll(strings.TrimSpace(label), "_", " ")
+	return fmt.Sprintf("Your %s is %s.", label, strings.TrimSpace(value)), true
+}
+
+func subjectDisplayName(subjectID string) string {
+	subjectID = strings.TrimSpace(subjectID)
+	if subjectID == "" || subjectID == "self" {
+		return ""
+	}
+	if strings.HasPrefix(subjectID, "scoped:") {
+		parts := strings.Split(subjectID, ":")
+		if len(parts) > 0 {
+			subjectID = parts[len(parts)-1]
+		}
+	}
+	subjectID = strings.TrimPrefix(subjectID, "person:")
+	subjectID = strings.ReplaceAll(subjectID, "_", " ")
+	words := strings.Fields(subjectID)
+	for idx, word := range words {
+		if word == "" {
+			continue
+		}
+		words[idx] = strings.ToUpper(word[:1]) + word[1:]
+	}
+	return strings.Join(words, " ")
+}
+
+func directCalculatorSubjectResponse(output, subjectName string) (string, bool) {
+	output = strings.TrimSpace(output)
+	subjectName = strings.TrimSpace(subjectName)
+	if output == "" || subjectName == "" {
+		return "", false
+	}
+	label, value, ok := strings.Cut(output, " ")
+	if !ok || strings.TrimSpace(value) == "" {
+		return "", false
+	}
+	switch strings.ToUpper(strings.TrimSpace(label)) {
+	case "BMI", "BMR", "TDEE":
+		return fmt.Sprintf("%s's %s is %s.", subjectName, strings.ToUpper(strings.TrimSpace(label)), strings.TrimSpace(value)), true
+	default:
+		return "", false
+	}
+}
+
+func directMemorySubjectResponse(output, subjectName string) (string, bool) {
+	output = strings.TrimSpace(output)
+	subjectName = strings.TrimSpace(subjectName)
+	if output == "" || subjectName == "" {
+		return "", false
+	}
+	label, value, ok := parseMemoryOutput(output)
+	if !ok {
+		return "", false
+	}
+	label = strings.ReplaceAll(strings.TrimSpace(label), "_", " ")
+	return fmt.Sprintf("%s's %s is %s.", subjectName, label, strings.TrimSpace(value)), true
+}
+
+func parseMemoryOutput(output string) (string, string, bool) {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return "", "", false
+	}
+	if label, value, ok := strings.Cut(output, ":"); ok {
+		label = strings.TrimSpace(label)
+		value = strings.TrimSpace(value)
+		return label, value, label != "" && value != ""
+	}
+	label, value, ok := strings.Cut(output, " ")
+	if !ok {
+		return "", "", false
+	}
+	label = strings.TrimSpace(label)
+	value = strings.TrimSpace(value)
+	return label, value, label != "" && value != ""
 }
 
 func bestRecallMatch(matches []memoryctx.RecallMatch) (memoryctx.RecallMatch, bool) {
@@ -467,12 +1046,30 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 	embeddingTimeout := time.Duration(s.cfg.EmbeddingTimeoutMs) * time.Millisecond
 	memoryStore := s.getMemoryStore()
 	activeContext := chatctx.Build(effectiveMessages, contextSelectionMessages, activeContextTurns)
+	decisionTranscript := activeContext.Transcript
+	if looksStandaloneGenericRequest(userQuery) {
+		decisionTranscript = "user: " + strings.Join(strings.Fields(userQuery), " ")
+	}
 	seededSubjects, aliasErr := memoryStore.LoadSubjectAliases()
 	if aliasErr != nil {
 		fmt.Printf("orch.chat done session=%s status=error reason=subject_alias_load ms=%d err=%v\n", req.GetSessionId(), time.Since(start).Milliseconds(), aliasErr)
 		return nil, aliasErr
 	}
-	subjectContext := subjectctx.ResolveWithSeed(effectiveMessages, seededSubjects)
+	seededRelationships, relationshipErr := memoryStore.LoadSubjectRelationships()
+	if relationshipErr != nil {
+		fmt.Printf("orch.chat done session=%s status=error reason=subject_relationship_load ms=%d err=%v\n", req.GetSessionId(), time.Since(start).Milliseconds(), relationshipErr)
+		return nil, relationshipErr
+	}
+	seededActiveSpeakerID := s.getActiveSpeaker(req.GetSessionId())
+	if seededActiveSpeakerID == "" {
+		if speakerID, ok, serr := memoryStore.ActiveSpeaker(req.GetSessionId()); serr != nil {
+			fmt.Printf("orch.chat speaker_lookup session=%s status=error err=%v\n", req.GetSessionId(), serr)
+		} else if ok {
+			seededActiveSpeakerID = speakerID
+			s.setActiveSpeaker(req.GetSessionId(), speakerID)
+		}
+	}
+	subjectContext := subjectctx.ResolveWithIdentityContext(effectiveMessages, seededSubjects, seededRelationships, seededActiveSpeakerID)
 	subjectSummary := subjectContext.Summary()
 	routingQuery := strings.TrimSpace(activeContext.UserEvidence)
 	if routingQuery == "" {
@@ -482,11 +1079,72 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 	text := ""
 	fromPending := false
 	pending, hasPending := s.getPending(req.GetSessionId())
-	currentSubjectID := subjectContext.CurrentSubjectID
+	currentSubjectID := normalizeCurrentSubjectID(subjectContext.CurrentSubjectID)
+	introducedSpeaker := introducedSpeakerID(userQuery)
+	previousActiveSpeakerID := seededActiveSpeakerID
+	if introducedSpeaker != "" && shouldDirectAcknowledgeIdentityTurn(s.factSelector, userQuery) {
+		s.clearPending(req.GetSessionId())
+		hasPending = false
+		pending = pendingToolState{}
+	}
+	if speakerID := introducedSpeaker; speakerID != "" {
+		s.setActiveSpeaker(req.GetSessionId(), speakerID)
+		if err := memoryStore.RememberActiveSpeaker(req.GetSessionId(), speakerID); err != nil {
+			fmt.Printf("orch.chat active_speaker_store session=%s status=error err=%v\n", req.GetSessionId(), err)
+		}
+		if shouldUseIntroducedSpeakerAsSubject(currentSubjectID, previousActiveSpeakerID, speakerID) {
+			currentSubjectID = speakerID
+		}
+		if !strings.Contains(subjectSummary, "current_subject_id:") {
+			subjectSummary = mergeSubjectSummary("current_subject_id: "+speakerID, subjectSummary)
+		}
+	} else if currentSubjectID == "" && textReferencesSelf(userQuery) && !textReferencesSpeakerRelation(userQuery) {
+		if speakerID := s.getActiveSpeaker(req.GetSessionId()); speakerID != "" {
+			currentSubjectID = speakerID
+			if strings.TrimSpace(subjectSummary) == "" {
+				subjectSummary = "current_subject_id: " + speakerID
+			}
+		} else if speakerID, ok, serr := memoryStore.ActiveSpeaker(req.GetSessionId()); serr != nil {
+			fmt.Printf("orch.chat speaker_lookup session=%s status=error err=%v\n", req.GetSessionId(), serr)
+		} else if ok {
+			currentSubjectID = speakerID
+			s.setActiveSpeaker(req.GetSessionId(), speakerID)
+			if strings.TrimSpace(subjectSummary) == "" {
+				subjectSummary = "current_subject_id: " + speakerID
+			}
+		}
+	}
 	if currentSubjectID == "" && hasPending && strings.TrimSpace(pending.SubjectID) != "" {
-		currentSubjectID = strings.TrimSpace(pending.SubjectID)
+		currentSubjectID = normalizeCurrentSubjectID(pending.SubjectID)
 		if strings.TrimSpace(subjectSummary) == "" {
 			subjectSummary = "current_subject_id: " + currentSubjectID
+		}
+	}
+	if currentSubjectID == "" && textReferencesSpeakerRelation(userQuery) && introducedSpeaker == "" {
+		if s.getActiveSpeaker(req.GetSessionId()) == "" {
+			if speakerID, ok, serr := memoryStore.ActiveSpeaker(req.GetSessionId()); serr != nil {
+				fmt.Printf("orch.chat speaker_lookup session=%s status=error err=%v\n", req.GetSessionId(), serr)
+			} else if ok {
+				s.setActiveSpeaker(req.GetSessionId(), speakerID)
+			}
+		}
+		question := "Who am I talking to?"
+		if s.getActiveSpeaker(req.GetSessionId()) != "" {
+			if relation := firstSpeakerRelation(userQuery); relation != "" {
+				question = "Who is your " + relation + "?"
+			}
+		}
+		if question != "" {
+			s.setTranscript(req.GetSessionId(), appendAssistantMessage(effectiveMessages, question))
+			s.appendHistory(&historyEntry{
+				Timestamp: time.Now().Format(time.RFC3339),
+				SessionID: req.GetSessionId(),
+				UserQuery: userQuery,
+				Response:  question,
+				Status:    "needs_input",
+			})
+			fmt.Printf("orch.chat done session=%s status=needs_input reason=active_speaker_required ms=%d\n", req.GetSessionId(), time.Since(start).Milliseconds())
+			return &pb.ChatResponse{Text: question}, nil
 		}
 	}
 	originQuery := userQuery
@@ -496,8 +1154,27 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 	if err := memoryStore.RememberSubjectAliases(req.GetSessionId(), subjectContext.Subjects); err != nil {
 		fmt.Printf("orch.chat subject_alias_ingest session=%s status=error err=%v\n", req.GetSessionId(), err)
 	}
+	if err := memoryStore.RememberSubjectRelationships(subjectContext.Relationships); err != nil {
+		fmt.Printf("orch.chat subject_relationship_ingest session=%s status=error err=%v\n", req.GetSessionId(), err)
+	}
+	if err := memoryStore.RecordConversationMessage(req.GetSessionId(), currentSubjectID, "user", userQuery); err != nil {
+		fmt.Printf("orch.chat conversation_log session=%s role=user status=error err=%v\n", req.GetSessionId(), err)
+	}
 	if err := memoryStore.RememberUserMessage(req.GetSessionId(), currentSubjectID, userQuery); err != nil {
 		fmt.Printf("orch.chat memory_ingest session=%s status=error err=%v\n", req.GetSessionId(), err)
+	}
+	if !hasPending && (shouldDirectAcknowledgeIdentityTurn(s.factSelector, userQuery) || shouldDirectAcknowledgeStoredFactTurn(userQuery) || shouldDirectAcknowledgeResolvedStoredFactTurn(userQuery, currentSubjectID)) {
+		directText := "Got it."
+		s.appendHistory(&historyEntry{
+			Timestamp: time.Now().Format(time.RFC3339),
+			SessionID: req.GetSessionId(),
+			UserQuery: userQuery,
+			Response:  directText,
+			Status:    "ok",
+		})
+		s.setTranscript(req.GetSessionId(), appendAssistantMessage(effectiveMessages, directText))
+		fmt.Printf("orch.chat done session=%s status=ok path=direct_ack ms=%d\n", req.GetSessionId(), time.Since(start).Milliseconds())
+		return &pb.ChatResponse{Text: directText}, nil
 	}
 	if hasPending {
 		if filledCall, ok, ferr := orchtools.TryFillPending(orchtools.PendingFillRequest{
@@ -515,6 +1192,20 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 			}
 			text = string(filledText)
 			fromPending = true
+		}
+	}
+	if hasPending && strings.TrimSpace(text) == "" {
+		if inferred, ok, ierr := orchtools.InferToolCall(userQuery); ierr != nil {
+			return nil, ierr
+		} else if ok && pendingInterruptedByNewCall(pending, inferred) {
+			s.clearPending(req.GetSessionId())
+			hasPending = false
+			originQuery = userQuery
+			inferredText, jerr := json.Marshal([]toolCall{fromPlannedCall(inferred)})
+			if jerr != nil {
+				return nil, jerr
+			}
+			text = string(inferredText)
 		}
 	}
 	if hasPending && strings.TrimSpace(text) == "" {
@@ -557,7 +1248,7 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 			mergedCall, ok, merr := mergePendingToolCall(pending, resumeCalls[0])
 			if merr != nil {
 				fmt.Printf("orch.chat resume_rejected session=%s err=%v raw=%q\n", req.GetSessionId(), merr, resumeText)
-			} else if ok {
+			} else if ok && pendingFieldsSatisfied(pending.Missing, mergedCall.Args) {
 				mergedText, jerr := json.Marshal([]toolCall{mergedCall})
 				if jerr != nil {
 					return nil, jerr
@@ -567,18 +1258,18 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 			}
 		}
 		if strings.TrimSpace(text) == "" {
-			s.setTranscript(req.GetSessionId(), appendAssistantMessage(effectiveMessages, pending.Question))
 			s.appendHistory(&historyEntry{
 				Timestamp: time.Now().Format(time.RFC3339),
 				SessionID: req.GetSessionId(),
 				UserQuery: userQuery,
 				Decision:  resumeText,
 				Tools:     []string{pending.Tool},
-				Response:  pending.Question,
-				Status:    "needs_input",
+				Status:    "pending_abandoned",
 			})
-			fmt.Printf("orch.chat done session=%s status=needs_input_resume question=%q ms=%d\n", req.GetSessionId(), pending.Question, time.Since(start).Milliseconds())
-			return &pb.ChatResponse{Text: pending.Question}, nil
+			fmt.Printf("orch.chat pending_abandoned session=%s tool=%s latest=%q ms=%d\n", req.GetSessionId(), pending.Tool, userQuery, time.Since(start).Milliseconds())
+			s.clearPending(req.GetSessionId())
+			hasPending = false
+			originQuery = userQuery
 		}
 	}
 
@@ -588,7 +1279,19 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 		catalogRoutes = selector.Routes()
 	}
 	if strings.TrimSpace(text) == "" {
-		prompt := prompts.ToolDecision(userQuery, activeContext.Transcript, subjectSummary)
+		if inferred, ok, ierr := orchtools.InferToolCall(userQuery); ierr != nil {
+			return nil, ierr
+		} else if ok && shouldUseDeterministicInferredCallForTurn(inferred, userQuery, currentSubjectID) {
+			toolCalls := []toolCall{fromPlannedCall(inferred)}
+			inferredText, jerr := json.Marshal(toolCalls)
+			if jerr != nil {
+				return nil, jerr
+			}
+			text = string(inferredText)
+		}
+	}
+	if strings.TrimSpace(text) == "" {
+		prompt := prompts.ToolDecision(userQuery, decisionTranscript, subjectSummary)
 		if s.routeSelector != nil {
 			candidates, rerr := s.routeSelector.Retrieve(routingQuery, embeddingTimeout)
 			if rerr != nil {
@@ -597,7 +1300,7 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 				routeCandidates = candidates
 				routeBlock := routing.FormatCandidates(candidates)
 				fmt.Printf("orch.chat route_candidates session=%s routes=%v\n", req.GetSessionId(), candidateIDs(candidates))
-				prompt = prompts.RoutedToolDecision(userQuery, activeContext.Transcript, subjectSummary, routeBlock)
+				prompt = prompts.RoutedToolDecision(userQuery, decisionTranscript, subjectSummary, routeBlock)
 			}
 		}
 		var err error
@@ -629,7 +1332,7 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 		return nil, err
 	}
 	if len(toolCalls) == 0 {
-		retryPrompt := prompts.RetryToolDecision(userQuery, activeContext.Transcript, subjectSummary)
+		retryPrompt := prompts.RetryToolDecision(userQuery, decisionTranscript, subjectSummary)
 		retryText, rerr := callCompletion(s.cfg.LLMHTTPURL, s.cfg.LLMModel, retryPrompt, grammar, callTimeout)
 		if rerr != nil {
 			fmt.Printf("orch.chat retry_decision session=%s status=skipped err=%v\n", req.GetSessionId(), rerr)
@@ -640,9 +1343,27 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 			text = retryText
 		}
 	}
+	if len(toolCalls) == 0 {
+		if inferred, ok, ierr := orchtools.InferToolCall(userQuery); ierr != nil {
+			return nil, ierr
+		} else if ok {
+			toolCalls = []toolCall{fromPlannedCall(inferred)}
+			if inferredText, jerr := json.Marshal(toolCalls); jerr != nil {
+				return nil, jerr
+			} else {
+				text = string(inferredText)
+			}
+		}
+	}
+	toolCalls = filterInvalidMemoryLookupCalls(toolCalls)
+	if len(toolCalls) == 0 {
+		text = "[]"
+	}
 	toolsRequested := toolNames(toolCalls)
 	fmt.Printf("orch.chat decision_raw session=%s text=%s tools=%v\n", req.GetSessionId(), text, toolsRequested)
 	toolResult := ""
+	directResolvedSubjectText := ""
+	successfulResults := []orchtools.Result{}
 	evidenceText := activeContext.UserEvidence
 	if strings.TrimSpace(evidenceText) == "" {
 		evidenceText = originQuery
@@ -664,6 +1385,11 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 			}
 			explicitTool = fromPlannedCall(groundedTool)
 		}
+		if coerced, ok, cerr := coerceMemoryLookupTool(explicitTool); cerr != nil {
+			return nil, cerr
+		} else if ok {
+			explicitTool = coerced
+		}
 		matchedRoute, matched, merr := routing.MatchCall(routeCandidates, catalogRoutes, explicitTool.Tool, explicitTool.Args)
 		if merr != nil {
 			fmt.Printf("orch.chat done session=%s status=error reason=route_match ms=%d err=%v\n", req.GetSessionId(), time.Since(start).Milliseconds(), merr)
@@ -671,6 +1397,17 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 		}
 		if explicitTool.Tool == "weather" {
 			currentSubjectID = effectiveWeatherSubjectID(currentSubjectID)
+		}
+		if currentSubjectID == "" && textReferencesSelf(userQuery) && !textReferencesSpeakerRelation(userQuery) {
+			currentSubjectID = s.getActiveSpeaker(req.GetSessionId())
+			if currentSubjectID == "" {
+				if speakerID, ok, serr := memoryStore.ActiveSpeaker(req.GetSessionId()); serr != nil {
+					fmt.Printf("orch.chat speaker_lookup session=%s status=error err=%v\n", req.GetSessionId(), serr)
+				} else if ok {
+					currentSubjectID = speakerID
+					s.setActiveSpeaker(req.GetSessionId(), speakerID)
+				}
+			}
 		}
 		memoryAttrs := []string(nil)
 		memoryRead := false
@@ -719,6 +1456,9 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 		}
 		if currentSubjectID != "" && memoryRead && len(memoryAttrs) > 0 {
 			conflictAttrs := conflictingMemoryAttrs(snapshotDetails.Conflicts, explicitObservationAttrs(userQuery), memoryAttrs)
+			if explicitTool.Tool == "memory_lookup" {
+				conflictAttrs = nil
+			}
 			if len(conflictAttrs) > 0 {
 				pendingArgs := cloneRawMessage(explicitTool.Args)
 				if explicitTool.Tool == "calculator" {
@@ -864,6 +1604,43 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 			})
 			return nil, err
 		}
+		if result.Status == "needs_input" && tool.Tool == "calculator" && textReferencesSelf(userQuery) && !textReferencesSpeakerRelation(userQuery) {
+			if speakerID, ok, serr := memoryStore.ActiveSpeaker(req.GetSessionId()); serr != nil {
+				fmt.Printf("orch.chat speaker_retry session=%s status=error err=%v\n", req.GetSessionId(), serr)
+			} else if ok && speakerID != "" {
+				retrySnapshot := memoryStore.Snapshot(req.GetSessionId(), speakerID, memoryAttrs...)
+				if len(retrySnapshot) > 0 {
+					retryTool, rerr := orchtools.ResolveCalculatorCall(toPlannedCall(tool), userQuery, retrySnapshot)
+					if rerr != nil {
+						fmt.Printf("orch.chat speaker_retry session=%s status=resolve_error err=%v\n", req.GetSessionId(), rerr)
+					} else if string(retryTool.Args) != string(tool.Args) {
+						retryResult, terr := s.tools.Execute(ctx, orchtools.Request{
+							SessionID: req.GetSessionId(),
+							Action:    retryTool.Action,
+							Args:      retryTool.Args,
+						})
+						if terr != nil {
+							fmt.Printf("orch.chat speaker_retry session=%s status=tool_error err=%v\n", req.GetSessionId(), terr)
+						} else if retryResult.Status != "needs_input" {
+							currentSubjectID = speakerID
+							s.setActiveSpeaker(req.GetSessionId(), speakerID)
+							tool = fromPlannedCall(retryTool)
+							result = retryResult
+							if memoryWrite {
+								if err := memoryStore.RememberToolCallWithContext(req.GetSessionId(), currentSubjectID, retryTool, memoryctx.RecordContext{
+									Domain:     matchedRoute.Domain,
+									Route:      matchedRoute.ID,
+									SourceTurn: userQuery,
+									SourceType: memoryctx.SourceTypeResolvedToolArgs,
+								}, memoryAttrs...); err != nil {
+									fmt.Printf("orch.chat memory_store session=%s status=error err=%v\n", req.GetSessionId(), err)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
 		if result.Status == "needs_input" {
 			s.setPending(req.GetSessionId(), pendingToolState{
 				OriginalUserQuery: originQuery,
@@ -888,10 +1665,80 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 			return &pb.ChatResponse{Text: result.Question}, nil
 		}
 		s.clearPending(req.GetSessionId())
-		toolResult += fmt.Sprintf("tool=%s result=%s\n", result.Action, result.Output)
+		toolResult += fmt.Sprintf("tool=%s result=%s", result.Action, result.Output)
+		if displayName := subjectDisplayName(currentSubjectID); displayName != "" {
+			toolResult += fmt.Sprintf(" resolved_subject=%s resolved_subject_id=%s", displayName, currentSubjectID)
+			if directResolvedSubjectText == "" && textReferencesSpeakerRelation(userQuery) && currentSubjectID != s.getActiveSpeaker(req.GetSessionId()) {
+				switch tool.Tool {
+				case "calculator":
+					if directText, ok := directCalculatorSubjectResponse(result.Output, displayName); ok {
+						directResolvedSubjectText = directText
+					}
+				case "memory_lookup":
+					if directText, ok := directMemorySubjectResponse(result.Output, displayName); ok {
+						directResolvedSubjectText = directText
+					}
+				}
+			}
+		}
+		toolResult += "\n"
+		successfulResults = append(successfulResults, result)
 	}
 
-	followup := prompts.FinalResponse(originQuery, userQuery, activeContext.Transcript, subjectSummary, text, toolResult)
+	if directResolvedSubjectText != "" {
+		s.appendHistory(&historyEntry{
+			Timestamp:  time.Now().Format(time.RFC3339),
+			SessionID:  req.GetSessionId(),
+			UserQuery:  userQuery,
+			Decision:   text,
+			Tools:      toolsRequested,
+			ToolResult: strings.TrimSpace(toolResult),
+			Response:   directResolvedSubjectText,
+			Status:     "ok",
+		})
+		s.setTranscript(req.GetSessionId(), appendAssistantMessage(effectiveMessages, directResolvedSubjectText))
+		fmt.Printf("orch.chat done session=%s status=ok path=direct_resolved_subject ms=%d\n", req.GetSessionId(), time.Since(start).Milliseconds())
+		return &pb.ChatResponse{Text: directResolvedSubjectText}, nil
+	}
+
+	if directText, ok := directToolResponse(successfulResults, userQuery); ok {
+		s.appendHistory(&historyEntry{
+			Timestamp:  time.Now().Format(time.RFC3339),
+			SessionID:  req.GetSessionId(),
+			UserQuery:  userQuery,
+			Decision:   text,
+			Tools:      toolsRequested,
+			ToolResult: strings.TrimSpace(toolResult),
+			Response:   directText,
+			Status:     "ok",
+		})
+		s.setTranscript(req.GetSessionId(), appendAssistantMessage(effectiveMessages, directText))
+		fmt.Printf("orch.chat done session=%s status=ok path=direct_tool ms=%d\n", req.GetSessionId(), time.Since(start).Milliseconds())
+		return &pb.ChatResponse{Text: directText}, nil
+	}
+
+	if len(successfulResults) == 0 && strings.TrimSpace(text) == "[]" && (shouldDirectAcknowledgeIdentityTurn(s.factSelector, userQuery) || shouldDirectAcknowledgeStoredFactTurn(userQuery) || shouldDirectAcknowledgeResolvedStoredFactTurn(userQuery, currentSubjectID)) {
+		directText := "Got it."
+		s.appendHistory(&historyEntry{
+			Timestamp:  time.Now().Format(time.RFC3339),
+			SessionID:  req.GetSessionId(),
+			UserQuery:  userQuery,
+			Decision:   text,
+			Tools:      toolsRequested,
+			ToolResult: strings.TrimSpace(toolResult),
+			Response:   directText,
+			Status:     "ok",
+		})
+		s.setTranscript(req.GetSessionId(), appendAssistantMessage(effectiveMessages, directText))
+		fmt.Printf("orch.chat done session=%s status=ok path=direct_ack ms=%d\n", req.GetSessionId(), time.Since(start).Milliseconds())
+		return &pb.ChatResponse{Text: directText}, nil
+	}
+
+	finalTranscript := activeContext.Transcript
+	if len(successfulResults) == 0 && strings.TrimSpace(text) == "[]" && looksStandaloneGenericRequest(userQuery) {
+		finalTranscript = "user: " + strings.Join(strings.Fields(userQuery), " ")
+	}
+	followup := prompts.FinalResponse(originQuery, userQuery, finalTranscript, subjectSummary, text, toolResult)
 	callFinalMessage := s.callFinalMessage
 	if callFinalMessage == nil {
 		callFinalMessage = llm.CallOnce
@@ -1053,6 +1900,38 @@ func (s *orchestratorServer) resolveMessages(sessionID string, incoming []*pb.Ch
 	return trimMessages(combined)
 }
 
+func (s *orchestratorServer) setActiveSpeaker(sessionID, subjectID string) {
+	sessionID = strings.TrimSpace(sessionID)
+	subjectID = normalizeCurrentSubjectID(subjectID)
+	if sessionID == "" || subjectID == "" {
+		return
+	}
+	s.speakerMu.Lock()
+	defer s.speakerMu.Unlock()
+	if s.speakerBySession == nil {
+		s.speakerBySession = map[string]string{}
+	}
+	s.speakerBySession[sessionID] = subjectID
+}
+
+func (s *orchestratorServer) getActiveSpeaker(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ""
+	}
+	s.speakerMu.Lock()
+	defer s.speakerMu.Unlock()
+	return normalizeCurrentSubjectID(s.speakerBySession[sessionID])
+}
+
+func normalizeCurrentSubjectID(subjectID string) string {
+	subjectID = strings.TrimSpace(subjectID)
+	if subjectID == "self" {
+		return ""
+	}
+	return subjectID
+}
+
 func (s *orchestratorServer) getMemoryStore() *memoryctx.Store {
 	s.memoryMu.Lock()
 	defer s.memoryMu.Unlock()
@@ -1197,6 +2076,7 @@ type historyEntry struct {
 
 func (s *orchestratorServer) appendHistory(entry *historyEntry) {
 	if s.cfg.HistoryDir == "" {
+		s.recordAssistantConversationMessage(entry)
 		return
 	}
 	month := time.Now().Format("2006-01")
@@ -1205,6 +2085,7 @@ func (s *orchestratorServer) appendHistory(entry *historyEntry) {
 	data, err := json.Marshal(entry)
 	if err != nil {
 		fmt.Printf("orch.history status=error err=%v\n", err)
+		s.recordAssistantConversationMessage(entry)
 		return
 	}
 	data = append(data, '\n')
@@ -1214,18 +2095,29 @@ func (s *orchestratorServer) appendHistory(entry *historyEntry) {
 
 	if err := os.MkdirAll(s.cfg.HistoryDir, 0755); err != nil {
 		fmt.Printf("orch.history status=error err=%v\n", err)
+		s.recordAssistantConversationMessage(entry)
 		return
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		fmt.Printf("orch.history status=error err=%v\n", err)
+		s.recordAssistantConversationMessage(entry)
 		return
 	}
 	defer f.Close()
 
 	if _, err := f.Write(data); err != nil {
 		fmt.Printf("orch.history status=error err=%v\n", err)
+	}
+	s.recordAssistantConversationMessage(entry)
+}
+
+func (s *orchestratorServer) recordAssistantConversationMessage(entry *historyEntry) {
+	if entry == nil || strings.TrimSpace(entry.Response) == "" || strings.TrimSpace(entry.SessionID) == "" {
 		return
+	}
+	if err := s.getMemoryStore().RecordConversationMessage(entry.SessionID, "", "assistant", entry.Response); err != nil {
+		fmt.Printf("orch.chat conversation_log session=%s role=assistant status=error err=%v\n", entry.SessionID, err)
 	}
 }
 
@@ -1267,27 +2159,27 @@ func main() {
 	if selector.Enabled() {
 		timeout := time.Duration(cfg.EmbeddingTimeoutMs) * time.Millisecond
 		if err := selector.Warmup(timeout); err != nil {
-			fmt.Printf("orchestrator status=error route_warmup err=%v\n", err)
-			return
+			fmt.Printf("orchestrator status=warn route_warmup err=%v\n", err)
+		} else {
+			fmt.Printf("orchestrator status=route_warmup_ok routes_path=%s\n", cfg.RoutesPath)
 		}
-		fmt.Printf("orchestrator status=route_warmup_ok routes_path=%s\n", cfg.RoutesPath)
 	}
 	if facts.Configured() {
 		timeout := time.Duration(cfg.EmbeddingTimeoutMs) * time.Millisecond
 		if err := facts.Warmup(timeout); err != nil {
-			fmt.Printf("orchestrator status=error fact_warmup err=%v\n", err)
-			return
+			fmt.Printf("orchestrator status=warn fact_warmup err=%v\n", err)
+		} else {
+			fmt.Printf("orchestrator status=fact_warmup_ok facts_path=%s attrs=%v\n", cfg.FactsPath, facts.Attrs())
 		}
-		fmt.Printf("orchestrator status=fact_warmup_ok facts_path=%s attrs=%v\n", cfg.FactsPath, facts.Attrs())
 	}
 	if memoryStore != nil {
 		timeout := time.Duration(cfg.EmbeddingTimeoutMs) * time.Millisecond
 		count, err := memoryStore.BackfillObservationEmbeddings(timeout)
 		if err != nil {
-			fmt.Printf("orchestrator status=error observation_backfill err=%v\n", err)
-			return
+			fmt.Printf("orchestrator status=warn observation_backfill err=%v\n", err)
+		} else {
+			fmt.Printf("orchestrator status=observation_backfill_ok rows=%d\n", count)
 		}
-		fmt.Printf("orchestrator status=observation_backfill_ok rows=%d\n", count)
 	}
 	pb.RegisterOrchestratorServer(grpcServer, &orchestratorServer{
 		cfg: cfg,

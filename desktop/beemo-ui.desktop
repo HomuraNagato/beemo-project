@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Beemo
+Comment=Launch the native Beemo fullscreen interface
+Exec=/home/deck/Documents/beemo-project/scripts/beemo-native.sh
+Path=/home/deck/Documents/beemo-project
+Terminal=false
+Categories=Utility;
+StartupNotify=true

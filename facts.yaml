@@ -45,3 +45,39 @@ facts:
     example_requests:
       - what is her activity level?
       - how active am i?
+
+  - id: birthday
+    kind: text
+    summary: Recall a previously stated birthday for the resolved subject.
+    question_label: birthday
+    output_label: birthday
+    example_requests:
+      - when is my birthday?
+      - what is serene's birthday?
+
+  - id: start_date
+    kind: text
+    summary: Recall a previously stated start date for a job, school, project, or other remembered event.
+    question_label: start date
+    output_label: start date
+    example_requests:
+      - when did i start my new job?
+      - what is my start date?
+
+  - id: favorite_color
+    kind: text
+    summary: Recall a previously stated favorite color for the resolved subject.
+    question_label: favorite color
+    output_label: favorite color
+    example_requests:
+      - what is my favorite color?
+      - what color does serene like most?
+
+  - id: name
+    kind: text
+    summary: Recall a previously stated name for the resolved subject.
+    question_label: name
+    output_label: name
+    example_requests:
+      - what is my name?
+      - what name did i give you?

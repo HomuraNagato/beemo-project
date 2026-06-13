@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Beemo</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell" aria-label="Beemo interface">
+      <section class="face-region" aria-label="Beemo face">
+        <div class="beemo-head" data-expression="neutral" id="beemoFace">
+          <div class="antenna"></div>
+          <div class="screen">
+            <div class="eyes">
+              <span class="eye left-eye"></span>
+              <span class="eye right-eye"></span>
+            </div>
+            <div class="mouth"></div>
+          </div>
+        </div>
+        <div class="status-row">
+          <span id="expressionLabel">neutral</span>
+          <span id="connectionLabel">idle</span>
+        </div>
+      </section>
+
+      <section class="speech-region" aria-label="Beemo response">
+        <div class="response-window" id="responseWindow" tabindex="0">
+          <div class="message-stage" id="messageStage">
+            <div aria-hidden="true"></div>
+            <p class="chat-line current assistant">Hi. I am listening.</p>
+          </div>
+        </div>
+      </section>
+
+      <form class="input-region" id="chatForm">
+        <button class="icon-button" type="button" id="voiceButton" aria-label="Start voice input" title="Voice input">
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z"></path>
+            <path d="M5 11a7 7 0 0 0 14 0"></path>
+            <path d="M12 18v3"></path>
+            <path d="M8 21h8"></path>
+          </svg>
+        </button>
+        <label class="composer-wrap" for="composer">
+          <textarea
+            id="composer"
+            rows="2"
+            spellcheck="true"
+            placeholder="Type to Beemo"
+            aria-label="Message to Beemo"
+          ></textarea>
+        </label>
+        <button class="send-button" type="submit">Send</button>
+      </form>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
