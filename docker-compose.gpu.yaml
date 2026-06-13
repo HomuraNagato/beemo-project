@@ -6,6 +6,12 @@ services:
     image: vllm/vllm-openai
     privileged: true
     ipc: host
+    environment:
+      EMBEDDING_MAX_MODEL_LEN: "1024"
+      EMBEDDING_GPU_MEMORY_UTILIZATION: "0.12"
+      EMBEDDING_CPU_OFFLOAD_GB: "0"
+      EMBEDDING_SWAP_SPACE_GB: "4"
+      EMBEDDING_KV_CACHE_MEMORY_BYTES: 256M
     deploy:
       resources:
         reservations:
@@ -26,6 +32,19 @@ services:
       - ./compose/reasoning_vllm/entrypoint.sh:/entrypoint.sh
     env_file:
       - ./.env
+    environment:
+      MODEL_DIR: /models
+      REASONING_MODEL: Qwen3-1.7B
+      REASONING_PORT: "5014"
+      REASONING_HOST: 0.0.0.0
+      VLLM_REASONING_PARSER: qwen3
+      VLLM_DEFAULT_CHAT_TEMPLATE_KWARGS: '{"enable_thinking": false}'
+      VLLM_TENSOR_PARALLEL_SIZE: "1"
+      VLLM_GPU_MEMORY_UTILIZATION: "0.80"
+      VLLM_MAX_MODEL_LEN: "1536"
+      VLLM_CPU_OFFLOAD_GB: "0"
+      VLLM_SWAP_SPACE_GB: "0"
+      VLLM_KV_CACHE_MEMORY_BYTES: 1G
     ipc: host
     deploy:
       resources:

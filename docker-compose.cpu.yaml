@@ -8,8 +8,8 @@ services:
     environment:
       VLLM_DEVICE: cpu
       EMBEDDING_DEVICE: cpu
-      EMBEDDING_DTYPE: ${EMBEDDING_CPU_DTYPE:-bfloat16}
-      EMBEDDING_CPU_KVCACHE_SPACE: ${EMBEDDING_CPU_KVCACHE_SPACE:-4}
+      EMBEDDING_DTYPE: bfloat16
+      EMBEDDING_CPU_KVCACHE_SPACE: "4"
     shm_size: 4g
 
   eve-vllm:
@@ -25,8 +25,14 @@ services:
     env_file:
       - ./.env
     environment:
+      MODEL_DIR: /models
+      REASONING_MODEL: Qwen3-1.7B
+      REASONING_PORT: "5014"
+      REASONING_HOST: 0.0.0.0
+      VLLM_REASONING_PARSER: qwen3
+      VLLM_DEFAULT_CHAT_TEMPLATE_KWARGS: '{"enable_thinking": false}'
       VLLM_DEVICE: cpu
-      VLLM_DTYPE: ${VLLM_CPU_DTYPE:-bfloat16}
-      VLLM_CPU_KVCACHE_SPACE: ${VLLM_CPU_KVCACHE_SPACE:-4}
+      VLLM_DTYPE: bfloat16
+      VLLM_CPU_KVCACHE_SPACE: "4"
     shm_size: 4g
     entrypoint: /entrypoint.sh

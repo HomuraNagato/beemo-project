@@ -22,7 +22,7 @@ type transcriptEntry struct {
 }
 
 func main() {
-	addr := flag.String("addr", getenvOrDefault("ORCH_ADDR", "localhost:5013"), "orchestrator gRPC address")
+	addr := flag.String("addr", getenvOrDefault("ORCH_ADDR", "127.0.0.1:5013"), "orchestrator gRPC address")
 	sessionID := flag.String("session", getenvOrDefault("SESSION_ID", "tui"), "chat session id")
 	timeout := flag.Duration("timeout", defaultTimeout, "request timeout")
 	flag.Parse()

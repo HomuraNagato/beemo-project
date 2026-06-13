@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 ENV_FILE="$ROOT_DIR/.env"
 MODELS_DIR="$ROOT_DIR/models"
-REPORT_DIR_DEFAULT="$ROOT_DIR/memory"
+REPORT_DIR_DEFAULT="$ROOT_DIR/reports"
 REPORT_DIR="${REPORT_DIR:-$REPORT_DIR_DEFAULT}"
 REPORT_FILE=""
 COMPOSE_FILES=(-f "$ROOT_DIR/docker-compose.yaml" -f "$ROOT_DIR/docker-compose.gpu.yaml")
@@ -47,7 +47,7 @@ Examples:
   scripts/vllm-model-bench.sh --include-local --include-recommended --download-missing
 
 Output:
-  Writes a TSV report under memory/ and prints per-model summaries.
+  Writes a TSV report under reports/ and prints per-model summaries.
 EOF
 }
 

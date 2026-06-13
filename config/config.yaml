@@ -1,0 +1,49 @@
+llm:
+  addr: eve-vllm:5014
+  http_url: http://eve-vllm:5014/v1/chat/completions
+  model: Qwen3-1.7B
+  timeout_ms: 120000
+
+embedding:
+  addr: eve-embedding:5021
+  http_url: http://eve-embedding:5021/v1/embeddings
+  model: Qwen3-Embedding-0.6B
+  timeout_ms: 30000
+
+database:
+  url: ""
+  migrations_dir: db/migrations
+
+routing:
+  routes_path: routes.yaml
+  top_k: 5
+  domain_top_k: 2
+
+orchestrator:
+  addr: ""
+  decision_grammar_path: scripts/grammars/tool_list.gbnf
+  history_dir: history
+
+services:
+  vision_addr: eve-vision:5016
+  ui_addr: eve-ui:5017
+  tts_addr: eve-tts:5018
+  asr_addr: eve-asr:5019
+  wakeword_addr: eve-wakeword:5020
+
+weather:
+  latitude: ""
+  longitude: ""
+  timezone: auto
+  location_name: ""
+  http_url: https://api.open-meteo.com/v1/forecast
+  geocoding_url: https://geocoding-api.open-meteo.com/v1/search
+  temperature_unit: fahrenheit
+  wind_speed_unit: mph
+  precipitation_unit: inch
+
+older_sister:
+  http_url: https://api.openai.com/v1/responses
+  model: gpt-5-mini
+  timeout_ms: 120000
+  web_search: true

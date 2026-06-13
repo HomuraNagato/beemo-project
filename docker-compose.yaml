@@ -13,6 +13,16 @@ services:
       - ./compose/embedding/entrypoint.sh:/entrypoint.sh
     env_file:
       - ./.env
+    environment:
+      MODEL_DIR: /models
+      EMBEDDING_MODEL: Qwen3-Embedding-0.6B
+      EMBEDDING_MODEL_PATH: /models/Qwen3-Embedding-0.6B
+      EMBEDDING_PORT: "5021"
+      EMBEDDING_HOST: 0.0.0.0
+      EMBEDDING_RUNNER: pooling
+      EMBEDDING_TASK: embed
+      EMBEDDING_DTYPE: ""
+      EMBEDDING_TRUST_REMOTE_CODE: "false"
     entrypoint: /entrypoint.sh
 
   eve-orchestrator:

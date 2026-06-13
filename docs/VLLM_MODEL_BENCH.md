@@ -9,8 +9,8 @@ What it does:
 - tails `eve-vllm` logs during startup
 - waits for the model server to answer
 - runs a small set of probes through the existing local scripts
-- writes a TSV report under `memory/`
-  - if `memory/` is not writable in the current shell path, it falls back to `/tmp/vllm-model-bench/`
+- writes a TSV report under `reports/`
+  - if `reports/` is not writable in the current shell path, it falls back to `/tmp/vllm-model-bench/`
 
 Examples:
 ```bash

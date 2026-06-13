@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-func ResolveCalculatorCall(call PlannedCall, explicitText string, snapshot map[string]json.RawMessage) (PlannedCall, error) {
+func ResolveCalculatorCall(call PlannedCall, explicitText string) (PlannedCall, error) {
 	if strings.TrimSpace(call.Action) != "calculator" {
 		return call, nil
 	}
@@ -28,11 +28,11 @@ func ResolveCalculatorCall(call PlannedCall, explicitText string, snapshot map[s
 	}
 
 	explicit := map[string]json.RawMessage{}
-	if patch, ok, err := ExtractCalculatorObservationPatch(explicitText); err != nil {
+	if patch, ok, err := ExtractCalculatorHealthPatch(explicitText); err != nil {
 		return PlannedCall{}, err
 	} else if ok {
 		if err := json.Unmarshal(patch, &explicit); err != nil {
-			return PlannedCall{}, fmt.Errorf("invalid calculator observation patch for resolution: %w", err)
+			return PlannedCall{}, fmt.Errorf("invalid calculator health patch for resolution: %w", err)
 		}
 	}
 
@@ -44,12 +44,6 @@ func ResolveCalculatorCall(call PlannedCall, explicitText string, snapshot map[s
 				changed = true
 			}
 			continue
-		}
-		if raw, ok := snapshot[attr]; ok && hasResolvedValue(attr, raw) {
-			if string(args[attr]) != string(raw) {
-				args[attr] = cloneRaw(raw)
-				changed = true
-			}
 		}
 	}
 
@@ -200,13 +194,6 @@ func resolveConvertCall(call PlannedCall, args map[string]json.RawMessage, expli
 	}
 	call.Args = updated
 	return call, nil
-}
-
-func CanonicalizeObservationValue(attr string, raw json.RawMessage) (json.RawMessage, error) {
-	if !hasResolvedValue(attr, raw) {
-		return cloneRaw(raw), nil
-	}
-	return canonicalizeResolvedAttr(attr, raw)
 }
 
 func canonicalizeResolvedAttr(attr string, raw json.RawMessage) (json.RawMessage, error) {

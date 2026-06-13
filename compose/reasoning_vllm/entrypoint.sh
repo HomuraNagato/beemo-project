@@ -79,10 +79,10 @@ if [ "$DEVICE" = "cpu" ]; then
 else
   set -- "$@" --cpu-offload-gb "$CPU_OFFLOAD_GB"
 
+  set -- "$@" --gpu-memory-utilization "$GPU_MEM"
+
   if [ -n "$KV_CACHE_MEMORY_BYTES" ]; then
     set -- "$@" --kv-cache-memory-bytes "$KV_CACHE_MEMORY_BYTES"
-  else
-    set -- "$@" --gpu-memory-utilization "$GPU_MEM"
   fi
 
   # vLLM's CLI has changed across releases. Newer builds do not accept

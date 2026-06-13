@@ -1,7 +1,7 @@
 # Architecture Notes and Refactor Outline
 
 ## Current Architecture (As Implemented)
-- Single-process Tkinter app (`agent.py`) owns UI, state machine, wake word, audio IO, ASR, LLM, tools, vision, TTS, and memory.
+- Single-process Tkinter app (`agent.py`) owns UI, state machine, wake word, audio IO, ASR, LLM, tools, vision, and TTS.
 - All orchestration logic lives inside `BotGUI`.
 - External engines are invoked via `subprocess` (Whisper CLI, Piper CLI, rpicam).
 
@@ -14,7 +14,6 @@
 - Action Router: `execute_action_and_get_result()` handles `get_time`, `search_web`, `capture_image`.
 - Vision Capture: `capture_image()` uses `rpicam-still` and rotates image.
 - TTS: `speak()` uses Piper CLI and streams audio to the output device.
-- Memory: `load_chat_history()` / `save_chat_history()` read/write `memory.json`.
 
 ## High-Level Data Flow
 1. Wake word or PTT triggers listening.
@@ -26,7 +25,7 @@
    - Capture -> rpicam
    - Time -> local datetime
 6. LLM summarizes tool result.
-7. TTS speaks; UI updates; memory written.
+7. TTS speaks; UI updates.
 
 ## Tight Coupling Points
 - Everything is owned by `BotGUI`, with threading and shared state flags.
@@ -41,7 +40,7 @@ Goal: Split into services that wait/listen while a main orchestrator routes mess
 
 ### Services
 1. Orchestrator (target: Python/script)
-   - Owns the state machine and conversation memory.
+   - Owns the state machine and conversation flow.
    - Routes requests to services and aggregates responses.
    - Emits UI updates.
 2. Wake Word Service (target: Python/script)
@@ -106,7 +105,7 @@ Core Messages:
 1. Subscribe to `WakeWord.StreamWake` and wait for `WakeDetected`.
 2. Stream mic audio to `ASR.StreamTranscribe(...)`.
 3. Receive `TranscribeResult` from ASR.
-4. Append to memory; call `LLM.Chat(...)` and stream `ChatChunk`.
+4. Send the current request context to `LLM.Chat(...)` and stream `ChatChunk`.
 5. If tool JSON detected, execute the matching local tool handler -> `ToolResult`.
 6. Optionally summarize tool result via `LLM.Chat(...)`.
 7. Send text to `TTS.Speak(...)` (stream `AudioChunk`) + UI updates.
@@ -114,7 +113,7 @@ Core Messages:
 ---
 
 ## Implementation Plan (Service Order)
-1. Orchestrator (gRPC client, state machine, memory, tool routing).
+1. Orchestrator (gRPC client, state machine, tool routing).
 2. LLM service (`llama.cpp` server) + client adapter in orchestrator.
 3. Expand in-process tool execution (search/time/etc).
 4. Vision service + client adapter in orchestrator.

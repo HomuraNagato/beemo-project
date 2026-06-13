@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ORCH_ADDR=${ORCH_ADDR:-localhost:5013}
+ORCH_ADDR=${ORCH_ADDR:-127.0.0.1:5013}
 PROMPT=${1:-"What time is it?"}
 SESSION_ID=${SESSION_ID:-"cli"}
 

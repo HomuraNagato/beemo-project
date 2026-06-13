@@ -91,16 +91,14 @@ if [ "$DEVICE" = "cpu" ]; then
   else
     echo "warning: installed vLLM does not support --cpu-kvcache-space; skipping EMBEDDING_CPU_KVCACHE_SPACE=$CPU_KVCACHE_SPACE" >&2
   fi
-  if vllm serve --help 2>&1 | grep -q -- '--gpu-memory-utilization'; then
-    set -- "$@" --gpu-memory-utilization "$GPU_MEM"
-  fi
+  set -- "$@" --gpu-memory-utilization "$GPU_MEM"
 else
   set -- "$@" --cpu-offload-gb "$CPU_OFFLOAD_GB"
 
+  set -- "$@" --gpu-memory-utilization "$GPU_MEM"
+
   if [ -n "$KV_CACHE_MEMORY_BYTES" ]; then
     set -- "$@" --kv-cache-memory-bytes "$KV_CACHE_MEMORY_BYTES"
-  else
-    set -- "$@" --gpu-memory-utilization "$GPU_MEM"
   fi
 
   if vllm serve --help 2>&1 | grep -q -- '--swap-space'; then

@@ -1,9 +1,11 @@
 package config
 
 import (
+	"fmt"
 	"os"
-	"strconv"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
@@ -18,7 +20,6 @@ type Config struct {
 	EmbeddingModel           string
 	EmbeddingTimeoutMs       int
 	RoutesPath               string
-	FactsPath                string
 	RouteTopK                int
 	RouteDomainTopK          int
 	OrchAddr                 string
@@ -46,54 +47,185 @@ type Config struct {
 }
 
 func Load() Config {
-	llmAddr := os.Getenv("LLM_ADDR")
-	llmHTTPURL := os.Getenv("LLM_HTTP_URL")
-	if llmHTTPURL == "" && llmAddr != "" {
+	cfg := defaultConfig()
+	if loaded, err := loadYAML(getenvOrDefault("BEEMO_CONFIG", "config/config.yaml")); err == nil {
+		cfg = loaded
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "beemo config load warning: %v\n", err)
+	}
+
+	// Secrets stay out of checked-in config.
+	if apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); apiKey != "" {
+		cfg.OlderSisterAPIKey = apiKey
+	}
+
+	if cfg.LLMHTTPURL == "" && cfg.LLMAddr != "" {
+		cfg.LLMHTTPURL = "http://" + strings.TrimSpace(cfg.LLMAddr) + "/v1/chat/completions"
+	}
+	if cfg.EmbeddingHTTPURL == "" && cfg.EmbeddingAddr != "" {
+		cfg.EmbeddingHTTPURL = "http://" + strings.TrimSpace(cfg.EmbeddingAddr) + "/v1/embeddings"
+	}
+	return cfg
+}
+
+func defaultConfig() Config {
+	llmAddr := "eve-vllm:5014"
+	llmHTTPURL := ""
+	if llmAddr != "" {
 		llmHTTPURL = "http://" + strings.TrimSpace(llmAddr) + "/v1/chat/completions"
 	}
-	embeddingAddr := os.Getenv("EMBEDDING_ADDR")
-	embeddingHTTPURL := os.Getenv("EMBEDDING_HTTP_URL")
-	if embeddingHTTPURL == "" && embeddingAddr != "" {
+	embeddingAddr := "eve-embedding:5021"
+	embeddingHTTPURL := ""
+	if embeddingAddr != "" {
 		embeddingHTTPURL = "http://" + strings.TrimSpace(embeddingAddr) + "/v1/embeddings"
 	}
 
 	return Config{
 		LLMAddr:                  llmAddr,
 		LLMHTTPURL:               llmHTTPURL,
-		LLMModel:                 os.Getenv("REASONING_MODEL"),
-		LLMTimeoutMs:             atoiOrDefault(os.Getenv("LLM_TIMEOUT_MS"), 120000),
-		DatabaseURL:              os.Getenv("DATABASE_URL"),
-		DBMigrationsDir:          getenvOrDefault("DB_MIGRATIONS_DIR", "db/migrations"),
+		LLMModel:                 "Qwen3-1.7B",
+		LLMTimeoutMs:             120000,
+		DatabaseURL:              "",
+		DBMigrationsDir:          "db/migrations",
 		EmbeddingAddr:            embeddingAddr,
 		EmbeddingHTTPURL:         embeddingHTTPURL,
-		EmbeddingModel:           os.Getenv("EMBEDDING_MODEL"),
-		EmbeddingTimeoutMs:       atoiOrDefault(os.Getenv("EMBEDDING_TIMEOUT_MS"), 30000),
-		RoutesPath:               getenvOrDefault("ROUTES_PATH", "routes.yaml"),
-		FactsPath:                getenvOrDefault("FACTS_PATH", "facts.yaml"),
-		RouteTopK:                atoiOrDefault(os.Getenv("ROUTE_TOP_K"), 5),
-		RouteDomainTopK:          atoiOrDefault(os.Getenv("ROUTE_DOMAIN_TOP_K"), 2),
-		OrchAddr:                 os.Getenv("ORCH_ADDR"),
-		DecisionGrammarPath:      getenvOrDefault("DECISION_GRAMMAR_PATH", "scripts/grammars/tool_list.gbnf"),
-		HistoryDir:               getenvOrDefault("HISTORY_DIR", "memory"),
-		VisionAddr:               os.Getenv("VISION_ADDR"),
-		UIAddr:                   os.Getenv("UI_ADDR"),
-		TTSAddr:                  os.Getenv("TTS_ADDR"),
-		ASRAddr:                  os.Getenv("ASR_ADDR"),
-		WakeWordAddr:             os.Getenv("WAKEWORD_ADDR"),
-		WeatherLatitude:          os.Getenv("WEATHER_LATITUDE"),
-		WeatherLongitude:         os.Getenv("WEATHER_LONGITUDE"),
-		WeatherTimezone:          getenvOrDefault("WEATHER_TIMEZONE", "auto"),
-		WeatherLocationName:      os.Getenv("WEATHER_LOCATION_NAME"),
-		WeatherHTTPURL:           getenvOrDefault("WEATHER_HTTP_URL", "https://api.open-meteo.com/v1/forecast"),
-		WeatherGeocodingURL:      getenvOrDefault("WEATHER_GEOCODING_URL", "https://geocoding-api.open-meteo.com/v1/search"),
-		WeatherTemperatureUnit:   getenvOrDefault("WEATHER_TEMPERATURE_UNIT", "fahrenheit"),
-		WeatherWindSpeedUnit:     getenvOrDefault("WEATHER_WIND_SPEED_UNIT", "mph"),
-		WeatherPrecipitationUnit: getenvOrDefault("WEATHER_PRECIPITATION_UNIT", "inch"),
-		OlderSisterAPIKey:        os.Getenv("OPENAI_API_KEY"),
-		OlderSisterHTTPURL:       getenvOrDefault("OLDER_SISTER_HTTP_URL", "https://api.openai.com/v1/responses"),
-		OlderSisterModel:         getenvOrDefault("OLDER_SISTER_MODEL", "gpt-5-mini"),
-		OlderSisterTimeoutMs:     atoiOrDefault(os.Getenv("OLDER_SISTER_TIMEOUT_MS"), 120000),
-		OlderSisterWebSearch:     boolOrDefault(os.Getenv("OLDER_SISTER_WEB_SEARCH"), true),
+		EmbeddingModel:           "Qwen3-Embedding-0.6B",
+		EmbeddingTimeoutMs:       30000,
+		RoutesPath:               "routes.yaml",
+		RouteTopK:                5,
+		RouteDomainTopK:          2,
+		DecisionGrammarPath:      "scripts/grammars/tool_list.gbnf",
+		HistoryDir:               "history",
+		VisionAddr:               "eve-vision:5016",
+		UIAddr:                   "eve-ui:5017",
+		TTSAddr:                  "eve-tts:5018",
+		ASRAddr:                  "eve-asr:5019",
+		WakeWordAddr:             "eve-wakeword:5020",
+		WeatherTimezone:          "auto",
+		WeatherHTTPURL:           "https://api.open-meteo.com/v1/forecast",
+		WeatherGeocodingURL:      "https://geocoding-api.open-meteo.com/v1/search",
+		WeatherTemperatureUnit:   "fahrenheit",
+		WeatherWindSpeedUnit:     "mph",
+		WeatherPrecipitationUnit: "inch",
+		OlderSisterHTTPURL:       "https://api.openai.com/v1/responses",
+		OlderSisterModel:         "gpt-5-mini",
+		OlderSisterTimeoutMs:     120000,
+		OlderSisterWebSearch:     true,
+	}
+}
+
+type yamlConfig struct {
+	LLM struct {
+		Addr      string `yaml:"addr"`
+		HTTPURL   string `yaml:"http_url"`
+		Model     string `yaml:"model"`
+		TimeoutMs int    `yaml:"timeout_ms"`
+	} `yaml:"llm"`
+	Embedding struct {
+		Addr      string `yaml:"addr"`
+		HTTPURL   string `yaml:"http_url"`
+		Model     string `yaml:"model"`
+		TimeoutMs int    `yaml:"timeout_ms"`
+	} `yaml:"embedding"`
+	Database struct {
+		URL           string `yaml:"url"`
+		MigrationsDir string `yaml:"migrations_dir"`
+	} `yaml:"database"`
+	Routing struct {
+		RoutesPath string `yaml:"routes_path"`
+		TopK       int    `yaml:"top_k"`
+		DomainTopK int    `yaml:"domain_top_k"`
+	} `yaml:"routing"`
+	Orchestrator struct {
+		Addr                string `yaml:"addr"`
+		DecisionGrammarPath string `yaml:"decision_grammar_path"`
+		HistoryDir          string `yaml:"history_dir"`
+	} `yaml:"orchestrator"`
+	Services struct {
+		VisionAddr   string `yaml:"vision_addr"`
+		UIAddr       string `yaml:"ui_addr"`
+		TTSAddr      string `yaml:"tts_addr"`
+		ASRAddr      string `yaml:"asr_addr"`
+		WakeWordAddr string `yaml:"wakeword_addr"`
+	} `yaml:"services"`
+	Weather struct {
+		Latitude          string `yaml:"latitude"`
+		Longitude         string `yaml:"longitude"`
+		Timezone          string `yaml:"timezone"`
+		LocationName      string `yaml:"location_name"`
+		HTTPURL           string `yaml:"http_url"`
+		GeocodingURL      string `yaml:"geocoding_url"`
+		TemperatureUnit   string `yaml:"temperature_unit"`
+		WindSpeedUnit     string `yaml:"wind_speed_unit"`
+		PrecipitationUnit string `yaml:"precipitation_unit"`
+	} `yaml:"weather"`
+	OlderSister struct {
+		HTTPURL   string `yaml:"http_url"`
+		Model     string `yaml:"model"`
+		TimeoutMs int    `yaml:"timeout_ms"`
+		WebSearch *bool  `yaml:"web_search"`
+	} `yaml:"older_sister"`
+}
+
+func loadYAML(path string) (Config, error) {
+	cfg := defaultConfig()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Config{}, err
+	}
+	raw := yamlConfig{}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return Config{}, err
+	}
+
+	setString(&cfg.LLMAddr, raw.LLM.Addr)
+	setString(&cfg.LLMHTTPURL, raw.LLM.HTTPURL)
+	setString(&cfg.LLMModel, raw.LLM.Model)
+	setInt(&cfg.LLMTimeoutMs, raw.LLM.TimeoutMs)
+	setString(&cfg.EmbeddingAddr, raw.Embedding.Addr)
+	setString(&cfg.EmbeddingHTTPURL, raw.Embedding.HTTPURL)
+	setString(&cfg.EmbeddingModel, raw.Embedding.Model)
+	setInt(&cfg.EmbeddingTimeoutMs, raw.Embedding.TimeoutMs)
+	setString(&cfg.DatabaseURL, raw.Database.URL)
+	setString(&cfg.DBMigrationsDir, raw.Database.MigrationsDir)
+	setString(&cfg.RoutesPath, raw.Routing.RoutesPath)
+	setInt(&cfg.RouteTopK, raw.Routing.TopK)
+	setInt(&cfg.RouteDomainTopK, raw.Routing.DomainTopK)
+	setString(&cfg.OrchAddr, raw.Orchestrator.Addr)
+	setString(&cfg.DecisionGrammarPath, raw.Orchestrator.DecisionGrammarPath)
+	setString(&cfg.HistoryDir, raw.Orchestrator.HistoryDir)
+	setString(&cfg.VisionAddr, raw.Services.VisionAddr)
+	setString(&cfg.UIAddr, raw.Services.UIAddr)
+	setString(&cfg.TTSAddr, raw.Services.TTSAddr)
+	setString(&cfg.ASRAddr, raw.Services.ASRAddr)
+	setString(&cfg.WakeWordAddr, raw.Services.WakeWordAddr)
+	setString(&cfg.WeatherLatitude, raw.Weather.Latitude)
+	setString(&cfg.WeatherLongitude, raw.Weather.Longitude)
+	setString(&cfg.WeatherTimezone, raw.Weather.Timezone)
+	setString(&cfg.WeatherLocationName, raw.Weather.LocationName)
+	setString(&cfg.WeatherHTTPURL, raw.Weather.HTTPURL)
+	setString(&cfg.WeatherGeocodingURL, raw.Weather.GeocodingURL)
+	setString(&cfg.WeatherTemperatureUnit, raw.Weather.TemperatureUnit)
+	setString(&cfg.WeatherWindSpeedUnit, raw.Weather.WindSpeedUnit)
+	setString(&cfg.WeatherPrecipitationUnit, raw.Weather.PrecipitationUnit)
+	setString(&cfg.OlderSisterHTTPURL, raw.OlderSister.HTTPURL)
+	setString(&cfg.OlderSisterModel, raw.OlderSister.Model)
+	setInt(&cfg.OlderSisterTimeoutMs, raw.OlderSister.TimeoutMs)
+	if raw.OlderSister.WebSearch != nil {
+		cfg.OlderSisterWebSearch = *raw.OlderSister.WebSearch
+	}
+	return cfg, nil
+}
+
+func setString(dst *string, value string) {
+	if strings.TrimSpace(value) != "" {
+		*dst = value
+	}
+}
+
+func setInt(dst *int, value int) {
+	if value > 0 {
+		*dst = value
 	}
 }
 
@@ -103,29 +235,4 @@ func getenvOrDefault(key, def string) string {
 		return def
 	}
 	return val
-}
-
-func atoiOrDefault(v string, def int) int {
-	if v == "" {
-		return def
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		return def
-	}
-	return n
-}
-
-func boolOrDefault(v string, def bool) bool {
-	if strings.TrimSpace(v) == "" {
-		return def
-	}
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return def
-	}
 }

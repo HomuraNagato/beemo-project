@@ -30,13 +30,6 @@ type Handler struct {
 	Target string `yaml:"target"`
 }
 
-type MemoryPolicy struct {
-	Read  bool     `yaml:"read"`
-	Write bool     `yaml:"write"`
-	Attrs []string `yaml:"attrs"`
-	Scope string   `yaml:"scope"`
-}
-
 type Route struct {
 	ID              string         `yaml:"id"`
 	Domain          string         `yaml:"domain"`
@@ -50,7 +43,6 @@ type Route struct {
 	ArgsGuidance    string         `yaml:"args_guidance"`
 	DefaultArgs     map[string]any `yaml:"default_args"`
 	Handler         Handler        `yaml:"handler"`
-	Memory          MemoryPolicy   `yaml:"memory"`
 }
 
 type Catalog struct {
@@ -192,9 +184,6 @@ func FormatCandidates(candidates []Candidate) string {
 		if len(route.RequiredFields) > 0 {
 			fmt.Fprintf(&b, "- required_fields: %s\n", strings.Join(route.RequiredFields, ", "))
 		}
-		if len(route.Memory.Attrs) > 0 {
-			fmt.Fprintf(&b, "- memory_attrs: %s\n", strings.Join(route.Memory.Attrs, ", "))
-		}
 		if summary := compactField(route.Summary, 140); summary != "" {
 			fmt.Fprintf(&b, "- summary: %s\n", summary)
 		}
@@ -323,22 +312,16 @@ func inferRouteForCall(action string, args map[string]any) (Route, bool) {
 			ID:      "weather.forecast",
 			Domain:  "weather",
 			Handler: Handler{Type: "tool", Target: "weather"},
-			Memory: MemoryPolicy{
-				Read:  true,
-				Write: true,
-				Attrs: []string{"weather_location"},
-				Scope: "subject",
-			},
 		}, true
 	case "calculator":
 		operation := strings.TrimSpace(stringField(args["operation"]))
 		switch operation {
 		case "bmi":
-			return syntheticCalculatorRoute("calculator.bmi", operation, []string{"weight", "height"}), true
+			return syntheticCalculatorRoute("calculator.bmi", operation), true
 		case "bmr":
-			return syntheticCalculatorRoute("calculator.bmr", operation, []string{"weight", "height", "age_years", "gender"}), true
+			return syntheticCalculatorRoute("calculator.bmr", operation), true
 		case "tdee":
-			return syntheticCalculatorRoute("calculator.tdee", operation, []string{"weight", "height", "age_years", "gender", "activity_level"}), true
+			return syntheticCalculatorRoute("calculator.tdee", operation), true
 		case "expression":
 			return Route{ID: "calculator.expression", Domain: "calculator", Handler: Handler{Type: "tool", Target: "calculator"}, DefaultArgs: map[string]any{"operation": operation}}, true
 		case "convert":
@@ -350,8 +333,6 @@ func inferRouteForCall(action string, args map[string]any) (Route, bool) {
 		case "percent_ratio":
 			return Route{ID: "calculator.percent_ratio", Domain: "calculator", Handler: Handler{Type: "tool", Target: "calculator"}, DefaultArgs: map[string]any{"operation": operation}}, true
 		}
-	case "memory_lookup":
-		return syntheticMemoryLookupRoute(), true
 	case "older_sister":
 		return Route{
 			ID:          "older_sister.search_or_advise",
@@ -363,32 +344,12 @@ func inferRouteForCall(action string, args map[string]any) (Route, bool) {
 	return Route{}, false
 }
 
-func syntheticCalculatorRoute(id, operation string, attrs []string) Route {
+func syntheticCalculatorRoute(id, operation string) Route {
 	return Route{
 		ID:          id,
 		Domain:      "calculator",
 		DefaultArgs: map[string]any{"operation": operation},
 		Handler:     Handler{Type: "tool", Target: "calculator"},
-		Memory: MemoryPolicy{
-			Read:  true,
-			Write: true,
-			Attrs: append([]string(nil), attrs...),
-			Scope: "subject",
-		},
-	}
-}
-
-func syntheticMemoryLookupRoute() Route {
-	return Route{
-		ID:          "facts.lookup",
-		Domain:      "facts",
-		DefaultArgs: map[string]any{},
-		Handler:     Handler{Type: "tool", Target: "memory_lookup"},
-		Memory: MemoryPolicy{
-			Read:  true,
-			Write: false,
-			Scope: "subject",
-		},
 	}
 }
 
@@ -507,8 +468,6 @@ func normalizeRoutes(routes []Route) []Route {
 		route.ArgsGuidance = strings.TrimSpace(route.ArgsGuidance)
 		route.Handler.Type = strings.TrimSpace(route.Handler.Type)
 		route.Handler.Target = strings.TrimSpace(route.Handler.Target)
-		route.Memory.Scope = strings.TrimSpace(route.Memory.Scope)
-		route.Memory.Attrs = normalizeAttrs(route.Memory.Attrs)
 		if route.ID == "" || route.Handler.Type == "" || route.Handler.Target == "" {
 			continue
 		}
@@ -639,16 +598,6 @@ func routeDescriptor(route Route) string {
 	if len(route.DefaultArgs) > 0 {
 		if raw, err := json.Marshal(route.DefaultArgs); err == nil {
 			fmt.Fprintf(&b, "Default args: %s\n", raw)
-		}
-	}
-	if route.Memory.Read || route.Memory.Write || len(route.Memory.Attrs) > 0 || route.Memory.Scope != "" {
-		fmt.Fprintf(&b, "Memory read: %t\n", route.Memory.Read)
-		fmt.Fprintf(&b, "Memory write: %t\n", route.Memory.Write)
-		if len(route.Memory.Attrs) > 0 {
-			fmt.Fprintf(&b, "Memory attrs: %s\n", strings.Join(route.Memory.Attrs, ", "))
-		}
-		if route.Memory.Scope != "" {
-			fmt.Fprintf(&b, "Memory scope: %s\n", route.Memory.Scope)
 		}
 	}
 	if route.ArgsGuidance != "" {
@@ -873,28 +822,7 @@ func cloneRoutes(routes []Route) []Route {
 			_ = json.Unmarshal(raw, &copied)
 			cloned.DefaultArgs = copied
 		}
-		cloned.Memory.Attrs = append([]string(nil), route.Memory.Attrs...)
 		out = append(out, cloned)
-	}
-	return out
-}
-
-func normalizeAttrs(attrs []string) []string {
-	if len(attrs) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(attrs))
-	out := make([]string, 0, len(attrs))
-	for _, attr := range attrs {
-		attr = strings.TrimSpace(attr)
-		if attr == "" {
-			continue
-		}
-		if _, ok := seen[attr]; ok {
-			continue
-		}
-		seen[attr] = struct{}{}
-		out = append(out, attr)
 	}
 	return out
 }

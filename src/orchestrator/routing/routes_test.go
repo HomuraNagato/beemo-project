@@ -64,13 +64,6 @@ routes:
       target: calculator
     default_args:
       operation: bmi
-    memory:
-      read: true
-      write: true
-      attrs:
-        - weight
-        - height
-      scope: subject
 `), 0644); err != nil {
 		t.Fatalf("write routes file: %v", err)
 	}
@@ -123,7 +116,7 @@ routes:
 	}
 }
 
-func TestMatchCallUsesRouteMemoryPolicy(t *testing.T) {
+func TestMatchCallUsesRouteOperation(t *testing.T) {
 	t.Parallel()
 
 	candidates := []Candidate{
@@ -134,12 +127,6 @@ func TestMatchCallUsesRouteMemoryPolicy(t *testing.T) {
 				Handler: Handler{Type: "tool", Target: "calculator"},
 				DefaultArgs: map[string]any{
 					"operation": "bmr",
-				},
-				Memory: MemoryPolicy{
-					Read:  true,
-					Write: true,
-					Attrs: []string{"weight", "height", "age_years", "gender"},
-					Scope: "subject",
 				},
 			},
 		},
@@ -154,12 +141,6 @@ func TestMatchCallUsesRouteMemoryPolicy(t *testing.T) {
 	}
 	if got, want := route.ID, "calculator.bmr"; got != want {
 		t.Fatalf("unexpected route id: got %q want %q", got, want)
-	}
-	if !route.Memory.Read || !route.Memory.Write {
-		t.Fatalf("unexpected memory policy: %#v", route.Memory)
-	}
-	if got, want := strings.Join(route.Memory.Attrs, ","), "weight,height,age_years,gender"; got != want {
-		t.Fatalf("unexpected memory attrs: got %q want %q", got, want)
 	}
 }
 

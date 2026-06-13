@@ -27,27 +27,16 @@ var (
 	genderEvidencePattern   = regexp.MustCompile(`(?i)\b(male|female|man|woman)\b`)
 	activityEvidencePattern = regexp.MustCompile(`(?i)\b(sedentary|light|moderate|active|very active|very_active)\b`)
 
-	resumeWeightPattern            = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(kg|kgs|kilogram|kilograms|kiloggram|kiloggrams|g|gram|grams|gr|lb|lbs|pound|pounds)\b`)
-	resumeMeasurementPattern       = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(mm|millimeter|millimeters|millimetre|millimetres|cm|centimeter|centimeters|centimetre|centimetres|m|meter|meters|metre|metres|km|kilometer|kilometers|kilometre|kilometres|in|inch|inches|ft|foot|feet|mi|mile|miles|mg|milligram|milligrams|kg|kgs|kilogram|kilograms|kiloggram|kiloggrams|g|gram|grams|gr|lb|lbs|pound|pounds|ml|milliliter|milliliters|millilitre|millilitres|l|liter|liters|litre|litres|s|sec|secs|second|seconds|min|mins|minute|minutes|hr|hrs|h|hour|hours|mmol|millimole|millimoles|mol|mole|moles)\b`)
-	resumeFeetInchesPattern        = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(?:ft|foot|feet|')\s*(?:(\d+(?:\.\d+)?)\s*(?:in|inch|inches|")?)?`)
-	resumeInchesQuotePattern       = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*"`)
-	resumeAgeExplicitPattern       = regexp.MustCompile(`(?i)(?:\b(\d{1,3}(?:\.\d+)?)\s*(years?\s*old|years?|yrs?|yr|yo|y/o)\b|\bage(?:\s+is)?\s+(\d{1,3}(?:\.\d+)?)\b)`)
-	resumeBareNumberPattern        = regexp.MustCompile(`^\s*(\d{1,3})(?:\.0+)?\s*[\.,!?]*\s*$`)
-	convertValueUnitPattern        = regexp.MustCompile(`(?i)\b(\d+(?:\.\d+)?)\s*([a-z]+(?:/[a-z]+)+|mph|kph|kmh|mps|mm|millimeters?|millimetres?|cm|centimeters?|centimetres?|m|meters?|metres?|km|kilometers?|kilometres?|in|inch|inches|ft|foot|feet|mi|mile|miles|mg|milligrams?|g|grams?|gr|kg|kgs|kilograms?|kiloggrams?|lb|lbs|pounds?|ml|milliliters?|millilitres?|l|liters?|litres?|s|secs?|seconds?|min|mins?|minutes?|hr|hrs?|hours?|mmol|millimoles?|mol|moles?)\b`)
-	convertTargetUnitPattern       = regexp.MustCompile(`(?i)\b(?:to|into|in)\s+([a-z]+(?:/[a-z]+)+|[a-z]+(?:\s+per\s+[a-z]+)?)\s*[\.\?!,]*$`)
-	weatherHourPattern             = regexp.MustCompile(`(?i)\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b`)
-	birthdayPattern                = regexp.MustCompile(`(?i)\b(?:my\s+)?birthday\s+(?:is|was|on)\s+(.+?)\s*[\.\?!]*$`)
-	startDatePattern               = regexp.MustCompile(`(?i)\b(?:i\s+)?started\s+(?:my\s+)?(.+?)\s+(?:on|at)\s+(.+?)\s*[\.\?!]*$`)
-	favoriteColorPattern           = regexp.MustCompile(`(?i)\b(?:my\s+)?favou?rite\s+colou?r\s+(?:is|was)\s+(.+?)\s*[\.\?!]*$`)
-	namedTextFactPattern           = regexp.MustCompile(`(?i)\bmy\s+([a-z][a-z0-9 _-]{1,40}?)\s+(?:is|was)\s+(.+?)\s*[\.\?!]*$`)
-	genericMyFactPattern           = regexp.MustCompile(`(?i)\b(?:my|mine)\s+([a-z][a-z0-9 _-]{1,64}?)\s+(?:is|are|was|were|=)\s+(.+?)\s*[\.\?!]*$`)
-	genericSetFactPattern          = regexp.MustCompile(`(?i)\b(?:set|update|change|correct|remember)\s+(?:that\s+)?(?:my|mine)\s+([a-z][a-z0-9 _-]{1,64}?)\s+(?:to|as|=)\s+(.+?)\s*[\.\?!]*$`)
-	genericShouldFactPattern       = regexp.MustCompile(`(?i)\b(?:my|mine)\s+([a-z][a-z0-9 _-]{1,64}?)\s+(?:should\s+be|needs\s+to\s+be|changed\s+to)\s+(.+?)\s*[\.\?!]*$`)
-	genericRecallAttrPattern       = regexp.MustCompile(`(?i)\b(?:what(?:'s| is| was)|who(?:'s| is| was)|when(?:'s| is| was)|where(?:'s| is| was)|tell me|remind me|recall|do you remember|remember|do you know)\s+(?:about\s+|of\s+)?(?:my|mine)\s+(.+?)\s*[\?\.\!]*$`)
-	genericRecallSayAttrPattern    = regexp.MustCompile(`(?i)\bwhat\s+did\s+i\s+say\s+(?:my|mine)\s+(.+?)\s+(?:was|is)\s*[\?\.\!]*$`)
-	genericRecallWhatAttrPattern   = regexp.MustCompile(`(?i)\b(?:tell me|remind me|recall|do you remember|remember|do you know)\s+(?:about\s+|of\s+)?(?:what|who|when|where)\s+(?:my|mine)\s+(.+?)\s+(?:is|was)\s*[\?\.\!]*$`)
-	genericRecallMemoryAttrPattern = regexp.MustCompile(`(?i)\bwhat\s+do\s+you\s+(?:remember|know)\s+(?:about\s+|of\s+)(?:my|mine)\s+(.+?)\s*[\?\.\!]*$`)
-	percentOfPattern               = regexp.MustCompile(`(?i)\b(\d+(?:\.\d+)?)\s*(?:%|percent)\s+of\s+(\d+(?:\.\d+)?)\b`)
+	resumeWeightPattern      = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(kg|kgs|kilogram|kilograms|kiloggram|kiloggrams|g|gram|grams|gr|lb|lbs|pound|pounds)\b`)
+	resumeMeasurementPattern = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(mm|millimeter|millimeters|millimetre|millimetres|cm|centimeter|centimeters|centimetre|centimetres|m|meter|meters|metre|metres|km|kilometer|kilometers|kilometre|kilometres|in|inch|inches|ft|foot|feet|mi|mile|miles|mg|milligram|milligrams|kg|kgs|kilogram|kilograms|kiloggram|kiloggrams|g|gram|grams|gr|lb|lbs|pound|pounds|ml|milliliter|milliliters|millilitre|millilitres|l|liter|liters|litre|litres|s|sec|secs|second|seconds|min|mins|minute|minutes|hr|hrs|h|hour|hours|mmol|millimole|millimoles|mol|mole|moles)\b`)
+	resumeFeetInchesPattern  = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(?:ft|foot|feet|')\s*(?:(\d+(?:\.\d+)?)\s*(?:in|inch|inches|")?)?`)
+	resumeInchesQuotePattern = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*"`)
+	resumeAgeExplicitPattern = regexp.MustCompile(`(?i)(?:\b(\d{1,3}(?:\.\d+)?)\s*(years?\s*old|years?|yrs?|yr|yo|y/o)\b|\bage(?:\s+is)?\s+(\d{1,3}(?:\.\d+)?)\b)`)
+	resumeBareNumberPattern  = regexp.MustCompile(`^\s*(\d{1,3})(?:\.0+)?\s*[\.,!?]*\s*$`)
+	convertValueUnitPattern  = regexp.MustCompile(`(?i)\b(\d+(?:\.\d+)?)\s*([a-z]+(?:/[a-z]+)+|mph|kph|kmh|mps|mm|millimeters?|millimetres?|cm|centimeters?|centimetres?|m|meters?|metres?|km|kilometers?|kilometres?|in|inch|inches|ft|foot|feet|mi|mile|miles|mg|milligrams?|g|grams?|gr|kg|kgs|kilograms?|kiloggrams?|lb|lbs|pounds?|ml|milliliters?|millilitres?|l|liters?|litres?|s|secs?|seconds?|min|mins?|minutes?|hr|hrs?|hours?|mmol|millimoles?|mol|moles?)\b`)
+	convertTargetUnitPattern = regexp.MustCompile(`(?i)\b(?:to|into|in)\s+([a-z]+(?:/[a-z]+)+|[a-z]+(?:\s+per\s+[a-z]+)?)\s*[\.\?!,]*$`)
+	weatherHourPattern       = regexp.MustCompile(`(?i)\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b`)
+	percentOfPattern         = regexp.MustCompile(`(?i)\b(\d+(?:\.\d+)?)\s*(?:%|percent)\s+of\s+(\d+(?:\.\d+)?)\b`)
 )
 
 func TryFillPending(req PendingFillRequest) (PlannedCall, bool, error) {
@@ -221,11 +210,7 @@ func GroundCall(evidenceText string, call PlannedCall) (PlannedCall, error) {
 	return call, nil
 }
 
-func ExtractCalculatorObservationPatch(text string) (json.RawMessage, bool, error) {
-	return ExtractObservationPatch(text)
-}
-
-func ExtractObservationPatch(text string) (json.RawMessage, bool, error) {
+func ExtractCalculatorHealthPatch(text string) (json.RawMessage, bool, error) {
 	update := map[string]any{}
 	if components, ok := parseWeightComponents(text); ok {
 		update["weight"] = components
@@ -241,11 +226,6 @@ func ExtractObservationPatch(text string) (json.RawMessage, bool, error) {
 	}
 	if level, ok := parseActivityLevel(text); ok {
 		update["activity_level"] = level
-	}
-	for key, value := range extractTextObservations(text) {
-		if _, exists := update[key]; !exists {
-			update[key] = value
-		}
 	}
 	if len(update) == 0 {
 		return nil, false, nil
@@ -270,12 +250,6 @@ func InferToolCall(text string) (PlannedCall, bool, error) {
 			"query":      olderSisterQuery(trimmed),
 			"web_search": true,
 		})
-	case isMemoryRecallRequest(lower):
-		args := map[string]any{}
-		if attr := inferredMemoryAttr(lower); attr != "" {
-			args["attribute"] = attr
-		}
-		return rawPlannedCall("memory_lookup", args)
 	case isWeatherRequest(lower):
 		return rawPlannedCall("weather", extractWeatherUpdate(trimmed))
 	case isTimeRequest(lower):
@@ -349,84 +323,6 @@ func isOlderSisterRequest(lower string) bool {
 	return containsAny(lower, "older sister", "chatgpt", "search the internet", "look up", "lookup", "web search", "search for", "verify whether")
 }
 
-func isMemoryRecallRequest(lower string) bool {
-	if containsAny(lower, "bmi", "bmr", "tdee") {
-		return false
-	}
-	if inferredMemoryAttr(lower) != "" {
-		return containsAny(lower,
-			"what", "when", "how", "tell me", "remind me", "recall",
-			"remember", "remembered", "did i say", "do you know",
-		)
-	}
-	return containsAny(lower, "remember", "remembered", "did i say", "do you know")
-}
-
-func inferredMemoryAttr(lower string) string {
-	switch {
-	case containsAny(lower, "weight", "weigh"):
-		return "weight"
-	case containsAny(lower, "height", "tall"):
-		return "height"
-	case containsAny(lower, "age", "how old"):
-		return "age_years"
-	case containsAny(lower, "gender"):
-		return "gender"
-	case containsAny(lower, "activity level", "how active"):
-		return "activity_level"
-	case containsAny(lower, "birthday", "birth day"):
-		return "birthday"
-	case containsAny(lower, "start date", "started", "new job"):
-		return "start_date"
-	case containsAny(lower, "favorite color", "favourite color"):
-		return "favorite_color"
-	case containsStandaloneWord(lower, "name"):
-		return "name"
-	default:
-		return inferredGenericMemoryAttr(lower)
-	}
-}
-
-func inferredGenericMemoryAttr(lower string) string {
-	for _, candidate := range genericRecallSayAttrPattern.FindAllStringSubmatch(lower, -1) {
-		if len(candidate) < 2 {
-			continue
-		}
-		attr := normalizeMemoryLookupLabel(candidate[1])
-		if isGenericFactLabel(attr) && !isCalculatedMemoryLabel(attr) {
-			return attr
-		}
-	}
-	for _, candidate := range genericRecallWhatAttrPattern.FindAllStringSubmatch(lower, -1) {
-		if len(candidate) < 2 {
-			continue
-		}
-		attr := normalizeMemoryLookupLabel(candidate[1])
-		if isGenericFactLabel(attr) && !isCalculatedMemoryLabel(attr) {
-			return attr
-		}
-	}
-	for _, candidate := range genericRecallMemoryAttrPattern.FindAllStringSubmatch(lower, -1) {
-		if len(candidate) < 2 {
-			continue
-		}
-		attr := normalizeMemoryLookupLabel(candidate[1])
-		if isGenericFactLabel(attr) && !isCalculatedMemoryLabel(attr) {
-			return attr
-		}
-	}
-	for _, candidate := range genericRecallAttrPattern.FindAllStringSubmatch(lower, -1) {
-		if len(candidate) < 2 {
-			continue
-		}
-		attr := normalizeMemoryLookupLabel(candidate[1])
-		if isGenericFactLabel(attr) && !isCalculatedMemoryLabel(attr) {
-			return attr
-		}
-	}
-	return ""
-}
-
 func olderSisterQuery(text string) string {
 	trimmed := strings.TrimSpace(text)
 	for _, prefix := range []string{
@@ -443,181 +339,6 @@ func olderSisterQuery(text string) string {
 		}
 	}
 	return trimmed
-}
-
-func extractTextObservations(text string) map[string]any {
-	out := map[string]any{}
-	trimmed := strings.TrimSpace(text)
-	if matches := birthdayPattern.FindStringSubmatch(trimmed); len(matches) == 2 {
-		out["birthday"] = strings.TrimSpace(matches[1])
-	}
-	if matches := startDatePattern.FindStringSubmatch(trimmed); len(matches) == 3 {
-		label := normalizeFactName(matches[1])
-		value := strings.TrimSpace(matches[2])
-		if label == "new_job" || strings.Contains(label, "job") || strings.Contains(label, "work") {
-			out["start_date"] = value
-		} else {
-			out[label+"_start_date"] = value
-		}
-	}
-	if matches := favoriteColorPattern.FindStringSubmatch(trimmed); len(matches) == 2 {
-		out["favorite_color"] = strings.TrimSpace(matches[1])
-	}
-	if matches := namedTextFactPattern.FindStringSubmatch(trimmed); len(matches) == 3 {
-		attr := normalizeFactName(matches[1])
-		value := strings.TrimSpace(matches[2])
-		switch attr {
-		case "birthday", "favorite_color", "favourite_color", "name":
-			if attr == "favourite_color" {
-				attr = "favorite_color"
-			}
-			out[attr] = value
-		}
-	}
-	for _, clause := range genericFactClauses(trimmed) {
-		if matches := genericMyFactPattern.FindStringSubmatch(clause); len(matches) == 3 {
-			attr := normalizeFactName(matches[1])
-			value := cleanGenericFactValue(matches[2])
-			if attr == "favourite_color" {
-				attr = "favorite_color"
-			}
-			if isGenericFactLabel(attr) && value != "" {
-				if _, exists := out[attr]; !exists {
-					out[attr] = value
-				}
-			}
-		}
-		if matches := genericSetFactPattern.FindStringSubmatch(clause); len(matches) == 3 {
-			attr := normalizeFactName(matches[1])
-			value := cleanGenericFactValue(matches[2])
-			if isGenericFactLabel(attr) && value != "" {
-				if _, exists := out[attr]; !exists {
-					out[attr] = value
-				}
-			}
-		}
-		if matches := genericShouldFactPattern.FindStringSubmatch(clause); len(matches) == 3 {
-			attr := normalizeFactName(matches[1])
-			value := cleanGenericFactValue(matches[2])
-			if isGenericFactLabel(attr) && value != "" {
-				if _, exists := out[attr]; !exists {
-					out[attr] = value
-				}
-			}
-		}
-	}
-	return out
-}
-
-func normalizeFactName(text string) string {
-	text = strings.ToLower(strings.TrimSpace(text))
-	text = strings.ReplaceAll(text, "-", " ")
-	fields := strings.Fields(text)
-	return strings.Join(fields, "_")
-}
-
-func normalizeMemoryLookupLabel(text string) string {
-	text = strings.ToLower(strings.TrimSpace(text))
-	text = strings.TrimSuffix(text, "?")
-	text = strings.TrimSuffix(text, ".")
-	text = strings.TrimSuffix(text, "!")
-	for _, suffix := range []string{" again", " right now", " currently", " now"} {
-		text = strings.TrimSuffix(text, suffix)
-	}
-	return normalizeFactName(text)
-}
-
-func genericFactClauses(text string) []string {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		return nil
-	}
-	lower := strings.ToLower(trimmed)
-	for _, prefix := range []string{"remember that ", "please remember that ", "please remember "} {
-		if strings.HasPrefix(lower, prefix) {
-			trimmed = strings.TrimSpace(trimmed[len(prefix):])
-			break
-		}
-	}
-	replacer := strings.NewReplacer(
-		" and my ", "\nmy ",
-		" and mine ", "\nmine ",
-		"; my ", "\nmy ",
-		"; mine ", "\nmine ",
-		". my ", "\nmy ",
-		". mine ", "\nmine ",
-		", my ", "\nmy ",
-		", mine ", "\nmine ",
-	)
-	split := strings.Split(replacer.Replace(trimmed), "\n")
-	clauses := make([]string, 0, len(split))
-	for _, clause := range split {
-		clause = strings.TrimSpace(clause)
-		if clause != "" {
-			clauses = append(clauses, clause)
-		}
-	}
-	return clauses
-}
-
-func cleanGenericFactValue(text string) string {
-	text = strings.TrimSpace(text)
-	text = strings.Trim(text, " \t\r\n\"'")
-	for _, suffix := range []string{" from now on", " going forward"} {
-		if strings.HasSuffix(strings.ToLower(text), suffix) {
-			text = strings.TrimSpace(text[:len(text)-len(suffix)])
-		}
-	}
-	return strings.TrimSpace(text)
-}
-
-func isGenericFactLabel(attr string) bool {
-	attr = strings.Trim(attr, "_")
-	if attr == "" || len(attr) > 80 {
-		return false
-	}
-	if strings.Contains(attr, "__") {
-		return false
-	}
-	if isRelationshipFactLabel(attr) {
-		return false
-	}
-	for _, blocked := range []string{
-		"bmi", "bmr", "tdee", "body_mass_index", "basal_metabolic_rate", "total_daily_energy_expenditure",
-		"question", "request", "answer", "calculation", "conversion",
-	} {
-		if attr == blocked {
-			return false
-		}
-	}
-	return true
-}
-
-func isRelationshipFactLabel(attr string) bool {
-	if strings.HasPrefix(attr, "friend") && len(attr) > len("friend") {
-		suffix := strings.TrimPrefix(attr, "friend")
-		for _, r := range suffix {
-			if r < '0' || r > '9' {
-				return false
-			}
-		}
-		return true
-	}
-	switch attr {
-	case "brother", "dad", "daughter", "father", "friend", "girlfriend", "boyfriend", "husband", "mom", "mother", "partner", "sister", "son", "trainer", "wife":
-		return true
-	default:
-		return false
-	}
-}
-
-func isCalculatedMemoryLabel(attr string) bool {
-	for _, marker := range []string{"bmi", "bmr", "tdee", "body_mass_index", "metabolic_rate", "daily_energy"} {
-		if strings.Contains(attr, marker) {
-			return true
-		}
-	}
-	return false
 }
 
 func containsAny(text string, needles ...string) bool {

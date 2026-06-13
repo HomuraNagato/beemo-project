@@ -487,7 +487,7 @@ func TestResolveCalculatorCallFillsConvertArgsFromExplicitText(t *testing.T) {
 	call, err := ResolveCalculatorCall(PlannedCall{
 		Action: "calculator",
 		Args:   []byte(`{"operation":"convert"}`),
-	}, "what is 103lbs in kg?", nil)
+	}, "what is 103lbs in kg?")
 	if err != nil {
 		t.Fatalf("ResolveCalculatorCall returned error: %v", err)
 	}
@@ -574,7 +574,7 @@ func TestResolveCalculatorCallCanonicalizesDuplicateEquivalentMeasurements(t *te
 			"age_years":27,
 			"gender":"female"
 		}`),
-	}, "", nil)
+	}, "")
 	if err != nil {
 		t.Fatalf("ResolveCalculatorCall returned error: %v", err)
 	}
@@ -601,57 +601,6 @@ func TestResolveCalculatorCallCanonicalizesDuplicateEquivalentMeasurements(t *te
 	}
 	if len(args.Height) != 1 || args.Height[0].Unit != "cm" || args.Height[0].Value != 174 {
 		t.Fatalf("unexpected canonicalized height: %#v", args.Height)
-	}
-	if got, want := args.AgeYears, 27.0; got != want {
-		t.Fatalf("unexpected age_years: got %v want %v", got, want)
-	}
-	if got, want := args.Gender, "female"; got != want {
-		t.Fatalf("unexpected gender: got %q want %q", got, want)
-	}
-}
-
-func TestResolveCalculatorCallPrefersSnapshotOverModelFallback(t *testing.T) {
-	t.Parallel()
-
-	resolved, err := ResolveCalculatorCall(
-		PlannedCall{
-			Action: "calculator",
-			Args: json.RawMessage(`{
-				"operation":"bmr",
-				"weight":[{"unit":"kg","value":134}],
-				"height":[{"unit":"lb","value":134}],
-				"age_years":27,
-				"gender":"female"
-			}`),
-		},
-		"what is her bmr? she is female and 27 years old",
-		map[string]json.RawMessage{
-			"weight": json.RawMessage(`[{"unit":"kg","value":60.78137758}]`),
-			"height": json.RawMessage(`[{"unit":"cm","value":174}]`),
-		},
-	)
-	if err != nil {
-		t.Fatalf("ResolveCalculatorCall returned error: %v", err)
-	}
-
-	var args struct {
-		Weight   []measurementComponent `json:"weight"`
-		Height   []measurementComponent `json:"height"`
-		AgeYears float64                `json:"age_years"`
-		Gender   string                 `json:"gender"`
-	}
-	if err := json.Unmarshal(resolved.Args, &args); err != nil {
-		t.Fatalf("unmarshal resolved args: %v", err)
-	}
-
-	if len(args.Weight) != 1 || args.Weight[0].Unit != "kg" {
-		t.Fatalf("unexpected weight: %#v", args.Weight)
-	}
-	if diff := math.Abs(args.Weight[0].Value - 60.78137758); diff > 0.000001 {
-		t.Fatalf("unexpected weight value: got %.8f", args.Weight[0].Value)
-	}
-	if len(args.Height) != 1 || args.Height[0].Unit != "cm" || args.Height[0].Value != 174 {
-		t.Fatalf("unexpected height: %#v", args.Height)
 	}
 	if got, want := args.AgeYears, 27.0; got != want {
 		t.Fatalf("unexpected age_years: got %v want %v", got, want)

@@ -11,4 +11,6 @@ if ! command -v "$GO_BIN" >/dev/null 2>&1; then
   fi
 fi
 
+export GOCACHE="${GOCACHE:-/tmp/beemo-go-cache}"
+
 exec "$GO_BIN" run ./src/tui "$@"
