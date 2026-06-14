@@ -1,0 +1,6 @@
+llm:
+  addr: eve-reasoning:5014
+  http_url: http://eve-reasoning:5014/v1/chat/completions
+  provider: llamacpp
+  model: Qwen2.5-1.5B-Instruct.Q4_K_M.gguf
+  timeout_ms: 120000

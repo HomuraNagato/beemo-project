@@ -33,7 +33,7 @@ var (
 	resumeInchesQuotePattern = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*"`)
 	resumeAgeExplicitPattern = regexp.MustCompile(`(?i)(?:\b(\d{1,3}(?:\.\d+)?)\s*(years?\s*old|years?|yrs?|yr|yo|y/o)\b|\bage(?:\s+is)?\s+(\d{1,3}(?:\.\d+)?)\b)`)
 	resumeBareNumberPattern  = regexp.MustCompile(`^\s*(\d{1,3})(?:\.0+)?\s*[\.,!?]*\s*$`)
-	convertValueUnitPattern  = regexp.MustCompile(`(?i)\b(\d+(?:\.\d+)?)\s*([a-z]+(?:/[a-z]+)+|mph|kph|kmh|mps|mm|millimeters?|millimetres?|cm|centimeters?|centimetres?|m|meters?|metres?|km|kilometers?|kilometres?|in|inch|inches|ft|foot|feet|mi|mile|miles|mg|milligrams?|g|grams?|gr|kg|kgs|kilograms?|kiloggrams?|lb|lbs|pounds?|ml|milliliters?|millilitres?|l|liters?|litres?|s|secs?|seconds?|min|mins?|minutes?|hr|hrs?|hours?|mmol|millimoles?|mol|moles?)\b`)
+	convertValueUnitPattern  = regexp.MustCompile(`(?i)\b(\d+(?:\.\d+)?)\s*([a-z]+(?:/[a-z]+)+|mph|kph|kmh|mps|celsius|fahrenheit|kelvin|c|f|k|mm|millimeters?|millimetres?|cm|centimeters?|centimetres?|m|meters?|metres?|km|kilometers?|kilometres?|in|inch|inches|ft|foot|feet|mi|mile|miles|mg|milligrams?|g|grams?|gr|kg|kgs|kilograms?|kiloggrams?|lb|lbs|pounds?|ml|milliliters?|millilitres?|l|liters?|litres?|s|secs?|seconds?|min|mins?|minutes?|hr|hrs?|hours?|mmol|millimoles?|mol|moles?)\b`)
 	convertTargetUnitPattern = regexp.MustCompile(`(?i)\b(?:to|into|in)\s+([a-z]+(?:/[a-z]+)+|[a-z]+(?:\s+per\s+[a-z]+)?)\s*[\.\?!,]*$`)
 	weatherHourPattern       = regexp.MustCompile(`(?i)\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b`)
 	percentOfPattern         = regexp.MustCompile(`(?i)\b(\d+(?:\.\d+)?)\s*(?:%|percent)\s+of\s+(\d+(?:\.\d+)?)\b`)
@@ -250,6 +250,11 @@ func InferToolCall(text string) (PlannedCall, bool, error) {
 			"query":      olderSisterQuery(trimmed),
 			"web_search": true,
 		})
+	case isOlderSisterFallbackRequest(lower):
+		return rawPlannedCall("older_sister", map[string]any{
+			"query":      trimmed,
+			"web_search": false,
+		})
 	case isWeatherRequest(lower):
 		return rawPlannedCall("weather", extractWeatherUpdate(trimmed))
 	case isTimeRequest(lower):
@@ -321,6 +326,22 @@ func isWeatherRequest(lower string) bool {
 
 func isOlderSisterRequest(lower string) bool {
 	return containsAny(lower, "older sister", "chatgpt", "search the internet", "look up", "lookup", "web search", "search for", "verify whether")
+}
+
+func isOlderSisterFallbackRequest(lower string) bool {
+	if containsAny(lower, "weather", "temperature", "forecast", "rain", "raining", "snow", "time", "date", "bmi", "bmr", "tdee", "convert ", "percent") {
+		return false
+	}
+	return containsAny(lower,
+		"circumference of the earth",
+		"improve this sentence",
+		"rewrite this sentence",
+		"proofread this sentence",
+		"edit this sentence",
+		"explain ",
+		"write a ",
+		"what are good ways to",
+	)
 }
 
 func olderSisterQuery(text string) string {

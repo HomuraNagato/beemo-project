@@ -17,7 +17,7 @@ VLLM_GPU_MEMORY_UTILIZATION=0.90
 VLLM_MAX_MODEL_LEN=8192
 VLLM_CPU_OFFLOAD_GB=6
 VLLM_SWAP_SPACE_GB=8
-LLM_HTTP_URL=http://eve-vllm:5014/v1/chat/completions
+LLM_HTTP_URL=http://eve-reasoning:5014/v1/chat/completions
 ```
 
 By default, the vLLM entrypoint derives the load path as:
@@ -107,14 +107,14 @@ If you need a lighter English-only fallback for CPU experiments, `BAAI/bge-small
 After updating `.env`:
 
 ```bash
-docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up -d eve-vllm
+docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up -d eve-reasoning
 ```
 
 Then test:
 
 ```bash
-./scripts/llama-chat.sh --docker --host http://eve-vllm:5014 --prompt 'Say hello in one word.'
-./scripts/llama-complete.sh --docker --host http://eve-vllm:5014 --prompt 'Return ["ok"] exactly.' --grammar-file scripts/grammars/min_array.gbnf
+./scripts/llama-chat.sh --docker --host http://eve-reasoning:5014 --prompt 'Say hello in one word.'
+./scripts/llama-complete.sh --docker --host http://eve-reasoning:5014 --prompt 'Return ["ok"] exactly.' --grammar-file scripts/grammars/min_array.gbnf
 ```
 
 ## Notes

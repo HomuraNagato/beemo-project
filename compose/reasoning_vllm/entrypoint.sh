@@ -64,6 +64,10 @@ if [ -n "$DTYPE" ]; then
   set -- "$@" --dtype "$DTYPE"
 fi
 
+if [ -n "$DEVICE" ] && [ "$DEVICE" != "auto" ] && vllm serve --help 2>&1 | grep -q -- '--device'; then
+  set -- "$@" --device "$DEVICE"
+fi
+
 if [ -n "$REASONING_PARSER" ]; then
   set -- "$@" --reasoning-parser "$REASONING_PARSER"
 fi
@@ -75,7 +79,9 @@ fi
 if [ "$DEVICE" = "cpu" ]; then
   # CPU deployments use the dedicated CPU image and CPU-specific env vars
   # such as VLLM_CPU_KVCACHE_SPACE instead of GPU memory flags.
-  :
+  if vllm serve --help 2>&1 | grep -q -- '--cpu-kvcache-space'; then
+    set -- "$@" --cpu-kvcache-space "$CPU_KVCACHE_SPACE"
+  fi
 else
   set -- "$@" --cpu-offload-gb "$CPU_OFFLOAD_GB"
 

@@ -1,0 +1,25 @@
+services:
+
+  eve-reasoning:
+    container_name: eve-reasoning
+    hostname: eve-reasoning
+    image: vllm/vllm-openai-cpu:latest-x86_64
+    privileged: true
+    ports:
+      - 5014:5014
+    volumes:
+      - ./models:/models
+      - ./compose/reasoning_vllm/entrypoint.sh:/entrypoint.sh
+    environment:
+      MODEL_DIR: /models
+      REASONING_MODEL: Qwen3-1.7B
+      REASONING_PORT: "5014"
+      REASONING_HOST: 0.0.0.0
+      VLLM_REASONING_PARSER: qwen3
+      VLLM_DEFAULT_CHAT_TEMPLATE_KWARGS: '{"enable_thinking": false}'
+      VLLM_DEVICE: cpu
+      VLLM_DTYPE: bfloat16
+      VLLM_MAX_MODEL_LEN: "2048"
+      VLLM_CPU_KVCACHE_SPACE: "1"
+    shm_size: 4g
+    entrypoint: /entrypoint.sh

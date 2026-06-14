@@ -1,12 +1,12 @@
 # vLLM Model Bench
 
-Use `scripts/vllm-model-bench.sh` to compare local and Hugging Face models against the current `eve-vllm` stack.
+Use `scripts/vllm-model-bench.sh` to compare local and Hugging Face models against the current `eve-reasoning` stack.
 
 What it does:
 - optionally downloads missing models with `hf download`
 - rewrites `REASONING_MODEL` and `LLM_MODEL` in `.env`
-- recreates `eve-vllm` and `eve-orchestrator`
-- tails `eve-vllm` logs during startup
+- recreates `eve-reasoning` and `eve-orchestrator`
+- tails `eve-reasoning` logs during startup
 - waits for the model server to answer
 - runs a small set of probes through the existing local scripts
 - writes a TSV report under `reports/`

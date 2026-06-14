@@ -11,8 +11,6 @@ services:
     volumes:
       - ./models:/models
       - ./compose/embedding/entrypoint.sh:/entrypoint.sh
-    env_file:
-      - ./.env
     environment:
       MODEL_DIR: /models
       EMBEDDING_MODEL: Qwen3-Embedding-0.6B

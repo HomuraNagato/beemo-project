@@ -1,0 +1,24 @@
+services:
+
+  eve-reasoning:
+    container_name: eve-reasoning
+    hostname: eve-reasoning
+    image: ghcr.io/ggml-org/llama.cpp:server
+    privileged: true
+    ports:
+      - 5014:5014
+    volumes:
+      - ./models:/models
+      - ./compose/reasoning_cpp/entrypoint.sh:/entrypoint.sh
+    environment:
+      MODEL_DIR: /models
+      REASONING_MODEL: Qwen2.5-1.5B-Instruct.Q4_K_M.gguf
+      REASONING_PORT: "5014"
+      REASONING_HOST: 0.0.0.0
+      LLAMA_CTX_SIZE: "2048"
+    shm_size: 1g
+    entrypoint: /entrypoint.sh
+
+  eve-orchestrator:
+    environment:
+      BEEMO_CONFIG: config/config.llamacpp.yaml

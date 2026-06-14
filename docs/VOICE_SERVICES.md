@@ -30,7 +30,8 @@ Relevant defaults live in `.env` and `.env.example`:
 - `WAKEWORD_DETECTION_MODE=hybrid`
 - `WAKEWORD_MODEL_PATH=/models/wakeword/wakeword.onnx`
 - `WAKEWORD_PHRASES=hey beemo,hey bmo,okay beemo,ok beemo`
-- `PULSE_SOCKET_PATH=/mnt/wslg/PulseServer`
+- `WAKEWORD_ASR_ALIASES=don't be mad,dont be mad,hey bemo,hey bimo,okay bemo,ok bemo`
+- `PULSE_SOCKET_PATH=/run/user/1000/pulse/native`
 - `PULSE_SOURCE=default`
 
 ## Bring-up
@@ -38,7 +39,7 @@ Relevant defaults live in `.env` and `.env.example`:
 1. Start the reasoning service you already use:
 
 ```bash
-dockrefresh eve-vllm cpu
+dockrefresh eve-reasoning cpu vllm
 ```
 
 2. Start the ASR service:
@@ -74,7 +75,7 @@ hey beemo what time is it
 
 ## Notes
 
-- `eve-wakeword` expects microphone access through PulseAudio. On WSLg the default bind mount is `/mnt/wslg/PulseServer`.
+- `eve-wakeword` expects microphone access through PulseAudio/PipeWire. On SteamOS the default bind mount is `/run/user/1000/pulse/native`.
 - The first `eve-asr` startup may download the `small.en` Whisper model into `/models/faster-whisper`.
 - If you want reliable `hey beemo` detection with `openwakeword`, you will usually want a custom `.onnx` model at `/models/wakeword/wakeword.onnx`. The upstream project ships built-in models for common phrases like `alexa`, `hey mycroft`, and `hey jarvis`, and documents custom model training separately: [openWakeWord README](https://github.com/dscripka/openWakeWord).
 - `./scripts/eve-orchestrator-run.sh` is a stopgap until `eve-orchestrator` gets its own entrypoint. It starts `go run ./src/orchestrator` inside the container and redirects output into `docker logs`.

@@ -43,6 +43,7 @@ domains:
     when_to_use:
       - Use for questions that require broad internet search, recent facts, current events, product information, documentation lookup, or external source checking.
       - Use when the user explicitly asks to ask ChatGPT, ask older sister, search the internet, look something up, or verify current information.
+      - Use for expert knowledge, writing, editing, or explanation requests that are not covered by local time, weather, or calculator tools.
     when_not_to_use:
       - Do not use for local calculator, weather, or time/date questions that have dedicated tools.
       - Do not use for private local state unless the user explicitly wants external help with that content.
@@ -129,6 +130,7 @@ routes:
     when_to_use:
       - The user asks to call ChatGPT or older sister.
       - The user asks for internet search, current information, external documentation, news, product details, recommendations, or source-backed verification.
+      - The user asks for expert knowledge, writing help, sentence improvement, editing, or explanation that is not covered by local tools.
       - The local model is likely to be weak because the answer depends on recent or web-only information.
     when_not_to_use:
       - The user asks for a supported local calculator, time, or weather operation.

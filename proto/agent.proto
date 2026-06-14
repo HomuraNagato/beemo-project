@@ -54,6 +54,10 @@ message WakeDetected {
   string session_id = 1;
   int64 timestamp_unix_ms = 2;
   string source = 3;
+  string transcript = 4;
+  string prompt = 5;
+  string response = 6;
+  float confidence = 7;
 }
 
 message AudioChunk {

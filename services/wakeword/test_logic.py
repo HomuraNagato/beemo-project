@@ -1,6 +1,6 @@
 import unittest
 
-from services.wakeword.logic import extract_prompt, should_listen_for_followup, split_phrases
+from services.wakeword.logic import extract_prompt, should_listen_for_followup, split_optional_phrases, split_phrases
 
 
 class WakewordLogicTest(unittest.TestCase):
@@ -25,6 +25,10 @@ class WakewordLogicTest(unittest.TestCase):
     def test_extract_prompt_returns_empty_string_for_phrase_only(self):
         phrases = split_phrases("hey beemo")
         self.assertEqual(extract_prompt("hey beemo", phrases), "")
+
+    def test_extract_prompt_accepts_asr_aliases(self):
+        phrases = split_phrases("hey beemo") + split_optional_phrases("don't be mad,dont be mad")
+        self.assertEqual(extract_prompt("Don't be mad. What time is it?", phrases), "What time is it?")
 
     def test_should_listen_for_followup_when_response_is_question(self):
         self.assertTrue(should_listen_for_followup("What is the height?"))

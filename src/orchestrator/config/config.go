@@ -11,6 +11,8 @@ import (
 type Config struct {
 	LLMAddr                  string
 	LLMHTTPURL               string
+	LLMDecisionHTTPURL       string
+	LLMProvider              string
 	LLMModel                 string
 	LLMTimeoutMs             int
 	DatabaseURL              string
@@ -62,6 +64,9 @@ func Load() Config {
 	if cfg.LLMHTTPURL == "" && cfg.LLMAddr != "" {
 		cfg.LLMHTTPURL = "http://" + strings.TrimSpace(cfg.LLMAddr) + "/v1/chat/completions"
 	}
+	if cfg.LLMDecisionHTTPURL == "" {
+		cfg.LLMDecisionHTTPURL = defaultDecisionHTTPURL(cfg.LLMProvider, cfg.LLMAddr, cfg.LLMHTTPURL)
+	}
 	if cfg.EmbeddingHTTPURL == "" && cfg.EmbeddingAddr != "" {
 		cfg.EmbeddingHTTPURL = "http://" + strings.TrimSpace(cfg.EmbeddingAddr) + "/v1/embeddings"
 	}
@@ -69,7 +74,7 @@ func Load() Config {
 }
 
 func defaultConfig() Config {
-	llmAddr := "eve-vllm:5014"
+	llmAddr := "eve-reasoning:5014"
 	llmHTTPURL := ""
 	if llmAddr != "" {
 		llmHTTPURL = "http://" + strings.TrimSpace(llmAddr) + "/v1/chat/completions"
@@ -83,6 +88,8 @@ func defaultConfig() Config {
 	return Config{
 		LLMAddr:                  llmAddr,
 		LLMHTTPURL:               llmHTTPURL,
+		LLMDecisionHTTPURL:       "",
+		LLMProvider:              "vllm",
 		LLMModel:                 "Qwen3-1.7B",
 		LLMTimeoutMs:             120000,
 		DatabaseURL:              "",
@@ -116,10 +123,12 @@ func defaultConfig() Config {
 
 type yamlConfig struct {
 	LLM struct {
-		Addr      string `yaml:"addr"`
-		HTTPURL   string `yaml:"http_url"`
-		Model     string `yaml:"model"`
-		TimeoutMs int    `yaml:"timeout_ms"`
+		Addr            string `yaml:"addr"`
+		HTTPURL         string `yaml:"http_url"`
+		DecisionHTTPURL string `yaml:"decision_http_url"`
+		Provider        string `yaml:"provider"`
+		Model           string `yaml:"model"`
+		TimeoutMs       int    `yaml:"timeout_ms"`
 	} `yaml:"llm"`
 	Embedding struct {
 		Addr      string `yaml:"addr"`
@@ -180,6 +189,8 @@ func loadYAML(path string) (Config, error) {
 
 	setString(&cfg.LLMAddr, raw.LLM.Addr)
 	setString(&cfg.LLMHTTPURL, raw.LLM.HTTPURL)
+	setString(&cfg.LLMDecisionHTTPURL, raw.LLM.DecisionHTTPURL)
+	setString(&cfg.LLMProvider, raw.LLM.Provider)
 	setString(&cfg.LLMModel, raw.LLM.Model)
 	setInt(&cfg.LLMTimeoutMs, raw.LLM.TimeoutMs)
 	setString(&cfg.EmbeddingAddr, raw.Embedding.Addr)
@@ -235,4 +246,11 @@ func getenvOrDefault(key, def string) string {
 		return def
 	}
 	return val
+}
+
+func defaultDecisionHTTPURL(provider, addr, fallback string) string {
+	if strings.EqualFold(strings.TrimSpace(provider), "llamacpp") && strings.TrimSpace(addr) != "" {
+		return "http://" + strings.TrimSpace(addr) + "/completion"
+	}
+	return fallback
 }

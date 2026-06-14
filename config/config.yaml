@@ -1,6 +1,7 @@
 llm:
-  addr: eve-vllm:5014
-  http_url: http://eve-vllm:5014/v1/chat/completions
+  addr: eve-reasoning:5014
+  http_url: http://eve-reasoning:5014/v1/chat/completions
+  provider: vllm
   model: Qwen3-1.7B
   timeout_ms: 120000
 

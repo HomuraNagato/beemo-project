@@ -20,9 +20,9 @@ services:
               count: all
               capabilities: [gpu]
 
-  eve-vllm:
-    container_name: eve-vllm
-    hostname: eve-vllm
+  eve-reasoning:
+    container_name: eve-reasoning
+    hostname: eve-reasoning
     image: vllm/vllm-openai
     privileged: true
     ports:
@@ -30,8 +30,6 @@ services:
     volumes:
       - ./models:/models
       - ./compose/reasoning_vllm/entrypoint.sh:/entrypoint.sh
-    env_file:
-      - ./.env
     environment:
       MODEL_DIR: /models
       REASONING_MODEL: Qwen3-1.7B

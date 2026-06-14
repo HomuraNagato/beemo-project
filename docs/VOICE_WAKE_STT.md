@@ -34,7 +34,7 @@ pip install -r requirements-voice.txt
 
 ## Start Order
 
-1. Start `eve-vllm`
+1. Start `eve-reasoning`
 2. Start the `eve-orchestrator` container
 3. Run `go run ./src/orchestrator` inside the `eve-orchestrator` container
 4. Start the voice listener on the host

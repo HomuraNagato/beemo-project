@@ -159,3 +159,63 @@ func TestCallChatWithGrammarIncludesHTTPErrorBody(t *testing.T) {
 		t.Fatalf("unexpected error body: %v", err)
 	}
 }
+
+func TestCallLlamaCPPWithGrammarSendsGrammarCompletionRequest(t *testing.T) {
+	var got llamaCPPCompletionRequest
+	withMockHTTPClient(t, func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodPost {
+			t.Fatalf("unexpected method: %s", req.Method)
+		}
+		if got, want := req.URL.String(), "http://llm.test/completion"; got != want {
+			t.Fatalf("unexpected URL: got %q want %q", got, want)
+		}
+		if err := json.NewDecoder(req.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		return jsonResponse(http.StatusOK, `{"content":"[{\"tool\":\"get_time\",\"args\":{}}]"}`), nil
+	})
+
+	text, err := CallLlamaCPPWithGrammar("http://llm.test/completion", "decide", `root_rule ::= "[]"`, time.Second)
+	if err != nil {
+		t.Fatalf("CallLlamaCPPWithGrammar returned error: %v", err)
+	}
+	if got, want := text, `[{"tool":"get_time","args":{}}]`; got != want {
+		t.Fatalf("unexpected response text: got %q want %q", got, want)
+	}
+	if got, want := got.Prompt, "decide"; got != want {
+		t.Fatalf("unexpected prompt: got %q want %q", got, want)
+	}
+	if got, want := got.Grammar, `root-rule ::= "[]"`; got != want {
+		t.Fatalf("unexpected grammar: got %q want %q", got, want)
+	}
+	if got, want := got.NPredict, 128; got != want {
+		t.Fatalf("unexpected n_predict: got %d want %d", got, want)
+	}
+	if got.Stream {
+		t.Fatal("expected stream to be false")
+	}
+}
+
+func TestNormalizeLlamaCPPGrammarPreservesJSONStringAndCharClassUnderscores(t *testing.T) {
+	input := `root ::= web_search_field
+web_search_field ::= "\"web_search\"" ws ":" ws string
+char ::= [a_z]
+`
+	want := `root ::= web-search-field
+web-search-field ::= "\"web_search\"" ws ":" ws string
+char ::= [a_z]
+`
+	if got := normalizeLlamaCPPGrammar(input); got != want {
+		t.Fatalf("unexpected grammar:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestCallDecisionWithGrammarRejectsUnknownProvider(t *testing.T) {
+	_, err := CallDecisionWithGrammar("mystery", "http://llm.test/completion", "model", "decide", `root ::= "[]"`, time.Second)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), `unsupported llm provider "mystery"`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

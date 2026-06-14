@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CONTAINER=${1:-eve-vllm}
+CONTAINER=${1:-eve-reasoning}
 
 echo "== docker ps =="
 docker ps --format '{{.Names}}\t{{.Status}}\t{{.Image}}' | grep "^${CONTAINER}" || {

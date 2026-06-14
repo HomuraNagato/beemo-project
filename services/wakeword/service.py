@@ -14,7 +14,7 @@ import numpy as np
 from eve_proto import agent_pb2, agent_pb2_grpc
 from openwakeword.model import Model as OpenWakeWordModel
 
-from services.wakeword.logic import extract_prompt, should_listen_for_followup, split_phrases
+from services.wakeword.logic import extract_prompt, should_listen_for_followup, split_optional_phrases, split_phrases
 
 
 def env_int(name: str, default: int) -> int:
@@ -338,6 +338,7 @@ class WakeLoop:
         self.followup_max_turns = env_int("WAKEWORD_FOLLOWUP_MAX_TURNS", 4)
         self.session_id = os.getenv("WAKEWORD_SESSION_ID", "voice-loop")
         self.wake_phrases = split_phrases(os.getenv("WAKEWORD_PHRASES", "hey beemo,hey bmo,okay beemo,ok beemo"))
+        self.wake_phrases.extend(split_optional_phrases(os.getenv("WAKEWORD_ASR_ALIASES", "")))
         self.recorder = PulseRecorder(
             sample_rate_hz=self.sample_rate_hz,
             source=os.getenv("PULSE_SOURCE", "default"),
@@ -358,11 +359,22 @@ class WakeLoop:
         self.asr_client.close()
         self.orchestrator_client.close()
 
-    def publish_wake(self, source: str) -> None:
+    def publish_wake(
+        self,
+        source: str,
+        transcript: str = "",
+        prompt: str = "",
+        response: str = "",
+        confidence: float = 0.0,
+    ) -> None:
         event = agent_pb2.WakeDetected(
             session_id=self.session_id,
             timestamp_unix_ms=int(time.time() * 1000),
             source=source,
+            transcript=transcript,
+            prompt=prompt,
+            response=response,
+            confidence=confidence,
         )
         self.broker.publish(event)
 
@@ -442,11 +454,10 @@ class WakeLoop:
             logging.info("wakeword.heard transcript=%r confidence=%.2f matched=false", transcript, confidence)
             return None
 
-        if publish_source:
-            self.publish_wake(publish_source)
-
         if not prompt:
             logging.info("wakeword.heard transcript=%r confidence=%.2f matched=true prompt=<empty>", transcript, confidence)
+            if publish_source:
+                self.publish_wake(publish_source, transcript=transcript, confidence=confidence)
             return None
 
         if require_trigger:
@@ -455,6 +466,14 @@ class WakeLoop:
             logging.info("wakeword.followup_heard transcript=%r confidence=%.2f prompt=%r", transcript, confidence, prompt)
         response = self.orchestrator_client.chat(self.session_id, prompt)
         logging.info("wakeword.orchestrator_response text=%r", response)
+        if publish_source:
+            self.publish_wake(
+                publish_source,
+                transcript=transcript,
+                prompt=prompt,
+                response=response,
+                confidence=confidence,
+            )
         return response
 
     def run_followup_window(self, initial_response: str) -> None:
@@ -471,7 +490,7 @@ class WakeLoop:
             utterance = self.capture_utterance(start_deadline_monotonic=time.monotonic() + self.followup_timeout_secs)
             if not utterance:
                 return
-            response = self.handle_utterance(utterance, require_trigger=False) or ""
+            response = self.handle_utterance(utterance, publish_source="followup", require_trigger=False) or ""
             if not response:
                 return
             turns_used += 1
@@ -518,7 +537,7 @@ class WakeLoop:
             utterance = self.capture_utterance(seed_frames=list(history), started=True)
             if not utterance:
                 continue
-            response = self.handle_utterance(utterance)
+            response = self.handle_utterance(utterance, publish_source=f"openwakeword:{model_name}")
             if response:
                 self.run_followup_window(response)
 

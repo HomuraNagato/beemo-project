@@ -12,6 +12,7 @@ Rules:
 - time/date/day/month/year/today/tomorrow/yesterday -> get_time.
 - weather/rain/temperature/forecast -> weather; include location, when, hour_local, focus if explicit.
 - ask ChatGPT/older sister/search/look up/verify -> older_sister with query and web_search when useful.
+- expert knowledge, writing, editing, or explanation requests not covered by local tools -> older_sister.
 - math, unit conversion, percent, BMI/BMR/TDEE -> calculator; include explicit values only, do not convert or duplicate measurements.
 - Use the active thread for immediate follow-ups only. Do not invent missing facts.
 - If required fields are missing, omit them. Do not answer.
@@ -39,7 +40,7 @@ Tool calls:`
 func RetryToolDecision(userQuery, activeTranscript string) string {
 	return `Re-check tool choice after previous []. Return one JSON tool call or [].
 Tools: get_time, weather, older_sister, calculator.
-Rules: time/date=>get_time; weather=>weather; ask/search/verify=>older_sister; math/conversion/BMI/BMR/TDEE=>calculator. Use active thread for immediate follow-ups, omit missing fields, do not answer.
+Rules: time/date=>get_time; weather=>weather; ask/search/verify/expert/writing=>older_sister; math/conversion/BMI/BMR/TDEE=>calculator. Use active thread for immediate follow-ups, omit missing fields, do not answer.
 
 Previous answer: []
 Active conversation thread:

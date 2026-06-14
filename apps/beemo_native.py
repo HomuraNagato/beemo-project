@@ -62,8 +62,11 @@ class BeemoApp:
         self.visible_messages = [{"role": "assistant", "content": "Hi. I am starting up."}]
         self.events = queue.Queue()
         self.busy = False
+        self.voice_ready = False
+        self.voice_pulse = False
+        self.wake_subscription_started = False
         self.expression = "neutral"
-        self.session_id = f"native-{int(time.time())}"
+        self.session_id = os.getenv("BEEMO_NATIVE_SESSION_ID", os.getenv("WAKEWORD_SESSION_ID", "voice-loop"))
 
         self.root = tk.Tk()
         self.root.title("Beemo")
@@ -79,6 +82,8 @@ class BeemoApp:
         self.set_expression("neutral")
         self.render_messages()
         self.root.after(100, self.poll_events)
+        self.root.after(250, self.poll_voice_services)
+        self.root.after(500, self.pulse_voice_icon)
 
         if not args.no_start:
             self.start_background("start", self.start_beemo)
@@ -141,15 +146,16 @@ class BeemoApp:
 
         self.voice_button = tk.Button(
             input_frame,
-            text="Mic",
-            command=self.voice_placeholder,
+            text="●",
+            command=self.voice_status_message,
             bg="#202b28",
-            fg="#72f2c8",
+            fg="#727b77",
             activebackground="#263631",
             activeforeground="#72f2c8",
             relief="flat",
             width=6,
             height=2,
+            font=("TkDefaultFont", 18, "bold"),
         )
         self.voice_button.grid(row=0, column=0, sticky="ns", padx=(24, 10), pady=14)
 
@@ -323,6 +329,7 @@ class BeemoApp:
             subprocess.run(self.args.start_cmd, cwd=ROOT_DIR, shell=True, check=True)
         self.events.put(("status", "ready"))
         self.events.put(("message", ("assistant", "Hi. I am listening.")))
+        self.events.put(("start_wake_stream", None))
 
     def start_background(self, name, target):
         def wrapped():
@@ -350,6 +357,12 @@ class BeemoApp:
                 self.set_expression(expression_from_reply(payload))
                 self.show_message("assistant", clean_reply(payload))
                 self.set_status("ready")
+            elif event == "voice_status":
+                self.set_voice_ready(payload)
+            elif event == "wake_event":
+                self.handle_wake_event(payload)
+            elif event == "start_wake_stream":
+                self.ensure_wake_subscription()
             elif event == "error":
                 self.busy = False
                 self.set_expression("error")
@@ -357,9 +370,74 @@ class BeemoApp:
                 self.show_message("assistant", payload)
         self.root.after(100, self.poll_events)
 
-    def voice_placeholder(self):
-        self.set_expression("curious")
-        self.show_message("assistant", "Native voice input is not wired yet. Type here for now.")
+    def poll_voice_services(self):
+        ready = service_running("eve-wakeword") and service_running("eve-asr")
+        self.events.put(("voice_status", ready))
+        if ready:
+            self.events.put(("start_wake_stream", None))
+        self.root.after(2500, self.poll_voice_services)
+
+    def set_voice_ready(self, ready):
+        if self.voice_ready == ready:
+            return
+        self.voice_ready = ready
+        if ready:
+            self.voice_button.configure(state="normal", fg="#72f2c8", activeforeground="#72f2c8")
+        else:
+            self.voice_button.configure(state="normal", bg="#202b28", fg="#727b77", activeforeground="#727b77")
+
+    def pulse_voice_icon(self):
+        if self.voice_ready:
+            self.voice_pulse = not self.voice_pulse
+            self.voice_button.configure(bg="#1f5f50" if self.voice_pulse else "#263631", fg="#72f2c8")
+        else:
+            self.voice_button.configure(bg="#202b28", fg="#727b77")
+        self.root.after(650, self.pulse_voice_icon)
+
+    def ensure_wake_subscription(self):
+        if self.wake_subscription_started or not self.voice_ready:
+            return
+        self.wake_subscription_started = True
+        self.start_background("wake stream", self.watch_wake_stream)
+
+    def watch_wake_stream(self):
+        try:
+            for event in stream_wake_events(self.session_id):
+                self.events.put(("wake_event", event))
+        finally:
+            self.wake_subscription_started = False
+
+    def handle_wake_event(self, payload):
+        source = payload.get("source", "wakeword")
+        prompt = (payload.get("prompt") or "").strip()
+        response = (payload.get("response") or "").strip()
+        transcript = (payload.get("transcript") or "").strip()
+
+        if prompt:
+            self.messages.append({"role": "user", "content": prompt})
+            self.show_message("user", prompt)
+        elif transcript:
+            self.show_message("user", transcript)
+        else:
+            self.set_status("heard")
+            self.set_expression("curious")
+            return
+
+        if response:
+            self.messages.append({"role": "assistant", "content": response})
+            self.set_expression(expression_from_reply(response))
+            self.show_message("assistant", clean_reply(response))
+            self.set_status("ready")
+        else:
+            self.set_status(source)
+
+    def voice_status_message(self):
+        if self.voice_ready:
+            self.set_expression("curious")
+            self.show_message("assistant", "Voice is online. Say hey Beemo and I will follow it here.")
+        else:
+            self.set_expression("concerned")
+            self.show_message("assistant", "Voice is offline. Start eve-wakeword and eve-asr to enable listening.")
 
     def exit_fullscreen(self, _event=None):
         self.root.attributes("-fullscreen", False)
@@ -379,6 +457,18 @@ def orchestrator_running():
         check=False,
     )
     return "eve-orchestrator" in proc.stdout.splitlines()
+
+
+def service_running(name):
+    proc = subprocess.run(
+        ["docker", "ps", "--filter", f"name=^/{name}$", "--filter", "status=running", "--format", "{{.Names}}"],
+        cwd=ROOT_DIR,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return name in proc.stdout.splitlines()
 
 
 def run_chat(payload):
@@ -409,6 +499,55 @@ def run_chat(payload):
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "orchestrator request failed")
     return json.loads(proc.stdout)
+
+
+def stream_wake_events(session_id):
+    payload_text = json.dumps({"session_id": session_id})
+    proc = subprocess.Popen(
+        [
+            "docker",
+            "exec",
+            "eve-orchestrator",
+            "grpcurl",
+            "-plaintext",
+            "-import-path",
+            "/workspace",
+            "-proto",
+            "proto/agent.proto",
+            "-d",
+            payload_text,
+            "eve-wakeword:5020",
+            "eve.WakeWord/StreamWake",
+        ],
+        cwd=ROOT_DIR,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.stdout is not None
+    try:
+        yield from iter_json_stream(proc.stdout)
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+
+
+def iter_json_stream(stream):
+    decoder = json.JSONDecoder()
+    buffer = ""
+    for line in stream:
+        buffer += line
+        while buffer.strip():
+            stripped = buffer.lstrip()
+            trim = len(buffer) - len(stripped)
+            try:
+                item, end = decoder.raw_decode(stripped)
+            except json.JSONDecodeError:
+                break
+            yield item
+            buffer = stripped[end:].lstrip()
+            if trim and not buffer:
+                break
 
 
 def expression_from_reply(reply):

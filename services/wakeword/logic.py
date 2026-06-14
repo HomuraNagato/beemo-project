@@ -11,6 +11,10 @@ def split_phrases(raw: str) -> List[str]:
     return phrases or ["hey beemo", "hey bmo", "okay beemo", "ok beemo"]
 
 
+def split_optional_phrases(raw: str) -> List[str]:
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
 def compile_phrase_patterns(phrases: Iterable[str]) -> List[re.Pattern[str]]:
     patterns = []
     for phrase in phrases:

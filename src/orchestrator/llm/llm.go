@@ -41,6 +41,24 @@ type structuredOutputsSpec struct {
 	Grammar string `json:"grammar,omitempty"`
 }
 
+type llamaCPPCompletionRequest struct {
+	Prompt      string  `json:"prompt"`
+	Grammar     string  `json:"grammar,omitempty"`
+	NPredict    int     `json:"n_predict,omitempty"`
+	Temperature float64 `json:"temperature"`
+	Stream      bool    `json:"stream"`
+}
+
+type llamaCPPCompletionResponse struct {
+	Content string `json:"content"`
+	Choices []struct {
+		Text    string `json:"text"`
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
+}
+
 func CallOnce(httpURL, model, prompt string, timeout time.Duration) (string, error) {
 	if httpURL == "" {
 		return "", fmt.Errorf("LLM_HTTP_URL missing")
@@ -111,7 +129,131 @@ func CallChatWithGrammar(httpURL, model, prompt, grammar string, timeout time.Du
 	return callChatRequest(httpURL, body, timeout)
 }
 
+func CallDecisionWithGrammar(provider, httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "", "vllm":
+		return CallChatWithGrammar(httpURL, model, prompt, grammar, timeout)
+	case "llamacpp", "llama.cpp", "llama-cpp":
+		return CallLlamaCPPWithGrammar(httpURL, prompt, grammar, timeout)
+	default:
+		return "", fmt.Errorf("unsupported llm provider %q", provider)
+	}
+}
+
+func CallLlamaCPPWithGrammar(httpURL, prompt, grammar string, timeout time.Duration) (string, error) {
+	if httpURL == "" {
+		return "", fmt.Errorf("LLM decision HTTP URL missing")
+	}
+
+	payload := llamaCPPCompletionRequest{
+		Prompt:      prompt,
+		NPredict:    128,
+		Temperature: 0,
+		Stream:      false,
+	}
+	if strings.TrimSpace(grammar) != "" {
+		payload.Grammar = normalizeLlamaCPPGrammar(grammar)
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	fmt.Printf(
+		"llm.decision_request provider=llamacpp max_tokens=%d temp=%.2f grammar=%t prompt_chars=%d prompt_preview=%q\n",
+		payload.NPredict,
+		payload.Temperature,
+		strings.TrimSpace(payload.Grammar) != "",
+		len(prompt),
+		logPreview(prompt),
+	)
+
+	respBody, err := callRawRequest(httpURL, body, timeout)
+	if err != nil {
+		return "", err
+	}
+	var parsed llamaCPPCompletionResponse
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(parsed.Content) != "" {
+		return parsed.Content, nil
+	}
+	if len(parsed.Choices) > 0 {
+		if strings.TrimSpace(parsed.Choices[0].Text) != "" {
+			return parsed.Choices[0].Text, nil
+		}
+		if strings.TrimSpace(parsed.Choices[0].Message.Content) != "" {
+			return parsed.Choices[0].Message.Content, nil
+		}
+	}
+	return "", fmt.Errorf("llamacpp response missing content")
+}
+
+func normalizeLlamaCPPGrammar(grammar string) string {
+	var out strings.Builder
+	out.Grow(len(grammar))
+	inString := false
+	inCharClass := false
+	escaped := false
+
+	for _, r := range grammar {
+		switch {
+		case inString:
+			out.WriteRune(r)
+			if escaped {
+				escaped = false
+				continue
+			}
+			if r == '\\' {
+				escaped = true
+			} else if r == '"' {
+				inString = false
+			}
+		case inCharClass:
+			out.WriteRune(r)
+			if escaped {
+				escaped = false
+				continue
+			}
+			if r == '\\' {
+				escaped = true
+			} else if r == ']' {
+				inCharClass = false
+			}
+		default:
+			switch r {
+			case '"':
+				inString = true
+				out.WriteRune(r)
+			case '[':
+				inCharClass = true
+				out.WriteRune(r)
+			case '_':
+				out.WriteRune('-')
+			default:
+				out.WriteRune(r)
+			}
+		}
+	}
+	return out.String()
+}
+
 func callChatRequest(httpURL string, body []byte, timeout time.Duration) (string, error) {
+	respBody, err := callRawRequest(httpURL, body, timeout)
+	if err != nil {
+		return "", err
+	}
+	var parsed chatResponse
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return "", err
+	}
+	if len(parsed.Choices) == 0 {
+		return "", fmt.Errorf("llm response: no choices")
+	}
+	return parsed.Choices[0].Message.Content, nil
+}
+
+func callRawRequest(httpURL string, body []byte, timeout time.Duration) ([]byte, error) {
 	ctx := context.Background()
 	if timeout > 0 {
 		var cancel context.CancelFunc
@@ -121,14 +263,14 @@ func callChatRequest(httpURL string, body []byte, timeout time.Duration) (string
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, httpURL, bytes.NewReader(body))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	client := newHTTPClient()
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
@@ -136,19 +278,12 @@ func callChatRequest(httpURL string, body []byte, timeout time.Duration) (string
 		body, _ := io.ReadAll(resp.Body)
 		msg := strings.TrimSpace(string(body))
 		if msg != "" {
-			return "", fmt.Errorf("llm http status: %s body=%s", resp.Status, msg)
+			return nil, fmt.Errorf("llm http status: %s body=%s", resp.Status, msg)
 		}
-		return "", fmt.Errorf("llm http status: %s", resp.Status)
+		return nil, fmt.Errorf("llm http status: %s", resp.Status)
 	}
 
-	var parsed chatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return "", err
-	}
-	if len(parsed.Choices) == 0 {
-		return "", fmt.Errorf("llm response: no choices")
-	}
-	return parsed.Choices[0].Message.Content, nil
+	return io.ReadAll(resp.Body)
 }
 
 func logPreview(text string) string {

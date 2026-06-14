@@ -12,7 +12,6 @@ import (
 	"time"
 
 	pb "eve-beemo/proto/gen/proto"
-	"eve-beemo/src/orchestrator/chatctx"
 	"eve-beemo/src/orchestrator/config"
 	orchestrdb "eve-beemo/src/orchestrator/db"
 	"eve-beemo/src/orchestrator/llm"
@@ -114,7 +113,9 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 
 	callCompletion := s.callCompletion
 	if callCompletion == nil {
-		callCompletion = llm.CallChatWithGrammar
+		callCompletion = func(_ string, model, prompt, grammar string, timeout time.Duration) (string, error) {
+			return llm.CallDecisionWithGrammar(s.cfg.LLMProvider, s.cfg.LLMDecisionHTTPURL, model, prompt, grammar, timeout)
+		}
 	}
 	callFinalMessage := s.callFinalMessage
 	if callFinalMessage == nil {
@@ -123,19 +124,14 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 
 	callTimeout := time.Duration(s.cfg.LLMTimeoutMs) * time.Millisecond
 	embeddingTimeout := time.Duration(s.cfg.EmbeddingTimeoutMs) * time.Millisecond
-	activeContext := chatctx.Build(effectiveMessages, contextSelectionMessages, activeContextTurns)
-	routingQuery := strings.TrimSpace(activeContext.UserEvidence)
-	if routingQuery == "" {
-		routingQuery = userQuery
-	}
+	pending, hasPending := s.getPending(req.GetSessionId())
+	turn := newTurnContext(req.GetSessionId(), effectiveMessages, userQuery, pending, hasPending)
+	activeContext := turn.ActiveContext
+	routingQuery := turn.RoutingQuery
+	originQuery := turn.OriginQuery
 
 	text := ""
 	fromPending := false
-	pending, hasPending := s.getPending(req.GetSessionId())
-	originQuery := userQuery
-	if hasPending && strings.TrimSpace(pending.OriginalUserQuery) != "" {
-		originQuery = pending.OriginalUserQuery
-	}
 
 	if hasPending {
 		if filledCall, ok, ferr := orchtools.TryFillPending(orchtools.PendingFillRequest{
@@ -151,6 +147,7 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 				return nil, jerr
 			}
 			text = string(filledText)
+			turn.setDecision(text, decisionSourcePendingFill)
 			fromPending = true
 		}
 	}
@@ -161,12 +158,15 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 		} else if ok && pendingInterruptedByNewCall(pending, inferred) {
 			s.clearPending(req.GetSessionId())
 			hasPending = false
+			turn.HasPending = false
 			originQuery = userQuery
+			turn.OriginQuery = userQuery
 			inferredText, jerr := json.Marshal([]toolCall{fromPlannedCall(inferred)})
 			if jerr != nil {
 				return nil, jerr
 			}
 			text = string(inferredText)
+			turn.setDecision(text, decisionSourceDeterministic)
 		}
 	}
 
@@ -200,13 +200,16 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 					return nil, jerr
 				}
 				text = string(mergedText)
+				turn.setDecision(text, decisionSourcePendingLLM)
 				fromPending = true
 			}
 		}
 		if strings.TrimSpace(text) == "" {
 			s.clearPending(req.GetSessionId())
 			hasPending = false
+			turn.HasPending = false
 			originQuery = userQuery
+			turn.OriginQuery = userQuery
 		}
 	}
 
@@ -225,17 +228,21 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 				return nil, jerr
 			}
 			text = string(inferredText)
+			turn.setDecision(text, decisionSourceDeterministic)
 		}
 	}
 
 	if strings.TrimSpace(text) == "" {
 		prompt := prompts.ToolDecision(userQuery, activeContext.Transcript)
+		decisionSource := decisionSourceGeneralLLM
 		if s.routeSelector != nil {
 			candidates, rerr := s.routeSelector.Retrieve(routingQuery, embeddingTimeout)
 			if rerr != nil {
 				fmt.Printf("orch.chat route_retrieval session=%s status=fallback err=%v\n", req.GetSessionId(), rerr)
 			} else if len(candidates) > 0 {
 				routeCandidates = candidates
+				turn.RouteCandidates = candidates
+				decisionSource = decisionSourceRoutedLLM
 				prompt = prompts.RoutedToolDecision(userQuery, activeContext.Transcript, routing.FormatCandidates(candidates))
 			}
 		}
@@ -250,6 +257,7 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 			})
 			return nil, err
 		}
+		turn.setDecision(text, decisionSource)
 	}
 
 	toolCalls, err := parseToolCalls(text)
@@ -271,6 +279,7 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 			if retryCalls, perr := parseToolCalls(retryText); perr == nil && len(retryCalls) > 0 {
 				toolCalls = retryCalls
 				text = retryText
+				turn.setDecision(text, decisionSourceRetryLLM)
 			}
 		}
 	}
@@ -278,19 +287,13 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 	toolCalls = filterSupportedToolCalls(toolCalls)
 	if len(toolCalls) == 0 {
 		text = "[]"
+		turn.setDecision(text, turn.DecisionSource)
 	}
-	toolsRequested := toolNames(toolCalls)
+	turn.setToolCalls(toolCalls)
+	toolsRequested := turn.ToolsRequested
 	fmt.Printf("orch.chat decision_raw session=%s text=%s tools=%v\n", req.GetSessionId(), text, toolsRequested)
 
-	toolResult := ""
-	successfulResults := []orchtools.Result{}
-	evidenceText := activeContext.UserEvidence
-	if strings.TrimSpace(evidenceText) == "" {
-		evidenceText = originQuery
-		if hasPending && strings.TrimSpace(userQuery) != "" && userQuery != originQuery {
-			evidenceText = originQuery + "\n" + userQuery
-		}
-	}
+	evidenceText := turn.evidenceText(userQuery)
 
 	for _, tool := range toolCalls {
 		explicitTool := tool
@@ -370,30 +373,35 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 				Response:   result.Question,
 				Status:     "needs_input",
 			})
+			turn.ResponsePath = responsePathNeedsInput
+			turn.ResponseText = result.Question
+			turn.logTrace("needs_input", time.Since(start), nil)
 			return &pb.ChatResponse{Text: result.Question}, nil
 		}
 		s.clearPending(req.GetSessionId())
-		successfulResults = append(successfulResults, result)
-		toolResult += fmt.Sprintf("tool=%s result=%s\n", result.Action, result.Output)
+		turn.appendToolResult(result)
 	}
 
-	if directText, ok := directToolResponse(successfulResults, userQuery); ok {
+	if directText, ok := directToolResponse(turn.ToolResults, userQuery); ok {
 		s.appendHistory(&historyEntry{
 			Timestamp:  time.Now().Format(time.RFC3339),
 			SessionID:  req.GetSessionId(),
 			UserQuery:  userQuery,
 			Decision:   text,
 			Tools:      toolsRequested,
-			ToolResult: strings.TrimSpace(toolResult),
+			ToolResult: strings.TrimSpace(turn.ToolResultText),
 			Response:   directText,
 			Status:     "ok",
 		})
 		s.setTranscript(req.GetSessionId(), appendAssistantMessage(effectiveMessages, directText))
+		turn.ResponsePath = responsePathDirect
+		turn.ResponseText = directText
+		turn.logTrace("ok", time.Since(start), nil)
 		fmt.Printf("orch.chat done session=%s status=ok path=direct ms=%d\n", req.GetSessionId(), time.Since(start).Milliseconds())
 		return &pb.ChatResponse{Text: directText}, nil
 	}
 
-	followup := prompts.FinalResponse(originQuery, userQuery, activeContext.Transcript, text, toolResult)
+	followup := prompts.FinalResponse(originQuery, userQuery, activeContext.Transcript, text, turn.ToolResultText)
 	finalText, err := callFinalMessage(s.cfg.LLMHTTPURL, s.cfg.LLMModel, followup, callTimeout)
 	if err != nil {
 		s.appendHistory(&historyEntry{
@@ -402,10 +410,11 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 			UserQuery:  userQuery,
 			Decision:   text,
 			Tools:      toolsRequested,
-			ToolResult: strings.TrimSpace(toolResult),
+			ToolResult: strings.TrimSpace(turn.ToolResultText),
 			Status:     "error",
 			Error:      fmt.Sprintf("llm_followup: %v", err),
 		})
+		turn.logTrace("error", time.Since(start), err)
 		return nil, err
 	}
 	s.appendHistory(&historyEntry{
@@ -414,11 +423,14 @@ func (s *orchestratorServer) Chat(ctx context.Context, req *pb.ChatRequest) (*pb
 		UserQuery:  userQuery,
 		Decision:   text,
 		Tools:      toolsRequested,
-		ToolResult: strings.TrimSpace(toolResult),
+		ToolResult: strings.TrimSpace(turn.ToolResultText),
 		Response:   finalText,
 		Status:     "ok",
 	})
 	s.setTranscript(req.GetSessionId(), appendAssistantMessage(effectiveMessages, finalText))
+	turn.ResponsePath = responsePathFinalLLM
+	turn.ResponseText = finalText
+	turn.logTrace("ok", time.Since(start), nil)
 	fmt.Printf("orch.chat done session=%s status=ok path=final ms=%d\n", req.GetSessionId(), time.Since(start).Milliseconds())
 	return &pb.ChatResponse{Text: finalText}, nil
 }

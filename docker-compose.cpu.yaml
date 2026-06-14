@@ -7,32 +7,9 @@ services:
     privileged: true
     environment:
       VLLM_DEVICE: cpu
+      VLLM_CPU_KVCACHE_SPACE: "1"
       EMBEDDING_DEVICE: cpu
       EMBEDDING_DTYPE: bfloat16
-      EMBEDDING_CPU_KVCACHE_SPACE: "4"
+      EMBEDDING_MAX_MODEL_LEN: "2048"
+      EMBEDDING_CPU_KVCACHE_SPACE: "1"
     shm_size: 4g
-
-  eve-vllm:
-    container_name: eve-vllm
-    hostname: eve-vllm
-    image: vllm/vllm-openai-cpu:latest-x86_64
-    privileged: true
-    ports:
-      - 5014:5014
-    volumes:
-      - ./models:/models
-      - ./compose/reasoning_vllm/entrypoint.sh:/entrypoint.sh
-    env_file:
-      - ./.env
-    environment:
-      MODEL_DIR: /models
-      REASONING_MODEL: Qwen3-1.7B
-      REASONING_PORT: "5014"
-      REASONING_HOST: 0.0.0.0
-      VLLM_REASONING_PARSER: qwen3
-      VLLM_DEFAULT_CHAT_TEMPLATE_KWARGS: '{"enable_thinking": false}'
-      VLLM_DEVICE: cpu
-      VLLM_DTYPE: bfloat16
-      VLLM_CPU_KVCACHE_SPACE: "4"
-    shm_size: 4g
-    entrypoint: /entrypoint.sh

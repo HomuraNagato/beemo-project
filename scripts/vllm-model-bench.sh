@@ -14,8 +14,8 @@ INCLUDE_LOCAL=0
 INCLUDE_RECOMMENDED=0
 READY_TIMEOUT=600
 KEEP_LAST=0
-HOST_URL=${HOST_URL:-http://eve-vllm:5014}
-CONTAINER=${CONTAINER:-eve-vllm}
+HOST_URL=${HOST_URL:-http://eve-reasoning:5014}
+CONTAINER=${CONTAINER:-eve-reasoning}
 ORCH_CONTAINER=${ORCH_CONTAINER:-eve-orchestrator}
 
 declare -a MODEL_SPECS=()
@@ -38,7 +38,7 @@ Options:
   --download-missing                Download missing Hugging Face repo ids with `hf download`.
   --ready-timeout <seconds>         Wait timeout for vLLM startup. Default: 600.
   --keep-last                       Leave .env pointing at the last tested model.
-  --host <url>                      vLLM base URL. Default: http://eve-vllm:5014
+  --host <url>                      vLLM base URL. Default: http://eve-reasoning:5014
   --help                            Show this help.
 
 Examples:
@@ -204,9 +204,9 @@ stop_log_tail() {
 
 restart_stack_for_model() {
   local model_name="$1"
-  log "restarting eve-vllm + eve-orchestrator for $model_name"
+  log "restarting eve-reasoning + eve-orchestrator for $model_name"
   start_log_tail
-  docker compose "${COMPOSE_FILES[@]}" up -d --force-recreate eve-vllm eve-orchestrator >/dev/null
+  docker compose "${COMPOSE_FILES[@]}" up -d --force-recreate eve-reasoning eve-orchestrator >/dev/null
 }
 
 wait_for_vllm() {
