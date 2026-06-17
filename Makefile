@@ -1,4 +1,4 @@
-.PHONY: proto init init-cpu init-gpu start start-gpu start-cpu stop logs
+.PHONY: proto init init-cpu init-gpu start start-vllm-gpu start-vllm-cpu start-llama-cpu status doctor stop logs
 
 proto:
 	./scripts/gen_proto.sh
@@ -13,16 +13,25 @@ init-gpu:
 	./scripts/beemo-init.sh gpu
 
 start:
-	./scripts/beemo-start.sh gpu
+	./scripts/beemo-start.sh vllm-gpu
 
-start-gpu:
-	./scripts/beemo-start.sh gpu
+start-vllm-gpu:
+	./scripts/beemo-start.sh vllm-gpu
 
-start-cpu:
-	./scripts/beemo-start.sh cpu
+start-vllm-cpu:
+	./scripts/beemo-start.sh vllm-cpu
+
+start-llama-cpu:
+	./scripts/beemo-start.sh llama-cpu
+
+status:
+	./scripts/beemo-status.sh
+
+doctor:
+	./scripts/beemo-doctor.sh
 
 stop:
-	docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml stop eve-wakeword eve-asr eve-orchestrator eve-vllm eve-embedding
+	./scripts/beemo-stop.sh
 
 logs:
-	docker logs -f eve-orchestrator
+	./scripts/beemo-logs.sh eve-orchestrator

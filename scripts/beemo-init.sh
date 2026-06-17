@@ -152,4 +152,4 @@ if [ "$INIT_MODELS" -eq 1 ]; then
 fi
 
 printf 'Beemo init complete\n'
-printf 'Next: ./scripts/beemo-start.sh %s --no-voice\n' "$ACCEL"
+printf 'Next: ./scripts/beemo-start.sh vllm-%s --no-voice\n' "$ACCEL"

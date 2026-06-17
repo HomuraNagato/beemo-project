@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_START_CMD = "./scripts/beemo-start.sh cpu"
+DEFAULT_START_CMD = "./scripts/beemo-start.sh vllm-cpu"
 
 EXPRESSIONS = {
     "neutral",

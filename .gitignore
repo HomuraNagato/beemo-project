@@ -10,4 +10,9 @@ memory
 
 .env
 
+# generated/runtime files
+__pycache__/
+*.pyc
+history/*.jsonl
+
 #*

@@ -23,8 +23,8 @@
 - Optional route catalog sync is wired through Postgres: route documents and embeddings can be inserted once per route/model and skipped on later startups.
 - A first end-to-end voice path exists in Docker: `eve-wakeword` captures microphone audio from PulseAudio, records one utterance until silence, sends PCM to `eve-asr`, strips a configurable wake phrase, and forwards the remaining text to `Orchestrator.Chat`.
 - `eve-orchestrator` is self-running in Docker through `compose/orchestrator/Dockerfile`.
-- `scripts/beemo-start.sh` provides a button-friendly startup path with GPU/CPU overlays, health waits, and recent-log failures.
-- The Makefile exposes `start`, `start-gpu`, `start-cpu`, `stop`, and `logs` targets.
+- `scripts/beemo-start.sh` provides a button-friendly startup path with `vllm-gpu`, `vllm-cpu`, and `llama-cpu` profiles, health waits, and recent-log failures.
+- The Makefile exposes `start`, `start-vllm-gpu`, `start-vllm-cpu`, `start-llama-cpu`, `status`, `doctor`, `stop`, and `logs` targets.
 - `scripts/eve-orchestrator.sh` can fall back to `docker exec eve-orchestrator grpcurl` when `grpcurl` is not installed on the host.
 - Current in-process tools:
   - `get_time`
@@ -43,8 +43,8 @@
 - Compose references for some planned services are incomplete; for example, `compose/vision` and `compose/ui` are referenced by `docker-compose.yaml` but are not present in the repository.
 
 ## Current Developer Workflow
-1. Start the core stack with `make start` or `./scripts/beemo-start.sh gpu`.
-2. Use `make start-cpu` or `./scripts/beemo-start.sh cpu` for the CPU compose overlay.
+1. Start the core stack with `make start` or `./scripts/beemo-start.sh vllm-gpu`.
+2. Use `make start-vllm-cpu` / `./scripts/beemo-start.sh vllm-cpu` or `make start-llama-cpu` / `./scripts/beemo-start.sh llama-cpu` for CPU profiles.
 3. Edit `config/config.yaml` for app/model URLs, route settings, weather defaults, and tool model settings.
 4. For the `older_sister` tool, set `OPENAI_API_KEY` in `.env` or the shell.
 5. Run the orchestrator manually with `go run ./src/orchestrator` only when bypassing Docker.

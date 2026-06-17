@@ -214,19 +214,21 @@ full context (or omit question?)
 
 Beemo now has a single startup script intended for a physical-button style launch:
 
- - `./scripts/beemo-start.sh gpu`
- - `./scripts/beemo-start.sh cpu`
+ - `./scripts/beemo-start.sh vllm-gpu`
+ - `./scripts/beemo-start.sh vllm-cpu`
+ - `./scripts/beemo-start.sh llama-cpu`
 
 The Makefile wraps these as:
 
  - `make start`
- - `make start-gpu`
- - `make start-cpu`
+ - `make start-vllm-gpu`
+ - `make start-vllm-cpu`
+ - `make start-llama-cpu`
 
 Current behavior:
 
- - chooses the base compose file plus the CPU or GPU overlay
- - starts `eve-vllm` first, waits for health, then starts `eve-embedding`
+ - chooses compose files from the selected profile
+ - starts `eve-reasoning` first, waits for health, then starts `eve-embedding`
  - starts `eve-orchestrator` after reasoning and embeddings are reachable
  - force-recreates `eve-orchestrator` so old interactive-shell containers are replaced
  - starts voice services unless `--no-voice` is provided
@@ -240,9 +242,10 @@ basic smoke test.
 The GPU defaults were adjusted so the local reasoning server and local embedding server can
 coexist more reliably on a constrained GPU:
 
- - `VLLM_KV_CACHE_MEMORY_BYTES=2G`
- - `EMBEDDING_GPU_MEMORY_UTILIZATION=0.18`
- - `EMBEDDING_MAX_MODEL_LEN=2048`
+ - `VLLM_KV_CACHE_MEMORY_BYTES=1G`
+ - `VLLM_GPU_MEMORY_UTILIZATION=0.68`
+ - `EMBEDDING_GPU_MEMORY_UTILIZATION=0.12`
+ - `EMBEDDING_MAX_MODEL_LEN=1024`
 
 * STT
 ** architecture

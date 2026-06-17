@@ -67,16 +67,6 @@ services:
       dockerfile: compose/ui/Dockerfile
     privileged: true
 
-  eve-install:
-    container_name: eve-install
-    build:
-      context: ./compose/install
-      dockerfile: Dockerfile
-    volumes:
-      - ./:/workspace
-      - eve-models-volume:/workspace/models
-    entrypoint: /workspace/scripts/eve_install.sh
-
 #  eve-tts:
 #    container_name: eve-tts
 #    hostname: eve-tts
@@ -135,5 +125,3 @@ services:
 volumes:
   eve-orchestrator-volume:
     name: eve-orchestrator-volume
-  eve-models-volume:
-    name: eve-models-volume
