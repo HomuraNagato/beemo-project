@@ -3,34 +3,37 @@ set -euo pipefail
 
 if [[ "${1:-}" == "--docker" ]]; then
   shift
-  DOCKER_CONTAINER=${DOCKER_CONTAINER:-eve-orchestrator}
+  docker_container=eve-orchestrator
   quoted_args=""
   for arg in "$@"; do
     quoted_args+=" $(printf '%q' "$arg")"
   done
-  exec docker exec "$DOCKER_CONTAINER" sh -lc "cd /workspace && ./scripts/eve-embed.sh${quoted_args}"
+  exec docker exec "$docker_container" sh -lc "cd /workspace && ./scripts/eve-embed.sh${quoted_args}"
 fi
 
-HOST=${HOST:-http://127.0.0.1:5021}
-MODEL=${MODEL:-${EMBEDDING_MODEL:-}}
-INPUT=${INPUT:-}
+root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+config_file="$root_dir/config/config.yaml"
+embedding_http_url="$(python3 "$root_dir/scripts/config-value.py" "$config_file" embedding http_url)"
+host="${embedding_http_url%/v1/embeddings}"
+model="$(python3 "$root_dir/scripts/config-value.py" "$config_file" embedding model)"
+input=
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --host)
-      HOST=$2
+      host=$2
       shift 2
       ;;
     --model)
-      MODEL=$2
+      model=$2
       shift 2
       ;;
     --input)
-      INPUT=$2
+      input=$2
       shift 2
       ;;
     --input-file)
-      INPUT=$(cat "$2")
+      input=$(cat "$2")
       shift 2
       ;;
     *)
@@ -40,7 +43,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$INPUT" ]]; then
+if [[ -z "$input" ]]; then
   echo "error: provide --input or --input-file" >&2
   exit 1
 fi
@@ -57,7 +60,7 @@ if [[ -z "$PYTHON_BIN" ]]; then
   exit 1
 fi
 
-"$PYTHON_BIN" - "$HOST" "$MODEL" "$INPUT" <<'PY'
+"$PYTHON_BIN" - "$host" "$model" "$input" <<'PY'
 import json
 import sys
 from urllib.request import Request, urlopen

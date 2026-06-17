@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -79,12 +80,11 @@ func CallOnce(httpURL, model, prompt string, timeout time.Duration) (string, err
 	if err != nil {
 		return "", err
 	}
-	fmt.Printf(
-		"llm.chat_request model=%s temp=%.2f prompt_chars=%d prompt_preview=%q\n",
-		model,
-		payload.Temperature,
-		len(prompt),
-		logPreview(prompt),
+	slog.Info("llm.chat_request",
+		"model", model,
+		"temperature", payload.Temperature,
+		"prompt_chars", len(prompt),
+		"prompt_preview", logPreview(prompt),
 	)
 
 	return callChatRequest(httpURL, body, timeout)
@@ -116,14 +116,13 @@ func CallChatWithGrammar(httpURL, model, prompt, grammar string, timeout time.Du
 	if err != nil {
 		return "", err
 	}
-	fmt.Printf(
-		"llm.chat_request model=%s max_tokens=%d temp=%.2f grammar=%t prompt_chars=%d prompt_preview=%q\n",
-		model,
-		payload.MaxTokens,
-		payload.Temperature,
-		payload.StructuredOutputs != nil,
-		len(prompt),
-		logPreview(prompt),
+	slog.Info("llm.chat_request",
+		"model", model,
+		"max_tokens", payload.MaxTokens,
+		"temperature", payload.Temperature,
+		"grammar", payload.StructuredOutputs != nil,
+		"prompt_chars", len(prompt),
+		"prompt_preview", logPreview(prompt),
 	)
 
 	return callChatRequest(httpURL, body, timeout)

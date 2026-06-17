@@ -6,7 +6,7 @@ usage() {
 usage: beemo-init.sh [gpu|cpu] [--models|--no-models] [--force-download]
 
 First-run Beemo setup:
-  - downloads Hugging Face model directories required by .env
+  - downloads Hugging Face model directories required by config/config.yaml
 
 Defaults:
   accelerator: cpu
@@ -19,7 +19,7 @@ USAGE
 }
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ACCEL="${BEEMO_ACCEL:-cpu}"
+ACCEL="cpu"
 INIT_MODELS=1
 FORCE_DOWNLOAD=0
 

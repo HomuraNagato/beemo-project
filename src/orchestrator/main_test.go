@@ -601,6 +601,57 @@ func mockNewYorkWeatherConfig(t *testing.T) orchtools.WeatherConfig {
 	}
 }
 
+func TestParseToolCallsRejectsNonObjectArgs(t *testing.T) {
+	t.Parallel()
+
+	_, err := parseToolCalls(`[{"tool":"calculator","args":[]}]`)
+	if err == nil {
+		t.Fatal("expected non-object args to be rejected")
+	}
+	if !strings.Contains(err.Error(), "tool args must be a JSON object") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResumePendingDecisionClearsInterruptedTool(t *testing.T) {
+	t.Parallel()
+
+	server := testServer(t)
+	pending := pendingToolState{
+		OriginalUserQuery: "what is my BMI?",
+		Tool:              "calculator",
+		Args:              []byte(`{"operation":"bmi"}`),
+		Missing:           []string{"height"},
+		Question:          "What is the height?",
+	}
+	server.setPending("test-session", pending)
+
+	decision, handled, cleared, err := server.resumePendingDecision(pendingResumeRequest{
+		sessionID:        "test-session",
+		pending:          pending,
+		userQuery:        "what time is it?",
+		activeTranscript: "",
+		grammar:          "root ::= \"[]\"",
+		callTimeout:      time.Second,
+		callCompletion: func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+			t.Fatal("LLM should not be called when deterministic inference interrupts pending tool")
+			return "", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("resumePendingDecision returned error: %v", err)
+	}
+	if !handled || !cleared {
+		t.Fatalf("expected handled and cleared; handled=%v cleared=%v", handled, cleared)
+	}
+	if !strings.Contains(decision.Text, `"tool":"get_time"`) {
+		t.Fatalf("unexpected decision text: %s", decision.Text)
+	}
+	if _, ok := server.getPending("test-session"); ok {
+		t.Fatal("pending state should be cleared")
+	}
+}
+
 func testServer(t *testing.T) *orchestratorServer {
 	t.Helper()
 	return &orchestratorServer{

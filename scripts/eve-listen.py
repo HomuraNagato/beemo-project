@@ -39,16 +39,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-speech-sec", type=float, default=12.0)
     parser.add_argument("--preroll-sec", type=float, default=0.3)
     parser.add_argument("--language", default="en")
-    parser.add_argument("--asr-model", default=os.getenv("EVE_VOICE_ASR_MODEL", "tiny.en"))
+    parser.add_argument("--asr-model", default="tiny.en")
     parser.add_argument(
         "--compute-type",
-        default=os.getenv("EVE_VOICE_COMPUTE_TYPE", "int8"),
+        default="int8",
     )
     parser.add_argument("--cpu-threads", type=int, default=max(1, os.cpu_count() or 1))
     parser.add_argument("--container", default="eve-orchestrator")
     parser.add_argument("--grpcurl-bin", default="grpcurl")
     parser.add_argument("--proto-path", default="/workspace/proto/agent.proto")
-    parser.add_argument("--orch-addr", default="localhost:5013")
+    parser.add_argument("--orch-addr", default="127.0.0.1:5013")
     parser.add_argument("--print-only", action="store_true")
     parser.add_argument("--save-audio-dir")
     parser.add_argument("--debug", action="store_true")

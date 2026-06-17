@@ -22,8 +22,8 @@ type transcriptEntry struct {
 }
 
 func main() {
-	addr := flag.String("addr", getenvOrDefault("ORCH_ADDR", "127.0.0.1:5013"), "orchestrator gRPC address")
-	sessionID := flag.String("session", getenvOrDefault("SESSION_ID", "tui"), "chat session id")
+	addr := flag.String("addr", "127.0.0.1:5013", "orchestrator gRPC address")
+	sessionID := flag.String("session", "tui", "chat session id")
 	timeout := flag.Duration("timeout", defaultTimeout, "request timeout")
 	flag.Parse()
 
@@ -160,11 +160,4 @@ func render(addr, sessionID string, expr expression, transcript []transcriptEntr
 
 func faceList() string {
 	return "Expressions: " + strings.Join(expressionOrder, ", ")
-}
-
-func getenvOrDefault(key, def string) string {
-	if val := strings.TrimSpace(os.Getenv(key)); val != "" {
-		return val
-	}
-	return def
 }

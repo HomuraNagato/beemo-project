@@ -3,49 +3,52 @@ set -euo pipefail
 
 if [[ "${1:-}" == "--docker" ]]; then
   shift
-  DOCKER_CONTAINER=${DOCKER_CONTAINER:-eve-orchestrator}
+  docker_container=eve-orchestrator
   quoted_args=""
   for arg in "$@"; do
     quoted_args+=" $(printf '%q' "$arg")"
   done
-  exec docker exec "$DOCKER_CONTAINER" sh -lc "cd /workspace && ./scripts/llama-complete.sh${quoted_args}"
+  exec docker exec "$docker_container" sh -lc "cd /workspace && ./scripts/llama-complete.sh${quoted_args}"
 fi
 
-HOST=${HOST:-http://127.0.0.1:5014}
-MODEL=${MODEL:-${REASONING_MODEL:-}}
-PROMPT=${PROMPT:-}
-GRAMMAR_FILE=${GRAMMAR_FILE:-}
-MAX_TOKENS=${MAX_TOKENS:-256}
-TEMPERATURE=${TEMPERATURE:-0}
+root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+config_file="$root_dir/config/config.yaml"
+llm_http_url="$(python3 "$root_dir/scripts/config-value.py" "$config_file" llm http_url)"
+host="${llm_http_url%/v1/chat/completions}"
+model="$(python3 "$root_dir/scripts/config-value.py" "$config_file" llm model)"
+prompt=
+grammar_file=
+max_tokens=256
+temperature=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --host)
-      HOST=$2
+      host=$2
       shift 2
       ;;
     --model)
-      MODEL=$2
+      model=$2
       shift 2
       ;;
     --prompt)
-      PROMPT=$2
+      prompt=$2
       shift 2
       ;;
     --prompt-file)
-      PROMPT=$(cat "$2")
+      prompt=$(cat "$2")
       shift 2
       ;;
     --grammar-file)
-      GRAMMAR_FILE=$2
+      grammar_file=$2
       shift 2
       ;;
     --max-tokens)
-      MAX_TOKENS=$2
+      max_tokens=$2
       shift 2
       ;;
     --temperature)
-      TEMPERATURE=$2
+      temperature=$2
       shift 2
       ;;
     *)
@@ -55,7 +58,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$PROMPT" ]]; then
+if [[ -z "$prompt" ]]; then
   echo "error: provide --prompt or --prompt-file" >&2
   exit 1
 fi
@@ -72,7 +75,7 @@ if [[ -z "$PYTHON_BIN" ]]; then
   exit 1
 fi
 
-"$PYTHON_BIN" - "$HOST" "$MODEL" "$PROMPT" "$GRAMMAR_FILE" "$MAX_TOKENS" "$TEMPERATURE" <<'PY'
+"$PYTHON_BIN" - "$host" "$model" "$prompt" "$grammar_file" "$max_tokens" "$temperature" <<'PY'
 import json
 import sys
 from pathlib import Path

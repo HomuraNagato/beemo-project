@@ -4,7 +4,7 @@ services:
   eve-embedding:
     container_name: eve-embedding
     hostname: eve-embedding
-    image: ${EMBEDDING_VLLM_IMAGE:-vllm/vllm-openai}
+    image: vllm/vllm-openai
     privileged: true
     ports:
       - 5021:5021
@@ -31,8 +31,8 @@ services:
     stdin_open: true
     tty: true
     privileged: true
-    env_file:
-      - ./.env
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     ports:
       - 5013:5013
     build:
@@ -54,8 +54,6 @@ services:
     build:
       context: ./compose/vision
       dockerfile: Dockerfile
-    env_file:
-      - ./.env
     privileged: true
 
   eve-ui:
@@ -67,8 +65,6 @@ services:
     build:
       context: .
       dockerfile: compose/ui/Dockerfile
-    env_file:
-      - ./.env
     privileged: true
 
   eve-install:
@@ -90,8 +86,6 @@ services:
 #    build:
 #      context: ./compose/tts
 #      dockerfile: Dockerfile
-#    env_file:
-#      - ./.env
 #    privileged: true
 #    deploy:
 #      resources:
@@ -110,8 +104,6 @@ services:
     build:
       context: .
       dockerfile: compose/asr/Dockerfile
-    env_file:
-      - ./.env
     environment:
       PYTHONUNBUFFERED: "1"
     volumes:
@@ -126,10 +118,10 @@ services:
     build:
       context: .
       dockerfile: compose/wakeword/Dockerfile
-    env_file:
-      - ./.env
     environment:
       PYTHONUNBUFFERED: "1"
+      PULSE_SERVER: ${PULSE_SERVER:-unix:/tmp/pulse/native}
+      PULSE_SOURCE: ${PULSE_SOURCE:-default}
     depends_on:
       - eve-asr
       - eve-orchestrator

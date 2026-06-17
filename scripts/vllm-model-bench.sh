@@ -2,10 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
-ENV_FILE="$ROOT_DIR/.env"
+CONFIG_FILE="$ROOT_DIR/config/config.yaml"
+GPU_COMPOSE_FILE="$ROOT_DIR/docker-compose.gpu.yaml"
 MODELS_DIR="$ROOT_DIR/models"
 REPORT_DIR_DEFAULT="$ROOT_DIR/reports"
-REPORT_DIR="${REPORT_DIR:-$REPORT_DIR_DEFAULT}"
+REPORT_DIR="$REPORT_DIR_DEFAULT"
 REPORT_FILE=""
 COMPOSE_FILES=(-f "$ROOT_DIR/docker-compose.yaml" -f "$ROOT_DIR/docker-compose.gpu.yaml")
 
@@ -14,7 +15,8 @@ INCLUDE_LOCAL=0
 INCLUDE_RECOMMENDED=0
 READY_TIMEOUT=600
 KEEP_LAST=0
-HOST_URL=${HOST_URL:-http://eve-reasoning:5014}
+llm_http_url="$(python3 "$ROOT_DIR/scripts/config-value.py" "$CONFIG_FILE" llm http_url)"
+HOST_URL=${HOST_URL:-"${llm_http_url%/v1/chat/completions}"}
 CONTAINER=${CONTAINER:-eve-reasoning}
 ORCH_CONTAINER=${ORCH_CONTAINER:-eve-orchestrator}
 
@@ -37,8 +39,8 @@ Options:
   --include-recommended             Include a small curated Qwen list.
   --download-missing                Download missing Hugging Face repo ids with `hf download`.
   --ready-timeout <seconds>         Wait timeout for vLLM startup. Default: 600.
-  --keep-last                       Leave .env pointing at the last tested model.
-  --host <url>                      vLLM base URL. Default: http://eve-reasoning:5014
+  --keep-last                       Leave docker-compose.gpu.yaml pointing at the last tested model.
+  --host <url>                      vLLM base URL. Default: llm.http_url from config/config.yaml
   --help                            Show this help.
 
 Examples:
@@ -132,33 +134,37 @@ fi
 mapfile -t UNIQUE_SPECS < <(printf '%s\n' "${MODEL_SPECS[@]}" | awk 'NF && !seen[$0]++')
 MODEL_SPECS=("${UNIQUE_SPECS[@]}")
 
-if [[ ! -f "$ENV_FILE" ]]; then
-  die ".env not found at $ENV_FILE"
+if [[ ! -f "$GPU_COMPOSE_FILE" ]]; then
+  die "GPU compose file not found at $GPU_COMPOSE_FILE"
 fi
 
-ORIGINAL_ENV=$(mktemp)
-cp "$ENV_FILE" "$ORIGINAL_ENV"
+ORIGINAL_GPU_COMPOSE=$(mktemp)
+cp "$GPU_COMPOSE_FILE" "$ORIGINAL_GPU_COMPOSE"
 
 cleanup() {
-  if [[ $KEEP_LAST -eq 0 && -f "$ORIGINAL_ENV" ]]; then
-    cp "$ORIGINAL_ENV" "$ENV_FILE"
+  if [[ $KEEP_LAST -eq 0 && -f "$ORIGINAL_GPU_COMPOSE" ]]; then
+    cp "$ORIGINAL_GPU_COMPOSE" "$GPU_COMPOSE_FILE"
   fi
-  rm -f "$ORIGINAL_ENV"
+  rm -f "$ORIGINAL_GPU_COMPOSE"
 }
 trap cleanup EXIT
 
-set_env_model() {
+set_compose_model() {
   local model_name="$1"
-  python3 - "$ENV_FILE" "$model_name" <<'PY'
+  python3 - "$GPU_COMPOSE_FILE" "$model_name" <<'PY'
 import pathlib
 import re
 import sys
 
-env_path = pathlib.Path(sys.argv[1])
+compose_path = pathlib.Path(sys.argv[1])
 model_name = sys.argv[2]
-text = env_path.read_text()
-text = re.sub(r'(?m)^REASONING_MODEL=.*$', f'REASONING_MODEL={model_name}', text)
-env_path.write_text(text)
+text = compose_path.read_text()
+text = re.sub(
+    r'(?m)^([ \t]*REASONING_MODEL:[ \t]*).*$',
+    rf'\1{model_name}',
+    text,
+)
+compose_path.write_text(text)
 PY
 }
 
@@ -304,7 +310,7 @@ log "report: $REPORT_FILE"
 for spec in "${MODEL_SPECS[@]}"; do
   model_name=$(model_name_from_spec "$spec")
   download_model_if_needed "$spec" "$model_name"
-  set_env_model "$model_name"
+  set_compose_model "$model_name"
   restart_stack_for_model "$model_name"
   if ! wait_for_vllm "$model_name"; then
     log "startup failed for $model_name"
@@ -317,7 +323,7 @@ done
 log "done"
 log "tsv report written to $REPORT_FILE"
 if [[ $KEEP_LAST -eq 0 ]]; then
-  log ".env will be restored to its original model when this script exits"
+  log "docker-compose.gpu.yaml will be restored to its original model when this script exits"
 else
-  log ".env will stay pointed at the last tested model"
+  log "docker-compose.gpu.yaml will stay pointed at the last tested model"
 fi

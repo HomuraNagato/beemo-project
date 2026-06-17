@@ -62,7 +62,7 @@ class WakePhraseTests(unittest.TestCase):
             container_name="eve-orchestrator",
             grpcurl_bin="grpcurl",
             proto_path="/workspace/proto/agent.proto",
-            orch_addr="localhost:5013",
+            orch_addr="127.0.0.1:5013",
         )
         self.assertEqual(cmd[:4], ["docker", "exec", "-i", "eve-orchestrator"])
         self.assertIn("grpcurl", cmd)

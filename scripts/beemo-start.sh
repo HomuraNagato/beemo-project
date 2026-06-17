@@ -101,6 +101,34 @@ wait_http() {
   done
 }
 
+wait_grpc_health() {
+  name="$1"
+  container="$2"
+  service="$3"
+  timeout="${4:-120}"
+  start="$(date +%s)"
+  while true; do
+    if docker exec "$container" grpcurl -plaintext \
+      -d "{\"service\":\"$service\"}" \
+      localhost:5013 grpc.health.v1.Health/Check >/dev/null 2>&1; then
+      printf '%s is ready\n' "$name"
+      return 0
+    fi
+    if ! docker ps --filter "name=^/${container}$" --filter "status=running" --format '{{.Names}}' | grep -qx "$container"; then
+      printf '%s container is not running\n' "$name" >&2
+      docker logs --tail 80 "$container" >&2 || true
+      return 1
+    fi
+    now="$(date +%s)"
+    if [ $((now - start)) -ge "$timeout" ]; then
+      printf 'timed out waiting for %s gRPC health\n' "$name" >&2
+      docker logs --tail 80 "$container" >&2 || true
+      return 1
+    fi
+    sleep 2
+  done
+}
+
 cd "$ROOT_DIR"
 
 printf 'Starting Beemo services using %s/%s compose stack\n' "$ACCEL" "$RUNTIME"
@@ -121,6 +149,7 @@ if [ "$RESTART_ORCH" = "1" ]; then
 fi
 
 compose up -d --build --force-recreate eve-orchestrator
+wait_grpc_health "eve-orchestrator" "eve-orchestrator" "eve.Orchestrator" 180
 
 if [ "$VOICE" = "1" ]; then
   compose up -d --build eve-wakeword

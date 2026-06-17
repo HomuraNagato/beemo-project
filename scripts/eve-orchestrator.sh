@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ORCH_ADDR=${ORCH_ADDR:-127.0.0.1:5013}
-PROMPT=${1:-"What time is it?"}
-SESSION_ID=${SESSION_ID:-"cli"}
+orch_addr="127.0.0.1:5013"
+prompt=${1:-"What time is it?"}
+session_id="cli"
 
 payload=$(cat <<JSON
 {
-  "session_id": "${SESSION_ID}",
+  "session_id": "${session_id}",
   "messages": [
-    {"role": "user", "content": "${PROMPT}"}
+    {"role": "user", "content": "${prompt}"}
   ]
 }
 JSON
@@ -19,7 +19,7 @@ if command -v grpcurl >/dev/null 2>&1; then
   exec grpcurl -plaintext \
     -proto proto/agent.proto \
     -d "$payload" \
-    "$ORCH_ADDR" \
+    "$orch_addr" \
     eve.Orchestrator/Chat
 fi
 
@@ -27,7 +27,7 @@ if docker ps --filter "name=^/eve-orchestrator$" --filter "status=running" --for
   exec docker exec -i eve-orchestrator grpcurl -plaintext \
     -proto proto/agent.proto \
     -d "$payload" \
-    localhost:5013 \
+    127.0.0.1:5013 \
     eve.Orchestrator/Chat
 fi
 
