@@ -504,6 +504,193 @@ func TestResolveCalculatorCallFillsConvertArgsFromExplicitText(t *testing.T) {
 	}
 }
 
+func TestCalculatorAmbiguousHeightLikeInchesNeedsClarification(t *testing.T) {
+	t.Parallel()
+
+	exec := NewLocalExecutor()
+	raw, err := json.Marshal(map[string]any{
+		"operation": "convert",
+		"input": []map[string]any{
+			{"unit": "in", "value": 5},
+			{"unit": "in", "value": 4},
+		},
+		"to_unit": "cm",
+	})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+
+	result, err := exec.Execute(context.Background(), Request{Action: "calculator", Args: raw})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if got, want := result.Status, "needs_input"; got != want {
+		t.Fatalf("unexpected status: got %q want %q", got, want)
+	}
+	if !strings.Contains(result.Question, "feet plus inches") {
+		t.Fatalf("unexpected clarification question: %q", result.Question)
+	}
+}
+
+func TestCalculatorUnrelatedMultipleMeasurementsNeedClarification(t *testing.T) {
+	t.Parallel()
+
+	exec := NewLocalExecutor()
+	raw, err := json.Marshal(map[string]any{
+		"operation": "convert",
+		"input": []map[string]any{
+			{"unit": "in", "value": 5},
+			{"unit": "in", "value": 4},
+			{"unit": "m", "value": 10},
+		},
+		"to_unit": "cm",
+	})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+
+	result, err := exec.Execute(context.Background(), Request{Action: "calculator", Args: raw})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if got, want := result.Status, "needs_input"; got != want {
+		t.Fatalf("unexpected status: got %q want %q", got, want)
+	}
+	if !strings.Contains(result.Question, "exact value") {
+		t.Fatalf("unexpected clarification question: %q", result.Question)
+	}
+}
+
+func TestValidateCalculatorCallCatchesAmbiguousHeightTranscript(t *testing.T) {
+	t.Parallel()
+
+	raw, err := json.Marshal(map[string]any{
+		"operation": "convert",
+		"input": []map[string]any{
+			{"unit": "ft", "value": 5},
+			{"unit": "ft", "value": 5},
+		},
+		"to_unit": "cm",
+	})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+
+	result, handled, err := ValidateCalculatorCall(PlannedCall{
+		Action: "calculator",
+		Args:   raw,
+	}, "convert 5 5 ft")
+	if err != nil {
+		t.Fatalf("ValidateCalculatorCall returned error: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected ambiguous transcript to be handled")
+	}
+	if got, want := result.Status, "needs_input"; got != want {
+		t.Fatalf("unexpected status: got %q want %q", got, want)
+	}
+	if !strings.Contains(result.Question, "5 feet 5 inches") {
+		t.Fatalf("unexpected question: %q", result.Question)
+	}
+}
+
+func TestValidateCalculatorCallCatchesAdjacentWeightUnits(t *testing.T) {
+	t.Parallel()
+
+	raw, err := json.Marshal(map[string]any{
+		"operation": "convert",
+		"input": []map[string]any{
+			{"unit": "kg", "value": 152},
+		},
+		"to_unit": "lb",
+	})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+
+	result, handled, err := ValidateCalculatorCall(PlannedCall{
+		Action: "calculator",
+		Args:   raw,
+	}, "152 kg lbs")
+	if err != nil {
+		t.Fatalf("ValidateCalculatorCall returned error: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected adjacent weight units to need confirmation")
+	}
+	if got, want := result.Status, "needs_input"; got != want {
+		t.Fatalf("unexpected status: got %q want %q", got, want)
+	}
+	if !strings.Contains(result.Question, "152 kg to lb") {
+		t.Fatalf("unexpected question: %q", result.Question)
+	}
+}
+
+func TestValidateCalculatorCallCatchesAdjacentWeightUnitsEvenWhenModelPickedBMI(t *testing.T) {
+	t.Parallel()
+
+	raw, err := json.Marshal(map[string]any{
+		"operation": "bmi",
+		"weight": []map[string]any{
+			{"unit": "kg", "value": 152},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+
+	result, handled, err := ValidateCalculatorCall(PlannedCall{
+		Action: "calculator",
+		Args:   raw,
+	}, "152 kg lbs")
+	if err != nil {
+		t.Fatalf("ValidateCalculatorCall returned error: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected adjacent weight units to override BMI choice with clarification")
+	}
+	if got, want := result.Status, "needs_input"; got != want {
+		t.Fatalf("unexpected status: got %q want %q", got, want)
+	}
+	if !strings.Contains(result.Question, "152 kg to lb") {
+		t.Fatalf("unexpected question: %q", result.Question)
+	}
+}
+
+func TestValidateCalculatorCallCatchesUnrelatedMultipleMeasurements(t *testing.T) {
+	t.Parallel()
+
+	raw, err := json.Marshal(map[string]any{
+		"operation": "convert",
+		"input": []map[string]any{
+			{"unit": "in", "value": 5},
+			{"unit": "in", "value": 4},
+			{"unit": "m", "value": 10},
+		},
+		"to_unit": "cm",
+	})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+
+	result, handled, err := ValidateCalculatorCall(PlannedCall{
+		Action: "calculator",
+		Args:   raw,
+	}, "What is 5, 4 inches and 10 meters?")
+	if err != nil {
+		t.Fatalf("ValidateCalculatorCall returned error: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected unrelated multiple measurements to need clarification")
+	}
+	if got, want := result.Status, "needs_input"; got != want {
+		t.Fatalf("unexpected status: got %q want %q", got, want)
+	}
+	if !strings.Contains(result.Question, "multiple measurements") {
+		t.Fatalf("unexpected question: %q", result.Question)
+	}
+}
+
 func TestGetTimeToolReturnsRFC3339Timestamp(t *testing.T) {
 	t.Parallel()
 

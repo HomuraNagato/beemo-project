@@ -24,6 +24,16 @@ func (s staticRouteSelector) Retrieve(query string, timeout time.Duration) ([]ro
 	return s.candidates, s.err
 }
 
+type queryRecordingRouteSelector struct {
+	queries    []string
+	candidates []routing.Candidate
+}
+
+func (s *queryRecordingRouteSelector) Retrieve(query string, timeout time.Duration) ([]routing.Candidate, error) {
+	s.queries = append(s.queries, query)
+	return s.candidates, nil
+}
+
 type recordingExecutor struct {
 	calls  []orchtools.Request
 	result orchtools.Result
@@ -249,6 +259,62 @@ func TestChatWeatherMissingLocationClarifies(t *testing.T) {
 		t.Fatalf("Chat returned error: %v", err)
 	}
 	if got, want := resp.GetText(), "What location should I use for the weather?"; got != want {
+		t.Fatalf("unexpected clarification: got %q want %q", got, want)
+	}
+}
+
+func TestChatWeatherPendingFullRetryExtractsLocation(t *testing.T) {
+	t.Parallel()
+
+	server := testServer(t)
+	server.tools = orchtools.NewLocalExecutorWithWeather(mockNewYorkWeatherConfig(t))
+	server.callCompletion = func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+		t.Fatalf("decision LLM should not be needed for weather pending fill: %q", prompt)
+		return "", nil
+	}
+	server.callFinalMessage = func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+		if !strings.Contains(prompt, "Tomorrow in New York, United States") {
+			t.Fatalf("final prompt missing weather result: %q", prompt)
+		}
+		return "Tomorrow in New York, United States: clear skies, high 75°F, low 62°F, rain chance up to 10%.", nil
+	}
+
+	resp, err := server.Chat(context.Background(), chatRequest("what is the weather tomorrow?"))
+	if err != nil {
+		t.Fatalf("first Chat returned error: %v", err)
+	}
+	if got, want := resp.GetText(), "What location should I use for the weather?"; got != want {
+		t.Fatalf("unexpected first response: got %q want %q", got, want)
+	}
+
+	resp, err = server.Chat(context.Background(), chatRequest("what is the weather tomorrow in new york city?"))
+	if err != nil {
+		t.Fatalf("second Chat returned error: %v", err)
+	}
+	if got := resp.GetText(); !strings.Contains(got, "New York") {
+		t.Fatalf("unexpected second response: %q", got)
+	}
+}
+
+func TestChatWeatherBadLocationClarifiesWithoutError(t *testing.T) {
+	t.Parallel()
+
+	server := testServer(t)
+	server.tools = orchtools.NewLocalExecutorWithWeather(mockNewYorkWeatherConfig(t))
+	server.callCompletion = func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+		t.Fatalf("decision LLM should not be needed for weather inference: %q", prompt)
+		return "", nil
+	}
+	server.callFinalMessage = func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+		t.Fatalf("final LLM should not be called for bad weather location: %q", prompt)
+		return "", nil
+	}
+
+	resp, err := server.Chat(context.Background(), chatRequest("what is the weather tomorrow in adisson new jersey?"))
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	if got, want := resp.GetText(), "I could not find that location. What city and state should I use for the weather?"; got != want {
 		t.Fatalf("unexpected clarification: got %q want %q", got, want)
 	}
 }
@@ -489,7 +555,14 @@ func TestChatRoutesExpertAndWritingRequestsToOlderSister(t *testing.T) {
 func TestChatUsesRoutedPromptWhenCandidatesAvailable(t *testing.T) {
 	t.Parallel()
 
+	decisionCalls := 0
 	server := testServer(t)
+	server.cfg.DeterministicToolShortcuts = false
+	server.readGrammar = func(path string) (string, error) {
+		return `root ::= empty_list | single_call_list
+tool_call ::= get_time_call | weather_call | older_sister_call | calculator_call | beemo_direct_call
+calc_args ::= expression_args | convert_args | bmi_args | bmr_args | tdee_args | percent_of_args | percent_change_args | percent_ratio_args`, nil
+	}
 	server.routeSelector = staticRouteSelector{
 		candidates: []routing.Candidate{
 			{
@@ -508,13 +581,37 @@ func TestChatUsesRoutedPromptWhenCandidatesAvailable(t *testing.T) {
 		},
 	}
 	server.callCompletion = func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
-		if !strings.Contains(prompt, "Candidate routes:") {
-			t.Fatalf("expected routed prompt, got %q", prompt)
+		decisionCalls++
+		switch decisionCalls {
+		case 1:
+			if !strings.Contains(prompt, "Route decision:") {
+				t.Fatalf("expected route decision prompt, got %q", prompt)
+			}
+			if !strings.Contains(prompt, "route_id: calculator.percent_of") {
+				t.Fatalf("expected routed candidate id, got %q", prompt)
+			}
+			if !strings.Contains(prompt, "similarity: 0.910") {
+				t.Fatalf("expected routed candidate similarity, got %q", prompt)
+			}
+			return `{"route_id":"calculator.percent_of"}`, nil
+		case 2:
+			if !strings.Contains(prompt, "Selected route:") {
+				t.Fatalf("expected route extraction prompt, got %q", prompt)
+			}
+			if strings.Contains(grammar, "empty_list | single_call_list") {
+				t.Fatalf("routed grammar should require one tool call: %q", grammar)
+			}
+			if !strings.Contains(grammar, "tool_call ::= calculator_call") {
+				t.Fatalf("expected calculator-only grammar: %q", grammar)
+			}
+			if !strings.Contains(grammar, "calc_args ::= percent_of_args") {
+				t.Fatalf("expected percent_of-only grammar: %q", grammar)
+			}
+			return `[{"tool":"calculator","args":{"operation":"percent_of","percent":20,"value":85}}]`, nil
+		default:
+			t.Fatalf("unexpected decision call %d prompt=%q", decisionCalls, prompt)
+			return "", nil
 		}
-		if !strings.Contains(prompt, "route_id: calculator.percent_of") {
-			t.Fatalf("expected routed candidate id, got %q", prompt)
-		}
-		return `[{"tool":"calculator","args":{"operation":"percent_of","percent":20,"value":85}}]`, nil
 	}
 	server.callFinalMessage = func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
 		return "20% of 85 is 17.", nil
@@ -526,6 +623,236 @@ func TestChatUsesRoutedPromptWhenCandidatesAvailable(t *testing.T) {
 	}
 	if got, want := resp.GetText(), "20% of 85 is 17."; got != want {
 		t.Fatalf("unexpected response text: got %q want %q", got, want)
+	}
+	if got, want := decisionCalls, 2; got != want {
+		t.Fatalf("unexpected decision call count: got %d want %d", got, want)
+	}
+}
+
+func TestChatMalformedRoutedDecisionDoesNotFallbackToTopRoute(t *testing.T) {
+	t.Parallel()
+
+	executor := &recordingExecutor{}
+	server := testServer(t)
+	server.tools = executor
+	server.cfg.DeterministicToolShortcuts = false
+	server.routeSelector = staticRouteSelector{
+		candidates: []routing.Candidate{
+			{
+				Route: routing.Route{
+					ID:      "calculator.percent_of",
+					Handler: routing.Handler{Type: "tool", Target: "calculator"},
+					DefaultArgs: map[string]any{
+						"operation": "percent_of",
+					},
+				},
+				Score: 0.93,
+			},
+		},
+	}
+	server.callCompletion = func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+		return `{"tool":"calculator"`, nil
+	}
+	server.callFinalMessage = func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+		t.Fatalf("final LLM should not be called after malformed tool JSON")
+		return "", nil
+	}
+
+	resp, err := server.Chat(context.Background(), chatRequest("calculate 20 percent of 85"))
+	if err != nil {
+		t.Fatalf("Chat returned transport error: %v", err)
+	}
+	if got := len(executor.calls); got != 0 {
+		t.Fatalf("malformed routed decision should not execute top route, got %d calls", got)
+	}
+	if got, want := resp.GetStatus(), "error"; got != want {
+		t.Fatalf("unexpected status: got %q want %q", got, want)
+	}
+	if got, want := resp.GetErrorKind(), "route_parse"; got != want {
+		t.Fatalf("unexpected error kind: got %q want %q", got, want)
+	}
+}
+
+func TestChatBeemoDirectSkipsToolExecution(t *testing.T) {
+	t.Parallel()
+
+	executor := &recordingExecutor{}
+	server := testServer(t)
+	server.cfg.DeterministicToolShortcuts = false
+	server.tools = executor
+	server.routeSelector = staticRouteSelector{
+		candidates: []routing.Candidate{
+			{
+				Route: routing.Route{
+					ID:      "beemo.direct",
+					Title:   "Direct local response",
+					Summary: "Answer directly with Beemo's local reasoning model.",
+					Handler: routing.Handler{Type: "tool", Target: "beemo.direct"},
+				},
+				Score: 0.88,
+			},
+		},
+	}
+	server.callCompletion = func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+		if !strings.Contains(prompt, "Route decision:") {
+			t.Fatalf("expected route decision prompt, got %q", prompt)
+		}
+		if !strings.Contains(prompt, "similarity: 0.880") {
+			t.Fatalf("expected routed candidate similarity, got %q", prompt)
+		}
+		return `{"route_id":"beemo.direct"}`, nil
+	}
+	server.callFinalMessage = func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+		if !strings.Contains(prompt, `"tool":"beemo.direct"`) {
+			t.Fatalf("final prompt missing beemo.direct decision: %q", prompt)
+		}
+		return "I can help think through that.", nil
+	}
+
+	resp, err := server.Chat(context.Background(), chatRequest("can you help me think through an idea?"))
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	if got, want := resp.GetText(), "I can help think through that."; got != want {
+		t.Fatalf("unexpected response text: got %q want %q", got, want)
+	}
+	if got := len(executor.calls); got != 0 {
+		t.Fatalf("beemo.direct should not execute a tool, got %d calls", got)
+	}
+	if got := resp.GetTools(); len(got) != 1 || got[0] != "beemo.direct" {
+		t.Fatalf("unexpected response tools: %#v", got)
+	}
+}
+
+func TestChatVetoesHealthCalculatorRouteWithoutExplicitMetric(t *testing.T) {
+	t.Parallel()
+
+	executor := &recordingExecutor{}
+	server := testServer(t)
+	server.cfg.DeterministicToolShortcuts = false
+	server.tools = executor
+	server.routeSelector = staticRouteSelector{
+		candidates: []routing.Candidate{
+			{
+				Route: routing.Route{
+					ID:      "calculator.bmr",
+					Domain:  "calculator",
+					Handler: routing.Handler{Type: "tool", Target: "calculator"},
+					DefaultArgs: map[string]any{
+						"operation": "bmr",
+					},
+				},
+				Score: 0.91,
+			},
+			{
+				Route: routing.Route{
+					ID:      "beemo.direct",
+					Domain:  "beemo",
+					Handler: routing.Handler{Type: "tool", Target: "beemo.direct"},
+				},
+				Score: 0.89,
+			},
+		},
+	}
+	server.callCompletion = func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+		if !strings.Contains(prompt, "Route decision:") {
+			t.Fatalf("expected route decision prompt, got %q", prompt)
+		}
+		return `{"route_id":"calculator.bmr"}`, nil
+	}
+	server.callFinalMessage = func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+		t.Fatalf("final LLM should not be called after route veto")
+		return "", nil
+	}
+
+	resp, err := server.Chat(context.Background(), chatRequest("what is the burn time?"))
+	if err != nil {
+		t.Fatalf("Chat returned transport error: %v", err)
+	}
+	if got := len(executor.calls); got != 0 {
+		t.Fatalf("vetoed route should not execute a tool, got %d calls", got)
+	}
+	if got, want := resp.GetStatus(), "error"; got != want {
+		t.Fatalf("unexpected status: got %q want %q", got, want)
+	}
+	if got, want := resp.GetErrorKind(), "route_validation"; got != want {
+		t.Fatalf("unexpected error kind: got %q want %q", got, want)
+	}
+}
+
+func TestChatPendingCancelClearsWithoutRouting(t *testing.T) {
+	t.Parallel()
+
+	server := testServer(t)
+	pending := pendingToolState{
+		OriginalUserQuery: "what is my BMI?",
+		Tool:              "calculator",
+		Args:              []byte(`{"operation":"bmi"}`),
+		Missing:           []string{"height"},
+		Question:          "What is the height?",
+	}
+	server.setPending("test-session", pending)
+	server.callCompletion = func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+		t.Fatalf("LLM should not be called for pending cancellation: %q", prompt)
+		return "", nil
+	}
+	server.callFinalMessage = func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+		t.Fatalf("final LLM should not be called for pending cancellation: %q", prompt)
+		return "", nil
+	}
+
+	resp, err := server.Chat(context.Background(), chatRequest("cancelled"))
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	if got, want := resp.GetText(), "Canceled."; got != want {
+		t.Fatalf("unexpected response text: got %q want %q", got, want)
+	}
+	if _, ok := server.getPending("test-session"); ok {
+		t.Fatal("pending state should be cleared")
+	}
+}
+
+func TestChatRoutesWithLatestUserQueryOnly(t *testing.T) {
+	t.Parallel()
+
+	selector := &queryRecordingRouteSelector{
+		candidates: []routing.Candidate{
+			{
+				Route: routing.Route{
+					ID:      "beemo.direct",
+					Domain:  "beemo",
+					Handler: routing.Handler{Type: "tool", Target: "beemo.direct"},
+				},
+				Score: 0.9,
+			},
+		},
+	}
+	server := testServer(t)
+	server.cfg.DeterministicToolShortcuts = false
+	server.routeSelector = selector
+	server.callCompletion = func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+		return `{"route_id":"beemo.direct"}`, nil
+	}
+	server.callFinalMessage = func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+		return "ok", nil
+	}
+
+	if _, err := server.Chat(context.Background(), sessionChatRequest("route-session", "what is 5 foot 6 inches in centimeters?")); err != nil {
+		t.Fatalf("first Chat returned error: %v", err)
+	}
+	if _, err := server.Chat(context.Background(), sessionChatRequest("route-session", "what is the weather in Tokyo tomorrow?")); err != nil {
+		t.Fatalf("second Chat returned error: %v", err)
+	}
+
+	if got, want := len(selector.queries), 2; got != want {
+		t.Fatalf("unexpected route query count: got %d want %d", got, want)
+	}
+	if got, want := selector.queries[1], "what is the weather in Tokyo tomorrow?"; got != want {
+		t.Fatalf("route retrieval should use latest query only: got %q want %q", got, want)
+	}
+	if strings.Contains(selector.queries[1], "5 foot 6") {
+		t.Fatalf("route retrieval leaked prior turn: %q", selector.queries[1])
 	}
 }
 
@@ -656,10 +983,12 @@ func testServer(t *testing.T) *orchestratorServer {
 	t.Helper()
 	return &orchestratorServer{
 		cfg: config.Config{
-			LLMHTTPURL:         "http://llm.test/v1/chat/completions",
-			LLMModel:           "test-model",
-			LLMTimeoutMs:       500,
-			EmbeddingTimeoutMs: 500,
+			LLMHTTPURL:                 "http://llm.test/v1/chat/completions",
+			LLMModel:                   "test-model",
+			LLMTimeoutMs:               500,
+			EmbeddingTimeoutMs:         500,
+			DeterministicToolShortcuts: true,
+			DirectToolResponses:        true,
 		},
 		tools: orchtools.NewLocalExecutor(),
 		readGrammar: func(path string) (string, error) {

@@ -47,7 +47,11 @@ func TryFillPending(req PendingFillRequest) (PlannedCall, bool, error) {
 		}
 		for _, field := range req.Missing {
 			if field == "location" {
-				raw, err := json.Marshal(map[string]string{"location": reply})
+				location := ExtractWeatherLocation(reply)
+				if strings.TrimSpace(location) == "" {
+					location = reply
+				}
+				raw, err := json.Marshal(map[string]string{"location": location})
 				if err != nil {
 					return PlannedCall{}, false, err
 				}
@@ -257,6 +261,8 @@ func InferToolCall(text string) (PlannedCall, bool, error) {
 		})
 	case isWeatherRequest(lower):
 		return rawPlannedCall("weather", extractWeatherUpdate(trimmed))
+	case isConvertRequest(trimmed):
+		return rawPlannedCall("calculator", calculatorArgsFromText(trimmed, "convert"))
 	case isTimeRequest(lower):
 		return rawPlannedCall("get_time", map[string]any{})
 	case strings.Contains(lower, "bmi"):
@@ -314,10 +320,21 @@ func calculatorArgsFromText(text, operation string) map[string]any {
 }
 
 func isTimeRequest(lower string) bool {
-	if !containsAny(lower, "time", "date", "day", "month", "year", "today", "tomorrow", "yesterday") {
+	if !containsTimeKeyword(lower) {
 		return false
 	}
-	return containsAny(lower, "what", "when", "current", "right now", "now", "today", "tomorrow", "yesterday")
+	return containsAnyStandalone(lower, "what", "when", "current", "now", "today", "tomorrow", "yesterday") || strings.Contains(lower, "right now")
+}
+
+func isConvertRequest(text string) bool {
+	update := extractConvertUpdate(text)
+	if update == nil {
+		return false
+	}
+	_, hasTarget := update["to_unit"]
+	_, hasInput := update["input"]
+	_, hasValue := update["value"]
+	return hasTarget && (hasInput || hasValue)
 }
 
 func isWeatherRequest(lower string) bool {
@@ -380,6 +397,27 @@ func containsStandaloneWord(text, word string) bool {
 		return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
 	}) {
 		if candidate == word {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAnyStandalone(text string, words ...string) bool {
+	for _, word := range words {
+		if containsStandaloneWord(text, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsTimeKeyword(text string) bool {
+	for _, token := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
+	}) {
+		switch token {
+		case "time", "date", "day", "days", "month", "months", "year", "years", "today", "tomorrow", "yesterday":
 			return true
 		}
 	}

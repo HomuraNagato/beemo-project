@@ -52,6 +52,19 @@ domains:
       - search the internet for the latest vllm embedding support
       - can chatgpt look up whether this library still supports postgres 12?
 
+  - id: beemo
+    title: Beemo Direct
+    summary: Answer directly with Beemo's local reasoning model when no specialized tool is needed.
+    when_to_use:
+      - Use for casual conversation, opinions, simple explanations, or local reasoning that does not need current facts, weather, time, math, conversion, or external search.
+      - Use when the user is chatting with Beemo rather than asking for a dedicated tool.
+    when_not_to_use:
+      - Do not use for time, date, weather, calculator, conversion, BMI, BMR, TDEE, internet search, current facts, or external expert requests.
+    example_requests:
+      - tell me a short story
+      - can you help me think through this idea?
+      - how are you feeling today?
+
 routes:
   - id: get_time.current_or_relative
     domain: time
@@ -148,6 +161,27 @@ routes:
     handler:
       type: tool
       target: older_sister
+
+  - id: beemo.direct
+    domain: beemo
+    title: Direct local response
+    summary: Answer directly with Beemo's local reasoning model without calling an external tool.
+    when_to_use:
+      - The user asks for casual conversation, a simple explanation, brainstorming, or local reasoning.
+      - The request does not require current time, date, weather, calculations, conversions, BMI, BMR, TDEE, web search, or external expert knowledge.
+    when_not_to_use:
+      - The user asks for a dedicated local tool such as time, weather, or calculator.
+      - The user asks for internet search, current external information, source-backed verification, or expert help better handled by older_sister.
+    example_requests:
+      - tell me a joke
+      - help me brainstorm a name
+      - say that in a softer way
+    required_fields: []
+    args_guidance: Choose beemo.direct with empty args when Beemo should answer directly.
+    default_args: {}
+    handler:
+      type: tool
+      target: beemo.direct
 
   - id: calculator.convert
     domain: calculator

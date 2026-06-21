@@ -22,32 +22,34 @@ The main difference is that this repo now splits those responsibilities into Doc
 - if `WAKEWORD_MODEL_PATH` points at a valid `openwakeword` model, it uses that as the first-stage trigger
 - otherwise it falls back to transcript-based wake phrase matching
 
-## Env knobs
+## Runtime Config
 
-Relevant defaults live in `.env` and `.env.example`:
+Stable wakeword defaults live in `config/wakeword.yaml`:
 
-- `ASR_MODEL=small.en`
-- `WAKEWORD_DETECTION_MODE=hybrid`
-- `WAKEWORD_MODEL_PATH=/models/wakeword/wakeword.onnx`
-- `WAKEWORD_PHRASES=hey beemo,hey bmo,okay beemo,ok beemo`
-- `WAKEWORD_ASR_ALIASES=don't be mad,dont be mad,hey bemo,hey bimo,okay bemo,ok bemo`
-- `PULSE_SOCKET_PATH=/run/user/1000/pulse/native`
-- `PULSE_SOURCE=default`
+- `detector.mode: hybrid`
+- `detector.model_path: /models/wakeword/wakeword.onnx`
+- `detector.phrases: [hey beemo, hey bmo, okay beemo, ok beemo]`
+- `detector.asr_aliases` for ASR mishearings such as `don't be mad`
+- `audio.source: default`
+- `audio.preroll_ms: 700`
+
+`docker-compose.yaml` passes that file as `WAKEWORD_CONFIG=/config/wakeword.yaml`.
+Use `.env` only for secrets and host-specific overrides such as `PULSE_SOCKET_PATH`.
 
 ## Bring-up
 
 Start the full voice stack with the normal launcher:
 
 ```bash
-./scripts/beemo-start.sh vllm-gpu
+./scripts/beemo-start.sh vllm-cpu
 ```
 
 For targeted service restarts during development:
 
 ```bash
-./scripts/beemo-restart.sh vllm-gpu eve-asr
-./scripts/beemo-restart.sh vllm-gpu eve-orchestrator
-./scripts/beemo-restart.sh vllm-gpu eve-wakeword
+./scripts/beemo-restart.sh vllm-cpu eve-asr
+./scripts/beemo-restart.sh vllm-cpu eve-orchestrator
+./scripts/beemo-restart.sh vllm-cpu eve-wakeword
 ```
 
 Watch orchestrator logs in another shell:

@@ -1,6 +1,12 @@
 import unittest
 
-from services.wakeword.logic import extract_prompt, should_listen_for_followup, split_optional_phrases, split_phrases
+from services.wakeword.logic import (
+    extract_prompt,
+    should_listen_for_followup,
+    split_optional_phrases,
+    split_phrases,
+    strip_leading_wake_noise,
+)
 
 
 class WakewordLogicTest(unittest.TestCase):
@@ -29,6 +35,13 @@ class WakewordLogicTest(unittest.TestCase):
     def test_extract_prompt_accepts_asr_aliases(self):
         phrases = split_phrases("hey beemo") + split_optional_phrases("don't be mad,dont be mad")
         self.assertEqual(extract_prompt("Don't be mad. What time is it?", phrases), "What time is it?")
+
+    def test_strip_leading_wake_noise_handles_common_asr_mishears(self):
+        self.assertEqual(strip_leading_wake_noise("hey beemoh what time is it"), "what time is it")
+        self.assertEqual(strip_leading_wake_noise("BMO, tell me a joke"), "tell me a joke")
+        self.assertEqual(strip_leading_wake_noise("Hey PMO, what time is it?"), "what time is it?")
+        self.assertEqual(strip_leading_wake_noise("Hey people, what time is it?"), "what time is it?")
+        self.assertEqual(strip_leading_wake_noise("Hey, B-Mole. But time is it."), "what time is it.")
 
     def test_should_listen_for_followup_when_response_is_question(self):
         self.assertTrue(should_listen_for_followup("What is the height?"))

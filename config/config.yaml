@@ -19,11 +19,13 @@ routing:
   routes_path: routes.yaml
   top_k: 5
   domain_top_k: 2
+  deterministic_tool_shortcuts: false
 
 orchestrator:
   addr: ""
   decision_grammar_path: scripts/grammars/tool_list.gbnf
   history_dir: history
+  direct_tool_responses: false
 
 services:
   vision_addr: eve-vision:5016

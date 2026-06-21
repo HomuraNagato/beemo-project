@@ -175,6 +175,7 @@ func FormatCandidates(candidates []Candidate) string {
 		if domain.ID != "" {
 			fmt.Fprintf(&b, "- domain_id: %s\n", domain.ID)
 		}
+		fmt.Fprintf(&b, "- similarity: %.3f\n", candidate.Score)
 		fmt.Fprintf(&b, "- tool: %s\n", route.Handler.Target)
 		if len(route.DefaultArgs) > 0 {
 			if raw, err := json.Marshal(route.DefaultArgs); err == nil {

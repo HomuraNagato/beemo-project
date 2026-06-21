@@ -110,15 +110,15 @@ services:
       dockerfile: compose/wakeword/Dockerfile
     environment:
       PYTHONUNBUFFERED: "1"
-      PULSE_SERVER: ${PULSE_SERVER:-unix:/tmp/pulse/native}
-      PULSE_SOURCE: ${PULSE_SOURCE:-default}
+      WAKEWORD_CONFIG: /config/wakeword.yaml
     depends_on:
       - eve-asr
       - eve-orchestrator
     volumes:
+      - ./config:/config:ro
       - ./models:/models
       - type: bind
-        source: ${PULSE_SOCKET_PATH:-/mnt/wslg/PulseServer}
+        source: ${PULSE_SOCKET_PATH:-/run/user/1000/pulse/native}
         target: /tmp/pulse/native
         read_only: true
 

@@ -114,6 +114,9 @@ routes:
 	if !strings.Contains(block, "domain_id: time") {
 		t.Fatalf("candidate block missing domain id: %q", block)
 	}
+	if !strings.Contains(block, "similarity: ") {
+		t.Fatalf("candidate block missing similarity score: %q", block)
+	}
 }
 
 func TestMatchCallUsesRouteOperation(t *testing.T) {

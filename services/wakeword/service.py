@@ -11,10 +11,72 @@ from typing import Optional, Set
 
 import grpc
 import numpy as np
+import yaml
 from eve_proto import agent_pb2, agent_pb2_grpc
 from openwakeword.model import Model as OpenWakeWordModel
 
-from services.wakeword.logic import extract_prompt, should_listen_for_followup, split_optional_phrases, split_phrases
+from services.wakeword.logic import (
+    extract_prompt,
+    should_listen_for_followup,
+    split_optional_phrases,
+    split_phrases,
+    strip_leading_wake_noise,
+)
+
+
+def load_config() -> dict:
+    path = os.getenv("WAKEWORD_CONFIG", "").strip()
+    if not path:
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            loaded = yaml.safe_load(handle) or {}
+    except FileNotFoundError:
+        logging.warning("wakeword.config_missing path=%s", path)
+        return {}
+    if not isinstance(loaded, dict):
+        logging.warning("wakeword.config_invalid path=%s reason=root_not_object", path)
+        return {}
+    logging.info("wakeword.config_loaded path=%s", path)
+    return loaded
+
+
+def cfg_value(config: dict, path: str, default):
+    value = config
+    for part in path.split("."):
+        if not isinstance(value, dict) or part not in value:
+            return default
+        value = value[part]
+    if value is None:
+        return default
+    return value
+
+
+def cfg_str(config: dict, path: str, default: str) -> str:
+    value = cfg_value(config, path, default)
+    return str(value).strip()
+
+
+def cfg_int(config: dict, path: str, default: int) -> int:
+    return int(cfg_value(config, path, default))
+
+
+def cfg_float(config: dict, path: str, default: float) -> float:
+    return float(cfg_value(config, path, default))
+
+
+def cfg_bool(config: dict, path: str, default: bool) -> bool:
+    value = cfg_value(config, path, default)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def cfg_list(config: dict, path: str, default: list[str]) -> list[str]:
+    value = cfg_value(config, path, default)
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return split_optional_phrases(str(value))
 
 
 def env_int(name: str, default: int) -> int:
@@ -122,7 +184,7 @@ class OrchestratorClient:
     def close(self) -> None:
         self.channel.close()
 
-    def chat(self, session_id: str, prompt: str) -> str:
+    def chat(self, session_id: str, prompt: str) -> tuple[str, list[str], str, str]:
         response = self.stub.Chat(
             agent_pb2.ChatRequest(
                 session_id=session_id,
@@ -130,7 +192,12 @@ class OrchestratorClient:
             ),
             timeout=self.timeout_secs,
         )
-        return response.text.strip()
+        return (
+            response.text.strip(),
+            list(response.tools),
+            response.status.strip(),
+            response.error_kind.strip(),
+        )
 
 
 class PulseRecorder:
@@ -245,15 +312,16 @@ class PulseRecorder:
 
 
 class OpenWakeWordDetector:
-    def __init__(self) -> None:
-        self.mode = os.getenv("WAKEWORD_DETECTION_MODE", "hybrid").strip().lower() or "hybrid"
-        self.sample_rate_hz = env_int("WAKEWORD_SAMPLE_RATE_HZ", 16000)
-        self.frame_ms = env_int("WAKEWORD_OPENWAKEWORD_FRAME_MS", 80)
+    def __init__(self, config: dict) -> None:
+        self.mode = cfg_str(config, "detector.mode", os.getenv("WAKEWORD_DETECTION_MODE", "hybrid")).lower() or "hybrid"
+        self.sample_rate_hz = cfg_int(config, "audio.sample_rate_hz", env_int("WAKEWORD_SAMPLE_RATE_HZ", 16000))
+        self.frame_ms = cfg_int(config, "detector.openwakeword_frame_ms", env_int("WAKEWORD_OPENWAKEWORD_FRAME_MS", 80))
         self.frame_bytes = int(self.sample_rate_hz * (self.frame_ms / 1000.0) * 2)
-        self.threshold = env_float("WAKEWORD_THRESHOLD", 0.5)
-        self.vad_threshold = env_float("WAKEWORD_VAD_THRESHOLD", 0.0)
-        self.debounce_secs = env_float("WAKEWORD_DEBOUNCE_SECS", 2.0)
-        self.model_path = os.getenv("WAKEWORD_MODEL_PATH", "").strip()
+        self.threshold = cfg_float(config, "detector.threshold", env_float("WAKEWORD_THRESHOLD", 0.5))
+        self.vad_threshold = cfg_float(config, "detector.vad_threshold", env_float("WAKEWORD_VAD_THRESHOLD", 0.0))
+        self.debounce_secs = cfg_float(config, "detector.debounce_secs", env_float("WAKEWORD_DEBOUNCE_SECS", 2.0))
+        self.model_path = cfg_str(config, "detector.model_path", os.getenv("WAKEWORD_MODEL_PATH", ""))
+        self.display_label = cfg_str(config, "detector.label", os.getenv("WAKEWORD_LABEL", "hey beemo"))
         self.model: Optional[OpenWakeWordModel] = None
         self.model_label = ""
         self.last_trigger_at = 0.0
@@ -318,39 +386,44 @@ class OpenWakeWordDetector:
 
         self.last_trigger_at = now
         self.reset()
-        return best_name or self.model_label or "openwakeword", best_score
+        return self.display_label or best_name or self.model_label or "openwakeword", best_score
 
 
 class WakeLoop:
-    def __init__(self, broker: EventBroker) -> None:
+    def __init__(self, broker: EventBroker, config: dict) -> None:
         self.broker = broker
         self.stop_event = threading.Event()
-        self.detection_mode = os.getenv("WAKEWORD_DETECTION_MODE", "hybrid").strip().lower() or "hybrid"
-        self.sample_rate_hz = env_int("WAKEWORD_SAMPLE_RATE_HZ", 16000)
-        self.frame_ms = env_int("WAKEWORD_FRAME_MS", 100)
-        self.preroll_ms = env_int("WAKEWORD_PREROLL_MS", 300)
-        self.min_speech_ms = env_int("WAKEWORD_MIN_SPEECH_MS", 400)
-        self.silence_ms = env_int("WAKEWORD_SILENCE_MS", 1200)
-        self.max_utterance_ms = env_int("WAKEWORD_MAX_UTTERANCE_MS", 10000)
-        self.speech_rms_threshold = env_int("WAKEWORD_SPEECH_RMS_THRESHOLD", 700)
-        self.followup_enabled = env_bool("WAKEWORD_FOLLOWUP_ENABLED", True)
-        self.followup_timeout_secs = env_float("WAKEWORD_FOLLOWUP_TIMEOUT_SECS", 12.0)
-        self.followup_max_turns = env_int("WAKEWORD_FOLLOWUP_MAX_TURNS", 4)
-        self.session_id = os.getenv("WAKEWORD_SESSION_ID", "voice-loop")
-        self.wake_phrases = split_phrases(os.getenv("WAKEWORD_PHRASES", "hey beemo,hey bmo,okay beemo,ok beemo"))
-        self.wake_phrases.extend(split_optional_phrases(os.getenv("WAKEWORD_ASR_ALIASES", "")))
+        pulse_server = cfg_str(config, "audio.pulse_server", os.getenv("PULSE_SERVER", "unix:/tmp/pulse/native"))
+        if pulse_server:
+            os.environ["PULSE_SERVER"] = pulse_server
+        self.detection_mode = cfg_str(config, "detector.mode", os.getenv("WAKEWORD_DETECTION_MODE", "hybrid")).lower() or "hybrid"
+        self.sample_rate_hz = cfg_int(config, "audio.sample_rate_hz", env_int("WAKEWORD_SAMPLE_RATE_HZ", 16000))
+        self.frame_ms = cfg_int(config, "audio.frame_ms", env_int("WAKEWORD_FRAME_MS", 100))
+        self.preroll_ms = cfg_int(config, "audio.preroll_ms", env_int("WAKEWORD_PREROLL_MS", 300))
+        self.min_speech_ms = cfg_int(config, "audio.min_speech_ms", env_int("WAKEWORD_MIN_SPEECH_MS", 400))
+        self.silence_ms = cfg_int(config, "audio.silence_ms", env_int("WAKEWORD_SILENCE_MS", 1200))
+        self.max_utterance_ms = cfg_int(config, "audio.max_utterance_ms", env_int("WAKEWORD_MAX_UTTERANCE_MS", 10000))
+        self.speech_rms_threshold = cfg_int(config, "audio.speech_rms_threshold", env_int("WAKEWORD_SPEECH_RMS_THRESHOLD", 700))
+        self.followup_enabled = cfg_bool(config, "followup.enabled", env_bool("WAKEWORD_FOLLOWUP_ENABLED", True))
+        self.followup_timeout_secs = cfg_float(config, "followup.timeout_secs", env_float("WAKEWORD_FOLLOWUP_TIMEOUT_SECS", 12.0))
+        self.followup_max_turns = cfg_int(config, "followup.max_turns", env_int("WAKEWORD_FOLLOWUP_MAX_TURNS", 4))
+        self.session_id = cfg_str(config, "server.session_id", os.getenv("WAKEWORD_SESSION_ID", "voice-loop"))
+        self.wake_phrases = cfg_list(config, "detector.phrases", split_phrases(os.getenv("WAKEWORD_PHRASES", "")))
+        if not self.wake_phrases:
+            self.wake_phrases = split_phrases("")
+        self.wake_phrases.extend(cfg_list(config, "detector.asr_aliases", split_optional_phrases(os.getenv("WAKEWORD_ASR_ALIASES", ""))))
         self.recorder = PulseRecorder(
             sample_rate_hz=self.sample_rate_hz,
-            source=os.getenv("PULSE_SOURCE", "default"),
+            source=cfg_str(config, "audio.source", os.getenv("PULSE_SOURCE", "default")),
         )
-        self.detector = OpenWakeWordDetector()
+        self.detector = OpenWakeWordDetector(config)
         self.asr_client = ASRClient(
-            addr=os.getenv("ASR_ADDR", "eve-asr:5019"),
-            timeout_secs=env_int("WAKEWORD_ASR_TIMEOUT_SECS", 60),
+            addr=cfg_str(config, "services.asr_addr", os.getenv("ASR_ADDR", "eve-asr:5019")),
+            timeout_secs=cfg_int(config, "services.asr_timeout_secs", env_int("WAKEWORD_ASR_TIMEOUT_SECS", 60)),
         )
         self.orchestrator_client = OrchestratorClient(
-            addr=os.getenv("ORCH_ADDR", "eve-orchestrator:5013"),
-            timeout_secs=env_int("WAKEWORD_ORCH_TIMEOUT_SECS", 120),
+            addr=cfg_str(config, "services.orchestrator_addr", os.getenv("ORCH_ADDR", "eve-orchestrator:5013")),
+            timeout_secs=cfg_int(config, "services.orchestrator_timeout_secs", env_int("WAKEWORD_ORCH_TIMEOUT_SECS", 120)),
         )
 
     def stop(self) -> None:
@@ -366,6 +439,9 @@ class WakeLoop:
         prompt: str = "",
         response: str = "",
         confidence: float = 0.0,
+        tools: Optional[list[str]] = None,
+        status: str = "",
+        error_kind: str = "",
     ) -> None:
         event = agent_pb2.WakeDetected(
             session_id=self.session_id,
@@ -375,6 +451,9 @@ class WakeLoop:
             prompt=prompt,
             response=response,
             confidence=confidence,
+            tools=tools or [],
+            status=status,
+            error_kind=error_kind,
         )
         self.broker.publish(event)
 
@@ -435,7 +514,8 @@ class WakeLoop:
         if prompt is not None:
             return prompt
         if self.detector.active:
-            return transcript.strip()
+            prompt = strip_leading_wake_noise(transcript)
+            return prompt or None
         return None
 
     def handle_utterance(
@@ -461,11 +541,38 @@ class WakeLoop:
             return None
 
         if require_trigger:
-            logging.info("wakeword.heard transcript=%r confidence=%.2f matched=true prompt=%r", transcript, confidence, prompt)
+            logging.info("wakeword.heard confidence=%.2f matched=true prompt=%r", confidence, prompt)
         else:
             logging.info("wakeword.followup_heard transcript=%r confidence=%.2f prompt=%r", transcript, confidence, prompt)
-        response = self.orchestrator_client.chat(self.session_id, prompt)
-        logging.info("wakeword.orchestrator_response text=%r", response)
+        if publish_source:
+            self.publish_wake(
+                publish_source,
+                transcript=transcript,
+                prompt=prompt,
+                confidence=confidence,
+            )
+        try:
+            response, tools, status, error_kind = self.orchestrator_client.chat(self.session_id, prompt)
+        except grpc.RpcError as err:
+            details = err.details() if hasattr(err, "details") else str(err)
+            logging.exception("wakeword.orchestrator_error details=%r", details)
+            response = "I hit an internal routing error. Please try that again."
+            tools = []
+            status = "error"
+            error_kind = "orchestrator_rpc"
+            if publish_source:
+                self.publish_wake(
+                    publish_source,
+                    transcript=transcript,
+                    prompt=prompt,
+                    response=response,
+                    confidence=confidence,
+                    tools=tools,
+                    status=status,
+                    error_kind=error_kind,
+                )
+            return response
+        logging.info("wakeword.orchestrator_response status=%r error_kind=%r text=%r", status, error_kind, response)
         if publish_source:
             self.publish_wake(
                 publish_source,
@@ -473,6 +580,9 @@ class WakeLoop:
                 prompt=prompt,
                 response=response,
                 confidence=confidence,
+                tools=tools,
+                status=status,
+                error_kind=error_kind,
             )
         return response
 
@@ -534,7 +644,7 @@ class WakeLoop:
             model_name, score = triggered
             logging.info("wakeword.triggered source=openwakeword model=%s score=%.2f", model_name, score)
             self.publish_wake(f"openwakeword:{model_name}")
-            utterance = self.capture_utterance(seed_frames=list(history), started=True)
+            utterance = self.capture_utterance()
             if not utterance:
                 continue
             response = self.handle_utterance(utterance, publish_source=f"openwakeword:{model_name}")
@@ -548,12 +658,13 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(message)s",
     )
 
+    config = load_config()
     broker = EventBroker()
     servicer = WakeWordServicer(broker)
-    loop = WakeLoop(broker)
+    loop = WakeLoop(broker, config)
 
-    host = os.getenv("WAKEWORD_HOST", "0.0.0.0")
-    port = env_int("WAKEWORD_PORT", 5020)
+    host = cfg_str(config, "server.host", os.getenv("WAKEWORD_HOST", "0.0.0.0"))
+    port = cfg_int(config, "server.port", env_int("WAKEWORD_PORT", 5020))
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
     agent_pb2_grpc.add_WakeWordServicer_to_server(servicer, server)

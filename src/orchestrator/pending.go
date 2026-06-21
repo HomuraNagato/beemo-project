@@ -22,9 +22,15 @@ type pendingResumeRequest struct {
 type pendingDecision struct {
 	Text        string
 	FromPending bool
+	Response    string
 }
 
 func (s *orchestratorServer) resumePendingDecision(req pendingResumeRequest) (pendingDecision, bool, bool, error) {
+	if isPendingCancel(req.userQuery) {
+		s.clearPending(req.sessionID)
+		return pendingDecision{Response: "Canceled."}, true, true, nil
+	}
+
 	if filledCall, ok, err := orchtools.TryFillPending(orchtools.PendingFillRequest{
 		Action:  req.pending.Tool,
 		Args:    req.pending.Args,
@@ -40,15 +46,17 @@ func (s *orchestratorServer) resumePendingDecision(req pendingResumeRequest) (pe
 		return pendingDecision{Text: string(filledText), FromPending: true}, true, false, nil
 	}
 
-	if inferred, ok, err := orchtools.InferToolCall(req.userQuery); err != nil {
-		return pendingDecision{}, false, false, err
-	} else if ok && pendingInterruptedByNewCall(req.pending, inferred) {
-		s.clearPending(req.sessionID)
-		inferredText, jerr := json.Marshal([]toolCall{fromPlannedCall(inferred)})
-		if jerr != nil {
-			return pendingDecision{}, false, true, jerr
+	if s.cfg.DeterministicToolShortcuts {
+		if inferred, ok, err := orchtools.InferToolCall(req.userQuery); err != nil {
+			return pendingDecision{}, false, false, err
+		} else if ok && pendingInterruptedByNewCall(req.pending, inferred) {
+			s.clearPending(req.sessionID)
+			inferredText, jerr := json.Marshal([]toolCall{fromPlannedCall(inferred)})
+			if jerr != nil {
+				return pendingDecision{}, false, true, jerr
+			}
+			return pendingDecision{Text: string(inferredText)}, true, true, nil
 		}
-		return pendingDecision{Text: string(inferredText)}, true, true, nil
 	}
 
 	resumePrompt := prompts.ResumeToolUpdate(
@@ -91,6 +99,16 @@ func pendingInterruptedByNewCall(pending pendingToolState, inferred orchtools.Pl
 	pendingTool := strings.TrimSpace(pending.Tool)
 	inferredAction := strings.TrimSpace(inferred.Action)
 	return pendingTool != "" && inferredAction != "" && pendingTool != inferredAction
+}
+
+func isPendingCancel(text string) bool {
+	normalized := strings.Trim(strings.ToLower(strings.TrimSpace(text)), ".!? ")
+	switch normalized {
+	case "cancel", "cancelled", "canceled", "stop", "escape", "esc", "scape", "nevermind", "never mind":
+		return true
+	default:
+		return false
+	}
 }
 
 func pendingFieldsSatisfied(missing []string, args json.RawMessage) bool {

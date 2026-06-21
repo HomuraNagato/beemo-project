@@ -9,43 +9,45 @@ import (
 )
 
 type Config struct {
-	LLMAddr                  string
-	LLMHTTPURL               string
-	LLMDecisionHTTPURL       string
-	LLMProvider              string
-	LLMModel                 string
-	LLMTimeoutMs             int
-	DatabaseURL              string
-	DBMigrationsDir          string
-	EmbeddingAddr            string
-	EmbeddingHTTPURL         string
-	EmbeddingModel           string
-	EmbeddingTimeoutMs       int
-	RoutesPath               string
-	RouteTopK                int
-	RouteDomainTopK          int
-	OrchAddr                 string
-	DecisionGrammarPath      string
-	HistoryDir               string
-	VisionAddr               string
-	UIAddr                   string
-	TTSAddr                  string
-	ASRAddr                  string
-	WakeWordAddr             string
-	WeatherLatitude          string
-	WeatherLongitude         string
-	WeatherTimezone          string
-	WeatherLocationName      string
-	WeatherHTTPURL           string
-	WeatherGeocodingURL      string
-	WeatherTemperatureUnit   string
-	WeatherWindSpeedUnit     string
-	WeatherPrecipitationUnit string
-	OlderSisterAPIKey        string
-	OlderSisterHTTPURL       string
-	OlderSisterModel         string
-	OlderSisterTimeoutMs     int
-	OlderSisterWebSearch     bool
+	LLMAddr                    string
+	LLMHTTPURL                 string
+	LLMDecisionHTTPURL         string
+	LLMProvider                string
+	LLMModel                   string
+	LLMTimeoutMs               int
+	DatabaseURL                string
+	DBMigrationsDir            string
+	EmbeddingAddr              string
+	EmbeddingHTTPURL           string
+	EmbeddingModel             string
+	EmbeddingTimeoutMs         int
+	RoutesPath                 string
+	RouteTopK                  int
+	RouteDomainTopK            int
+	DeterministicToolShortcuts bool
+	OrchAddr                   string
+	DecisionGrammarPath        string
+	HistoryDir                 string
+	DirectToolResponses        bool
+	VisionAddr                 string
+	UIAddr                     string
+	TTSAddr                    string
+	ASRAddr                    string
+	WakeWordAddr               string
+	WeatherLatitude            string
+	WeatherLongitude           string
+	WeatherTimezone            string
+	WeatherLocationName        string
+	WeatherHTTPURL             string
+	WeatherGeocodingURL        string
+	WeatherTemperatureUnit     string
+	WeatherWindSpeedUnit       string
+	WeatherPrecipitationUnit   string
+	OlderSisterAPIKey          string
+	OlderSisterHTTPURL         string
+	OlderSisterModel           string
+	OlderSisterTimeoutMs       int
+	OlderSisterWebSearch       bool
 }
 
 func Load() Config {
@@ -86,38 +88,40 @@ func defaultConfig() Config {
 	}
 
 	return Config{
-		LLMAddr:                  llmAddr,
-		LLMHTTPURL:               llmHTTPURL,
-		LLMDecisionHTTPURL:       "",
-		LLMProvider:              "vllm",
-		LLMModel:                 "Qwen3-1.7B",
-		LLMTimeoutMs:             120000,
-		DatabaseURL:              "",
-		DBMigrationsDir:          "db/migrations",
-		EmbeddingAddr:            embeddingAddr,
-		EmbeddingHTTPURL:         embeddingHTTPURL,
-		EmbeddingModel:           "Qwen3-Embedding-0.6B",
-		EmbeddingTimeoutMs:       30000,
-		RoutesPath:               "routes.yaml",
-		RouteTopK:                5,
-		RouteDomainTopK:          2,
-		DecisionGrammarPath:      "scripts/grammars/tool_list.gbnf",
-		HistoryDir:               "history",
-		VisionAddr:               "eve-vision:5016",
-		UIAddr:                   "eve-ui:5017",
-		TTSAddr:                  "eve-tts:5018",
-		ASRAddr:                  "eve-asr:5019",
-		WakeWordAddr:             "eve-wakeword:5020",
-		WeatherTimezone:          "auto",
-		WeatherHTTPURL:           "https://api.open-meteo.com/v1/forecast",
-		WeatherGeocodingURL:      "https://geocoding-api.open-meteo.com/v1/search",
-		WeatherTemperatureUnit:   "fahrenheit",
-		WeatherWindSpeedUnit:     "mph",
-		WeatherPrecipitationUnit: "inch",
-		OlderSisterHTTPURL:       "https://api.openai.com/v1/responses",
-		OlderSisterModel:         "gpt-5-mini",
-		OlderSisterTimeoutMs:     120000,
-		OlderSisterWebSearch:     true,
+		LLMAddr:                    llmAddr,
+		LLMHTTPURL:                 llmHTTPURL,
+		LLMDecisionHTTPURL:         "",
+		LLMProvider:                "vllm",
+		LLMModel:                   "Qwen3-1.7B",
+		LLMTimeoutMs:               120000,
+		DatabaseURL:                "",
+		DBMigrationsDir:            "db/migrations",
+		EmbeddingAddr:              embeddingAddr,
+		EmbeddingHTTPURL:           embeddingHTTPURL,
+		EmbeddingModel:             "Qwen3-Embedding-0.6B",
+		EmbeddingTimeoutMs:         30000,
+		RoutesPath:                 "routes.yaml",
+		RouteTopK:                  5,
+		RouteDomainTopK:            2,
+		DeterministicToolShortcuts: false,
+		DecisionGrammarPath:        "scripts/grammars/tool_list.gbnf",
+		HistoryDir:                 "history",
+		DirectToolResponses:        false,
+		VisionAddr:                 "eve-vision:5016",
+		UIAddr:                     "eve-ui:5017",
+		TTSAddr:                    "eve-tts:5018",
+		ASRAddr:                    "eve-asr:5019",
+		WakeWordAddr:               "eve-wakeword:5020",
+		WeatherTimezone:            "auto",
+		WeatherHTTPURL:             "https://api.open-meteo.com/v1/forecast",
+		WeatherGeocodingURL:        "https://geocoding-api.open-meteo.com/v1/search",
+		WeatherTemperatureUnit:     "fahrenheit",
+		WeatherWindSpeedUnit:       "mph",
+		WeatherPrecipitationUnit:   "inch",
+		OlderSisterHTTPURL:         "https://api.openai.com/v1/responses",
+		OlderSisterModel:           "gpt-5-mini",
+		OlderSisterTimeoutMs:       120000,
+		OlderSisterWebSearch:       true,
 	}
 }
 
@@ -141,14 +145,16 @@ type yamlConfig struct {
 		MigrationsDir string `yaml:"migrations_dir"`
 	} `yaml:"database"`
 	Routing struct {
-		RoutesPath string `yaml:"routes_path"`
-		TopK       int    `yaml:"top_k"`
-		DomainTopK int    `yaml:"domain_top_k"`
+		RoutesPath                 string `yaml:"routes_path"`
+		TopK                       int    `yaml:"top_k"`
+		DomainTopK                 int    `yaml:"domain_top_k"`
+		DeterministicToolShortcuts *bool  `yaml:"deterministic_tool_shortcuts"`
 	} `yaml:"routing"`
 	Orchestrator struct {
 		Addr                string `yaml:"addr"`
 		DecisionGrammarPath string `yaml:"decision_grammar_path"`
 		HistoryDir          string `yaml:"history_dir"`
+		DirectToolResponses *bool  `yaml:"direct_tool_responses"`
 	} `yaml:"orchestrator"`
 	Services struct {
 		VisionAddr   string `yaml:"vision_addr"`
@@ -202,9 +208,15 @@ func loadYAML(path string) (Config, error) {
 	setString(&cfg.RoutesPath, raw.Routing.RoutesPath)
 	setInt(&cfg.RouteTopK, raw.Routing.TopK)
 	setInt(&cfg.RouteDomainTopK, raw.Routing.DomainTopK)
+	if raw.Routing.DeterministicToolShortcuts != nil {
+		cfg.DeterministicToolShortcuts = *raw.Routing.DeterministicToolShortcuts
+	}
 	setString(&cfg.OrchAddr, raw.Orchestrator.Addr)
 	setString(&cfg.DecisionGrammarPath, raw.Orchestrator.DecisionGrammarPath)
 	setString(&cfg.HistoryDir, raw.Orchestrator.HistoryDir)
+	if raw.Orchestrator.DirectToolResponses != nil {
+		cfg.DirectToolResponses = *raw.Orchestrator.DirectToolResponses
+	}
 	setString(&cfg.VisionAddr, raw.Services.VisionAddr)
 	setString(&cfg.UIAddr, raw.Services.UIAddr)
 	setString(&cfg.TTSAddr, raw.Services.TTSAddr)

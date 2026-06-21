@@ -8,7 +8,10 @@ import (
 	orchtools "eve-beemo/src/orchestrator/tools"
 )
 
-func directToolResponse(results []orchtools.Result, userQuery string) (string, bool) {
+func directToolResponse(enabled bool, results []orchtools.Result, userQuery string) (string, bool) {
+	if !enabled {
+		return "", false
+	}
 	if len(results) != 1 {
 		return "", false
 	}
@@ -22,6 +25,18 @@ func directToolResponse(results []orchtools.Result, userQuery string) (string, b
 		return output, true
 	}
 	return fmt.Sprintf("It is %s.", timestamp.Format("3:04 PM on January 2, 2006")), true
+}
+
+func toolResultForPrompt(result orchtools.Result) string {
+	output := strings.TrimSpace(result.Output)
+	if strings.TrimSpace(result.Action) != "get_time" || output == "" {
+		return output
+	}
+	timestamp, err := time.Parse(time.RFC3339, output)
+	if err != nil {
+		return output
+	}
+	return fmt.Sprintf("%s (%s)", timestamp.Format("January 2, 2006 at 3:04 PM MST"), output)
 }
 
 func isSimpleCurrentTimeQuery(text string) bool {

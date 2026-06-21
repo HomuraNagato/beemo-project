@@ -58,6 +58,9 @@ message WakeDetected {
   string prompt = 5;
   string response = 6;
   float confidence = 7;
+  repeated string tools = 8;
+  string status = 9;
+  string error_kind = 10;
 }
 
 message AudioChunk {
@@ -90,6 +93,9 @@ message ChatChunk {
 
 message ChatResponse {
   string text = 1;
+  repeated string tools = 2;
+  string status = 3;
+  string error_kind = 4;
 }
 
 message SpeakRequest {

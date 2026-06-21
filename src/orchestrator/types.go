@@ -55,7 +55,10 @@ type weatherConfigProvider interface {
 
 type chatOutcome struct {
 	Response   string
+	Tools      []string
 	Path       string
+	Status     string
+	ErrorKind  string
 	History    historyEntry
 	Transcript []*pb.ChatMessage
 }

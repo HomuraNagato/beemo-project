@@ -109,7 +109,7 @@ func TestCallChatWithGrammarSendsStructuredOutputs(t *testing.T) {
 	if got, want := got.Messages[0].Content, "decide"; got != want {
 		t.Fatalf("unexpected prompt: got %q want %q", got, want)
 	}
-	if got, want := got.MaxTokens, 128; got != want {
+	if got, want := got.MaxTokens, 256; got != want {
 		t.Fatalf("unexpected max_tokens: got %d want %d", got, want)
 	}
 	if got.StructuredOutputs == nil {
@@ -188,7 +188,7 @@ func TestCallLlamaCPPWithGrammarSendsGrammarCompletionRequest(t *testing.T) {
 	if got, want := got.Grammar, `root-rule ::= "[]"`; got != want {
 		t.Fatalf("unexpected grammar: got %q want %q", got, want)
 	}
-	if got, want := got.NPredict, 128; got != want {
+	if got, want := got.NPredict, 256; got != want {
 		t.Fatalf("unexpected n_predict: got %d want %d", got, want)
 	}
 	if got.Stream {

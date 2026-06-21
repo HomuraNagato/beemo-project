@@ -1,0 +1,47 @@
+server:
+  host: 0.0.0.0
+  port: 5020
+  session_id: voice-loop
+
+audio:
+  pulse_server: unix:/tmp/pulse/native
+  source: default
+  sample_rate_hz: 16000
+  frame_ms: 100
+  preroll_ms: 700
+  min_speech_ms: 400
+  silence_ms: 1200
+  max_utterance_ms: 10000
+  speech_rms_threshold: 700
+
+detector:
+  mode: hybrid
+  label: hey beemo
+  model_path: /models/wakeword/wakeword.onnx
+  threshold: 0.5
+  vad_threshold: 0.0
+  debounce_secs: 2.0
+  openwakeword_frame_ms: 80
+  phrases:
+    - hey beemo
+    - hey bmo
+    - okay beemo
+    - ok beemo
+  asr_aliases:
+    - don't be mad
+    - dont be mad
+    - hey bemo
+    - hey bimo
+    - okay bemo
+    - ok bemo
+
+followup:
+  enabled: true
+  timeout_secs: 12.0
+  max_turns: 4
+
+services:
+  asr_addr: eve-asr:5019
+  orchestrator_addr: eve-orchestrator:5013
+  asr_timeout_secs: 60
+  orchestrator_timeout_secs: 120

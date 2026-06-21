@@ -531,6 +531,10 @@ func classifyCalculatorInputError(err error) ([]string, string, bool) {
 		return []string{"to_unit"}, "What unit should I convert to?", true
 	case "convert_missing:per":
 		return []string{"per"}, "What denominator value should I use?", true
+	case "convert_ambiguous:height":
+		return []string{"input"}, "Did you mean feet plus inches, or inches plus inches?", true
+	case "convert_ambiguous:input":
+		return []string{"input"}, "Which exact value and unit should I convert?", true
 	case "pace_missing:distance":
 		return []string{"distance"}, "What distance should I use?", true
 	case "pace_missing:duration_seconds":
@@ -729,6 +733,12 @@ func calculateConvert(args calculatorArgs) (string, error) {
 	if len(args.Input) == 0 {
 		return "", fmt.Errorf("convert_missing:input_or_value")
 	}
+	if len(args.Input) > 2 {
+		return "", fmt.Errorf("convert_ambiguous:input")
+	}
+	if isAmbiguousHeightPair(args.Input, toUnit) {
+		return "", fmt.Errorf("convert_ambiguous:height")
+	}
 
 	inputValue, inputCategory, inputLabel, err := normalizeMeasurement(args.Input)
 	if err != nil {
@@ -769,6 +779,32 @@ func calculateConvert(args calculatorArgs) (string, error) {
 		formatNumber(converted),
 		toCanonical,
 	), nil
+}
+
+func isAmbiguousHeightPair(input []measurementComponent, toUnit string) bool {
+	toCanonical, ok := canonicalSimpleUnitToken(toUnit)
+	if len(input) != 2 || !ok || toCanonical != "cm" {
+		return false
+	}
+	first := normalizeComponentUnit(input[0])
+	second := normalizeComponentUnit(input[1])
+	if first.Unit == "in" &&
+		second.Unit == "in" &&
+		first.Value >= 3 &&
+		first.Value <= 8 &&
+		second.Value >= 0 &&
+		second.Value < 12 {
+		return true
+	}
+	if first.Unit == "ft" &&
+		second.Unit == "ft" &&
+		first.Value >= 3 &&
+		first.Value <= 8 &&
+		second.Value >= 0 &&
+		second.Value < 12 {
+		return true
+	}
+	return false
 }
 
 func calculatePace(args calculatorArgs) (string, error) {

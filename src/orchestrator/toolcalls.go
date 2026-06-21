@@ -35,7 +35,7 @@ func parseToolCalls(text string) ([]toolCall, error) {
 
 func supportedTool(name string) bool {
 	switch strings.TrimSpace(name) {
-	case "get_time", "weather", "older_sister", "calculator":
+	case "get_time", "weather", "older_sister", "calculator", "beemo.direct":
 		return true
 	default:
 		return false
@@ -75,6 +75,47 @@ func validateToolCall(candidates []routing.Candidate, routes []routing.Route, ca
 		return fmt.Errorf("tool %q does not match route %q target %q", call.Tool, route.ID, route.Handler.Target)
 	}
 	return nil
+}
+
+func requireRouteToolCallGrammar(grammar string, route routing.Route) string {
+	grammar = requireSingleToolCallGrammar(grammar)
+	target := strings.TrimSpace(route.Handler.Target)
+	switch target {
+	case "get_time":
+		grammar = strings.Replace(grammar, "tool_call ::= get_time_call | weather_call | older_sister_call | calculator_call | beemo_direct_call", "tool_call ::= get_time_call", 1)
+	case "weather":
+		grammar = strings.Replace(grammar, "tool_call ::= get_time_call | weather_call | older_sister_call | calculator_call | beemo_direct_call", "tool_call ::= weather_call", 1)
+	case "older_sister":
+		grammar = strings.Replace(grammar, "tool_call ::= get_time_call | weather_call | older_sister_call | calculator_call | beemo_direct_call", "tool_call ::= older_sister_call", 1)
+	case "calculator":
+		grammar = strings.Replace(grammar, "tool_call ::= get_time_call | weather_call | older_sister_call | calculator_call | beemo_direct_call", "tool_call ::= calculator_call", 1)
+		grammar = restrictCalculatorGrammar(grammar, route)
+	case "beemo.direct":
+		grammar = strings.Replace(grammar, "tool_call ::= get_time_call | weather_call | older_sister_call | calculator_call | beemo_direct_call", "tool_call ::= beemo_direct_call", 1)
+	}
+	return grammar
+}
+
+func restrictCalculatorGrammar(grammar string, route routing.Route) string {
+	operation := strings.TrimSpace(fmt.Sprint(route.DefaultArgs["operation"]))
+	if operation == "" {
+		return grammar
+	}
+	ruleByOperation := map[string]string{
+		"expression":     "expression_args",
+		"convert":        "convert_args",
+		"bmi":            "bmi_args",
+		"bmr":            "bmr_args",
+		"tdee":           "tdee_args",
+		"percent_of":     "percent_of_args",
+		"percent_change": "percent_change_args",
+		"percent_ratio":  "percent_ratio_args",
+	}
+	rule := ruleByOperation[operation]
+	if rule == "" {
+		return grammar
+	}
+	return strings.Replace(grammar, "calc_args ::= expression_args | convert_args | bmi_args | bmr_args | tdee_args | percent_of_args | percent_change_args | percent_ratio_args", "calc_args ::= "+rule, 1)
 }
 
 func validateArgsObject(args json.RawMessage) error {

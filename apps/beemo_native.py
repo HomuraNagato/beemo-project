@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -30,6 +31,7 @@ EXPRESSIONS = {
 }
 
 TAG_PATTERN = re.compile(r"^\s*\[(?:emotion|expression|face):\s*([a-z_-]+)\]\s*", re.I)
+ISO_TIMESTAMP_RE = re.compile(r"^\s*(?:time=|timestamp=)?\[?(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?)\]?\s*$")
 
 
 def main() -> int:
@@ -65,6 +67,7 @@ class BeemoApp:
         self.voice_ready = False
         self.voice_pulse = False
         self.wake_subscription_started = False
+        self.last_voice_prompt = ""
         self.expression = "neutral"
         self.session_id = os.getenv("BEEMO_NATIVE_SESSION_ID", os.getenv("WAKEWORD_SESSION_ID", "voice-loop"))
 
@@ -104,6 +107,7 @@ class BeemoApp:
         self.face.create_window(0, 0, window=status_frame, anchor="nw", tags=("status_window",))
         self.expression_var = tk.StringVar(value="neutral")
         self.status_var = tk.StringVar(value="idle")
+        self.tool_var = tk.StringVar(value="beemo")
         badge_style = {
             "bg": "#1b2220",
             "fg": "#9fb4ad",
@@ -113,6 +117,9 @@ class BeemoApp:
         }
         tk.Label(status_frame, textvariable=self.expression_var, **badge_style).pack(side="left", padx=5)
         tk.Label(status_frame, textvariable=self.status_var, **badge_style).pack(side="left", padx=5)
+        tool_frame = tk.Frame(self.face, bg="#111413")
+        self.face.create_window(0, 0, window=tool_frame, anchor="ne", tags=("tool_window",))
+        tk.Label(tool_frame, textvariable=self.tool_var, **badge_style).pack(side="left", padx=5)
 
         self.stage = tk.Frame(self.root, bg="#1b2220", highlightbackground="#40504b", highlightthickness=1)
         self.stage.grid(row=1, column=0, sticky="nsew", padx=48, pady=(0, 18))
@@ -217,6 +224,7 @@ class BeemoApp:
         y1 = y0 + size * 0.82
 
         self.face.coords("status_window", width / 2 - 80, height - 36)
+        self.face.coords("tool_window", width - 18, height - 36)
         self.face.create_line(width / 2, y0 - 30, width / 2 - 8, y0, fill="#72f2c8", width=4, tags="head")
         self.face.create_oval(width / 2 - 10, y0 - 42, width / 2 + 4, y0 - 28, fill="#f7c66f", outline="", tags="head")
         self.face.create_rectangle(x0, y0, x1, y1, fill="#3ab996", outline="#273632", width=3, tags="head")
@@ -277,6 +285,9 @@ class BeemoApp:
     def set_status(self, status):
         self.status_var.set(status)
 
+    def set_tool(self, tools):
+        self.tool_var.set(tool_label(tools))
+
     def show_message(self, role, content):
         self.visible_messages.append({"role": role, "content": content})
         while len(self.visible_messages) > 2:
@@ -313,6 +324,7 @@ class BeemoApp:
         self.show_message("user", text)
         self.set_expression("thinking")
         self.set_status("thinking")
+        self.set_tool([])
         self.busy = True
         self.start_background("chat", lambda: self.chat(text))
 
@@ -321,7 +333,12 @@ class BeemoApp:
         result = run_chat(payload)
         reply = result.get("text", "").strip() or "(empty response)"
         self.messages.append({"role": "assistant", "content": reply})
-        self.events.put(("reply", reply))
+        self.events.put(("reply", {
+            "text": reply,
+            "tools": result.get("tools", []),
+            "status": result.get("status", ""),
+            "error_kind": result.get("errorKind", "") or result.get("error_kind", ""),
+        }))
 
     def start_beemo(self):
         self.events.put(("status", "starting"))
@@ -354,9 +371,13 @@ class BeemoApp:
                 self.show_message(role, content)
             elif event == "reply":
                 self.busy = False
-                self.set_expression(expression_from_reply(payload))
-                self.show_message("assistant", clean_reply(payload))
-                self.set_status("ready")
+                reply = payload.get("text", "")
+                status = payload.get("status", "")
+                error_kind = payload.get("error_kind", "")
+                self.set_expression(expression_for_status(status, reply))
+                self.show_message("assistant", clean_reply(reply))
+                self.set_tool(payload.get("tools", []))
+                self.set_status(status_label(status, error_kind))
             elif event == "voice_status":
                 self.set_voice_ready(payload)
             elif event == "wake_event":
@@ -412,12 +433,27 @@ class BeemoApp:
         prompt = (payload.get("prompt") or "").strip()
         response = (payload.get("response") or "").strip()
         transcript = (payload.get("transcript") or "").strip()
+        tools = payload.get("tools", [])
+        status = (payload.get("status") or "").strip()
+        error_kind = (payload.get("errorKind") or payload.get("error_kind") or "").strip()
 
         if prompt:
-            self.messages.append({"role": "user", "content": prompt})
-            self.show_message("user", prompt)
+            if prompt != self.last_voice_prompt:
+                self.messages.append({"role": "user", "content": prompt})
+                self.show_message("user", prompt)
+                self.last_voice_prompt = prompt
+            if not response:
+                self.set_expression("thinking")
+                self.set_status("thinking")
+                return
         elif transcript:
-            self.show_message("user", transcript)
+            if transcript != self.last_voice_prompt:
+                self.show_message("user", transcript)
+                self.last_voice_prompt = transcript
+            if not response:
+                self.set_expression("thinking")
+                self.set_status("thinking")
+                return
         else:
             self.set_status("heard")
             self.set_expression("curious")
@@ -425,9 +461,10 @@ class BeemoApp:
 
         if response:
             self.messages.append({"role": "assistant", "content": response})
-            self.set_expression(expression_from_reply(response))
+            self.set_expression(expression_for_status(status, response))
             self.show_message("assistant", clean_reply(response))
-            self.set_status("ready")
+            self.set_tool(tools)
+            self.set_status(status_label(status, error_kind))
         else:
             self.set_status(source)
 
@@ -550,6 +587,25 @@ def iter_json_stream(stream):
                 break
 
 
+def tool_label(tools):
+    if not tools:
+        return "beemo"
+    labels = []
+    for tool in tools:
+        name = str(tool).strip()
+        if not name:
+            continue
+        if name == "beemo.direct":
+            labels.append("beemo")
+        elif name == "older_sister":
+            labels.append("big-sister")
+        elif name == "get_time":
+            labels.append("time")
+        else:
+            labels.append(name.replace("_", "-"))
+    return ", ".join(labels) if labels else "beemo"
+
+
 def expression_from_reply(reply):
     match = TAG_PATTERN.match(reply)
     if match:
@@ -581,8 +637,45 @@ def expression_from_reply(reply):
     return "neutral"
 
 
+def expression_for_status(status, reply):
+    normalized = (status or "").strip().lower()
+    if normalized == "error":
+        return "error"
+    if normalized == "needs_input":
+        return "curious"
+    return expression_from_reply(reply)
+
+
+def status_label(status, error_kind):
+    normalized = (status or "").strip().lower()
+    kind = (error_kind or "").strip().replace("_", "-")
+    if normalized == "error":
+        return kind or "error"
+    if normalized == "needs_input":
+        return kind or "needs-input"
+    return "ready"
+
+
 def clean_reply(reply):
-    return TAG_PATTERN.sub("", reply).strip()
+    text = TAG_PATTERN.sub("", reply).strip()
+    return format_iso_timestamp_reply(text) or text
+
+
+def format_iso_timestamp_reply(text):
+    match = ISO_TIMESTAMP_RE.match(text)
+    if not match:
+        return ""
+    raw = match.group(1)
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        timestamp = datetime.fromisoformat(raw)
+    except ValueError:
+        return ""
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    local = timestamp.astimezone()
+    return f"It is {local.strftime('%-I:%M %p on %B %-d, %Y')}."
 
 
 if __name__ == "__main__":

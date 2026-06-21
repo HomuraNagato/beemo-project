@@ -151,6 +151,12 @@ func TestInferToolCallForObviousTools(t *testing.T) {
 			wantAction: "calculator",
 			wantArg:    `"operation":"percent_of"`,
 		},
+		{
+			name:       "spelled height conversion",
+			text:       "what is 5 foot 4 inches in centimeters?",
+			wantAction: "calculator",
+			wantArg:    `"operation":"convert"`,
+		},
 	}
 
 	for _, tt := range tests {

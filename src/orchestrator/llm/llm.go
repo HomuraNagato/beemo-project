@@ -103,7 +103,7 @@ func CallChatWithGrammar(httpURL, model, prompt, grammar string, timeout time.Du
 		Messages: []chatMessage{
 			{Role: "user", Content: prompt},
 		},
-		MaxTokens:   128,
+		MaxTokens:   256,
 		Temperature: 0,
 		Stream:      false,
 	}
@@ -146,7 +146,7 @@ func CallLlamaCPPWithGrammar(httpURL, prompt, grammar string, timeout time.Durat
 
 	payload := llamaCPPCompletionRequest{
 		Prompt:      prompt,
-		NPredict:    128,
+		NPredict:    256,
 		Temperature: 0,
 		Stream:      false,
 	}
@@ -157,13 +157,13 @@ func CallLlamaCPPWithGrammar(httpURL, prompt, grammar string, timeout time.Durat
 	if err != nil {
 		return "", err
 	}
-	fmt.Printf(
-		"llm.decision_request provider=llamacpp max_tokens=%d temp=%.2f grammar=%t prompt_chars=%d prompt_preview=%q\n",
-		payload.NPredict,
-		payload.Temperature,
-		strings.TrimSpace(payload.Grammar) != "",
-		len(prompt),
-		logPreview(prompt),
+	slog.Info("llm.decision_request",
+		"provider", "llamacpp",
+		"max_tokens", payload.NPredict,
+		"temperature", payload.Temperature,
+		"grammar", strings.TrimSpace(payload.Grammar) != "",
+		"prompt_chars", len(prompt),
+		"prompt_preview", logPreview(prompt),
 	)
 
 	respBody, err := callRawRequest(httpURL, body, timeout)
