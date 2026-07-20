@@ -14,5 +14,6 @@ memory
 __pycache__/
 *.pyc
 history/*.jsonl
+bin/
 
 #*

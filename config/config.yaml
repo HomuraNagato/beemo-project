@@ -2,7 +2,7 @@ llm:
   addr: eve-reasoning:5014
   http_url: http://eve-reasoning:5014/v1/chat/completions
   provider: vllm
-  model: Qwen3-1.7B
+  model: Qwen3-4B-Instruct-2507
   timeout_ms: 120000
 
 embedding:
@@ -18,7 +18,7 @@ database:
 routing:
   routes_path: routes.yaml
   top_k: 5
-  domain_top_k: 2
+  domain_top_k: 5
   deterministic_tool_shortcuts: false
 
 orchestrator:
@@ -50,3 +50,9 @@ older_sister:
   model: gpt-5-mini
   timeout_ms: 120000
   web_search: true
+
+memory:
+  base_url: http://host.docker.internal:8013
+  user_key: local
+  timeout_ms: 30000
+  auto_save: true

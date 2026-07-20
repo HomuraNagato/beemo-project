@@ -48,6 +48,10 @@ type Config struct {
 	OlderSisterModel           string
 	OlderSisterTimeoutMs       int
 	OlderSisterWebSearch       bool
+	MemoryBaseURL              string
+	MemoryUserKey              string
+	MemoryTimeoutMs            int
+	MemoryAutoSave             bool
 }
 
 func Load() Config {
@@ -62,6 +66,8 @@ func Load() Config {
 	if apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); apiKey != "" {
 		cfg.OlderSisterAPIKey = apiKey
 	}
+	setString(&cfg.MemoryBaseURL, os.Getenv("MEMORY_PALACE_BASE_URL"))
+	setString(&cfg.MemoryUserKey, os.Getenv("MEMORY_PALACE_USER_KEY"))
 
 	if cfg.LLMHTTPURL == "" && cfg.LLMAddr != "" {
 		cfg.LLMHTTPURL = "http://" + strings.TrimSpace(cfg.LLMAddr) + "/v1/chat/completions"
@@ -102,7 +108,7 @@ func defaultConfig() Config {
 		EmbeddingTimeoutMs:         30000,
 		RoutesPath:                 "routes.yaml",
 		RouteTopK:                  5,
-		RouteDomainTopK:            2,
+		RouteDomainTopK:            5,
 		DeterministicToolShortcuts: false,
 		DecisionGrammarPath:        "scripts/grammars/tool_list.gbnf",
 		HistoryDir:                 "history",
@@ -122,6 +128,10 @@ func defaultConfig() Config {
 		OlderSisterModel:           "gpt-5-mini",
 		OlderSisterTimeoutMs:       120000,
 		OlderSisterWebSearch:       true,
+		MemoryBaseURL:              "http://host.docker.internal:8013",
+		MemoryUserKey:              "local",
+		MemoryTimeoutMs:            30000,
+		MemoryAutoSave:             true,
 	}
 }
 
@@ -180,6 +190,12 @@ type yamlConfig struct {
 		TimeoutMs int    `yaml:"timeout_ms"`
 		WebSearch *bool  `yaml:"web_search"`
 	} `yaml:"older_sister"`
+	Memory struct {
+		BaseURL   string `yaml:"base_url"`
+		UserKey   string `yaml:"user_key"`
+		TimeoutMs int    `yaml:"timeout_ms"`
+		AutoSave  *bool  `yaml:"auto_save"`
+	} `yaml:"memory"`
 }
 
 func loadYAML(path string) (Config, error) {
@@ -236,6 +252,12 @@ func loadYAML(path string) (Config, error) {
 	setInt(&cfg.OlderSisterTimeoutMs, raw.OlderSister.TimeoutMs)
 	if raw.OlderSister.WebSearch != nil {
 		cfg.OlderSisterWebSearch = *raw.OlderSister.WebSearch
+	}
+	setString(&cfg.MemoryBaseURL, raw.Memory.BaseURL)
+	setString(&cfg.MemoryUserKey, raw.Memory.UserKey)
+	setInt(&cfg.MemoryTimeoutMs, raw.Memory.TimeoutMs)
+	if raw.Memory.AutoSave != nil {
+		cfg.MemoryAutoSave = *raw.Memory.AutoSave
 	}
 	return cfg, nil
 }

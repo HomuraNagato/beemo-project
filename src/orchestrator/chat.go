@@ -71,6 +71,45 @@ func (s *orchestratorServer) runChat(ctx context.Context, req *pb.ChatRequest) (
 		}}, fmt.Errorf("LLM_HTTP_URL missing")
 	}
 
+	callTimeout := time.Duration(s.cfg.LLMTimeoutMs) * time.Millisecond
+	callFinalMessage := s.callFinalMessage
+	if callFinalMessage == nil {
+		callFinalMessage = llm.CallOnce
+	}
+
+	if memoryAskRequested(req.GetOptions()) {
+		return s.runMemoryAsk(ctx, req, userQuery, effectiveMessages, callFinalMessage, callTimeout)
+	}
+
+	if directResponseRequested(req.GetOptions()) {
+		prompt := directPrompt(req.GetMessages(), userQuery)
+		finalText, err := callFinalMessage(s.cfg.LLMHTTPURL, s.cfg.LLMModel, prompt, callTimeout)
+		if err != nil {
+			return chatOutcome{History: historyEntry{
+				Timestamp: time.Now().Format(time.RFC3339),
+				SessionID: req.GetSessionId(),
+				UserQuery: userQuery,
+				Status:    "error",
+				Error:     fmt.Sprintf("llm_followup: %v", err),
+			}}, err
+		}
+		return chatOutcome{
+			Response:   finalText,
+			Tools:      []string{"beemo.direct"},
+			Path:       "direct_option",
+			Transcript: appendAssistantMessage(effectiveMessages, finalText),
+			History: historyEntry{
+				Timestamp: time.Now().Format(time.RFC3339),
+				SessionID: req.GetSessionId(),
+				UserQuery: userQuery,
+				Decision:  "direct_response",
+				Tools:     []string{"beemo.direct"},
+				Response:  finalText,
+				Status:    "ok",
+			},
+		}, nil
+	}
+
 	readGrammar := s.readGrammar
 	if readGrammar == nil {
 		readGrammar = readGrammarFile
@@ -92,12 +131,6 @@ func (s *orchestratorServer) runChat(ctx context.Context, req *pb.ChatRequest) (
 			return llm.CallDecisionWithGrammar(s.cfg.LLMProvider, s.cfg.LLMDecisionHTTPURL, model, prompt, grammar, timeout)
 		}
 	}
-	callFinalMessage := s.callFinalMessage
-	if callFinalMessage == nil {
-		callFinalMessage = llm.CallOnce
-	}
-
-	callTimeout := time.Duration(s.cfg.LLMTimeoutMs) * time.Millisecond
 	embeddingTimeout := time.Duration(s.cfg.EmbeddingTimeoutMs) * time.Millisecond
 	activeContext := chatctx.Build(effectiveMessages, contextSelectionMessages, activeContextTurns)
 	routingQuery := strings.TrimSpace(userQuery)
@@ -211,6 +244,11 @@ func (s *orchestratorServer) runChat(ctx context.Context, req *pb.ChatRequest) (
 				}
 				routeCandidates = []routing.Candidate{selectedCandidate}
 				s.log().Info("orch.chat.route_decision", "session", req.GetSessionId(), "decision", routeText, "route", strings.TrimSpace(selectedCandidate.Route.ID))
+				if isMemoryAnswerRoute(selectedCandidate) {
+					outcome, memoryErr := s.runMemoryAsk(ctx, req, userQuery, effectiveMessages, callFinalMessage, callTimeout)
+					outcome.History.Decision = strings.TrimSpace(selectedCandidate.Route.ID)
+					return outcome, memoryErr
+				}
 				if routedCall, ok, cerr := toolCallFromRoute(selectedCandidate); cerr != nil {
 					return chatOutcome{}, cerr
 				} else if ok {
@@ -470,6 +508,9 @@ func (s *orchestratorServer) runChat(ctx context.Context, req *pb.ChatRequest) (
 	}
 
 	if directText, ok := directToolResponse(s.cfg.DirectToolResponses, successfulResults, userQuery); ok {
+		if !containsString(toolsRequested, "memory.remember") {
+			go s.maybeAutoSaveMemory(req.GetSessionId(), userQuery)
+		}
 		return chatOutcome{
 			Response:   directText,
 			Tools:      toolsRequested,
@@ -502,6 +543,9 @@ func (s *orchestratorServer) runChat(ctx context.Context, req *pb.ChatRequest) (
 			Error:      fmt.Sprintf("llm_followup: %v", err),
 		}}, err
 	}
+	if !containsString(toolsRequested, "memory.remember") {
+		go s.maybeAutoSaveMemory(req.GetSessionId(), userQuery)
+	}
 	return chatOutcome{
 		Response:   finalText,
 		Tools:      toolsRequested,
@@ -533,6 +577,34 @@ func routeCandidateLabels(candidates []routing.Candidate) []string {
 		labels = append(labels, fmt.Sprintf("%s:%.3f", routeID, candidate.Score))
 	}
 	return labels
+}
+
+func directResponseRequested(options map[string]string) bool {
+	value := strings.ToLower(strings.TrimSpace(options["direct_response"]))
+	return value == "1" || value == "true" || value == "yes"
+}
+
+func directPrompt(messages []*pb.ChatMessage, fallback string) string {
+	var parts []string
+	for _, message := range messages {
+		role := strings.ToLower(strings.TrimSpace(message.GetRole()))
+		content := strings.TrimSpace(message.GetContent())
+		if content == "" {
+			continue
+		}
+		switch role {
+		case "system":
+			parts = append(parts, "System:\n"+content)
+		case "assistant":
+			parts = append(parts, "Assistant:\n"+content)
+		default:
+			parts = append(parts, "User:\n"+content)
+		}
+	}
+	if len(parts) == 0 {
+		return fallback
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 func requireSingleToolCallGrammar(grammar string) string {

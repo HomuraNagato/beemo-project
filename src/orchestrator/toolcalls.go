@@ -35,7 +35,7 @@ func parseToolCalls(text string) ([]toolCall, error) {
 
 func supportedTool(name string) bool {
 	switch strings.TrimSpace(name) {
-	case "get_time", "weather", "older_sister", "calculator", "beemo.direct":
+	case "get_time", "weather", "older_sister", "calculator", "memory.search", "memory.remember", "beemo.direct":
 		return true
 	default:
 		return false
@@ -82,18 +82,32 @@ func requireRouteToolCallGrammar(grammar string, route routing.Route) string {
 	target := strings.TrimSpace(route.Handler.Target)
 	switch target {
 	case "get_time":
-		grammar = strings.Replace(grammar, "tool_call ::= get_time_call | weather_call | older_sister_call | calculator_call | beemo_direct_call", "tool_call ::= get_time_call", 1)
+		grammar = replaceBaseToolCallRule(grammar, "tool_call ::= get_time_call")
 	case "weather":
-		grammar = strings.Replace(grammar, "tool_call ::= get_time_call | weather_call | older_sister_call | calculator_call | beemo_direct_call", "tool_call ::= weather_call", 1)
+		grammar = replaceBaseToolCallRule(grammar, "tool_call ::= weather_call")
 	case "older_sister":
-		grammar = strings.Replace(grammar, "tool_call ::= get_time_call | weather_call | older_sister_call | calculator_call | beemo_direct_call", "tool_call ::= older_sister_call", 1)
+		grammar = replaceBaseToolCallRule(grammar, "tool_call ::= older_sister_call")
 	case "calculator":
-		grammar = strings.Replace(grammar, "tool_call ::= get_time_call | weather_call | older_sister_call | calculator_call | beemo_direct_call", "tool_call ::= calculator_call", 1)
+		grammar = replaceBaseToolCallRule(grammar, "tool_call ::= calculator_call")
 		grammar = restrictCalculatorGrammar(grammar, route)
+	case "memory.search":
+		grammar = replaceBaseToolCallRule(grammar, "tool_call ::= memory_search_call")
+	case "memory.remember":
+		grammar = replaceBaseToolCallRule(grammar, "tool_call ::= memory_remember_call")
 	case "beemo.direct":
-		grammar = strings.Replace(grammar, "tool_call ::= get_time_call | weather_call | older_sister_call | calculator_call | beemo_direct_call", "tool_call ::= beemo_direct_call", 1)
+		grammar = replaceBaseToolCallRule(grammar, "tool_call ::= beemo_direct_call")
 	}
 	return grammar
+}
+
+const baseToolCallRule = "tool_call ::= get_time_call | weather_call | older_sister_call | calculator_call | memory_search_call | memory_remember_call | beemo_direct_call"
+const legacyBaseToolCallRule = "tool_call ::= get_time_call | weather_call | older_sister_call | calculator_call | beemo_direct_call"
+
+func replaceBaseToolCallRule(grammar string, replacement string) string {
+	if strings.Contains(grammar, baseToolCallRule) {
+		return strings.Replace(grammar, baseToolCallRule, replacement, 1)
+	}
+	return strings.Replace(grammar, legacyBaseToolCallRule, replacement, 1)
 }
 
 func restrictCalculatorGrammar(grammar string, route routing.Route) string {

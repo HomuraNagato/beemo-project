@@ -2,12 +2,18 @@ root ::= empty_list | single_call_list
 empty_list ::= "[" ws "]"
 single_call_list ::= "[" ws tool_call ws "]"
 
-tool_call ::= get_time_call | weather_call | older_sister_call | calculator_call | beemo_direct_call
+tool_call ::= get_time_call | weather_call | older_sister_call | calculator_call | memory_search_call | memory_remember_call | beemo_direct_call
 
 get_time_call ::= "{" ws "\"tool\"" ws ":" ws "\"get_time\"" ws "," ws "\"args\"" ws ":" ws "{}" ws "}"
 weather_call ::= "{" ws "\"tool\"" ws ":" ws "\"weather\"" ws "," ws "\"args\"" ws ":" ws weather_args ws "}"
 older_sister_call ::= "{" ws "\"tool\"" ws ":" ws "\"older_sister\"" ws "," ws "\"args\"" ws ":" ws older_sister_args ws "}"
 beemo_direct_call ::= "{" ws "\"tool\"" ws ":" ws "\"beemo.direct\"" ws "," ws "\"args\"" ws ":" ws "{}" ws "}"
+memory_search_call ::= "{" ws "\"tool\"" ws ":" ws "\"memory.search\"" ws "," ws "\"args\"" ws ":" ws memory_search_args ws "}"
+memory_remember_call ::= "{" ws "\"tool\"" ws ":" ws "\"memory.remember\"" ws "," ws "\"args\"" ws ":" ws memory_remember_args ws "}"
+memory_search_args ::= "{" ws "\"query\"" ws ":" ws string memory_search_tail? ws "}"
+memory_search_tail ::= ws "," ws "\"limit\"" ws ":" ws number
+memory_remember_args ::= "{" ws "\"text\"" ws ":" ws string memory_remember_tail? ws "}"
+memory_remember_tail ::= ws "," ws "\"title\"" ws ":" ws string
 older_sister_args ::= "{}" | "{" ws older_sister_field older_sister_tail? ws "}"
 older_sister_tail ::= ws "," ws older_sister_field (ws "," ws older_sister_field)*
 older_sister_field ::= query_field | web_search_field

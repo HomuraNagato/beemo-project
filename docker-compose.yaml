@@ -1,6 +1,4 @@
-
 services:
-
   eve-embedding:
     container_name: eve-embedding
     hostname: eve-embedding
@@ -13,26 +11,58 @@ services:
       - ./compose/embedding/entrypoint.sh:/entrypoint.sh
     environment:
       MODEL_DIR: /models
-      EMBEDDING_MODEL: Qwen3-Embedding-0.6B
-      EMBEDDING_MODEL_PATH: /models/Qwen3-Embedding-0.6B
-      EMBEDDING_PORT: "5021"
-      EMBEDDING_HOST: 0.0.0.0
-      EMBEDDING_RUNNER: pooling
-      EMBEDDING_TASK: embed
-      EMBEDDING_DTYPE: ""
-      EMBEDDING_TRUST_REMOTE_CODE: "false"
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-Qwen3-Embedding-0.6B}
+      EMBEDDING_MODEL_PATH: ${EMBEDDING_MODEL_PATH:-/models/Qwen3-Embedding-0.6B}
+      EMBEDDING_PORT: ${EMBEDDING_PORT:-5021}
+      EMBEDDING_HOST: ${EMBEDDING_HOST:-0.0.0.0}
+      EMBEDDING_RUNNER: ${EMBEDDING_RUNNER:-pooling}
+      EMBEDDING_TASK: ${EMBEDDING_TASK:-embed}
+      EMBEDDING_DTYPE: ${EMBEDDING_DTYPE:-}
+      EMBEDDING_TRUST_REMOTE_CODE: ${EMBEDDING_TRUST_REMOTE_CODE:-false}
     entrypoint: /entrypoint.sh
+
+  eve-reranker:
+    container_name: eve-reranker
+    hostname: eve-reranker
+    build:
+      context: .
+      dockerfile: compose/reranker/Dockerfile
+    ports:
+      - 5022:5022
+    volumes:
+      - ./models:/models
+    environment:
+      RERANKER_MODEL: ${RERANKER_MODEL:-cross-encoder/ms-marco-MiniLM-L6-v2}
+      RERANKER_MODEL_DIR: ${RERANKER_MODEL_DIR:-/models/reranker/ms-marco-MiniLM-L6-v2}
+      RERANKER_MODEL_PATH: ${RERANKER_MODEL_PATH:-/models/reranker/ms-marco-MiniLM-L6-v2/model.onnx}
+      RERANKER_MODEL_URL: ${RERANKER_MODEL_URL:-https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2/resolve/main/onnx/model.onnx}
+      RERANKER_TOKENIZER: ${RERANKER_TOKENIZER:-wordpiece}
+      RERANKER_TOKENIZER_PATH: ${RERANKER_TOKENIZER_PATH:-/models/reranker/ms-marco-MiniLM-L6-v2/vocab.txt}
+      RERANKER_TOKENIZER_URL: ${RERANKER_TOKENIZER_URL:-https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2/resolve/main/vocab.txt}
+      RERANKER_TOKENIZER_BOS_ID: ${RERANKER_TOKENIZER_BOS_ID:-0}
+      RERANKER_TOKENIZER_EOS_ID: ${RERANKER_TOKENIZER_EOS_ID:-2}
+      RERANKER_TOKENIZER_PAD_ID: ${RERANKER_TOKENIZER_PAD_ID:-1}
+      RERANKER_INPUT_NAMES: ${RERANKER_INPUT_NAMES:-input_ids,attention_mask,token_type_ids}
+      RERANKER_EXECUTION_PROVIDER: ${RERANKER_EXECUTION_PROVIDER:-cpu}
+      RERANKER_DEVICE_ID: ${RERANKER_DEVICE_ID:-0}
+      RERANKER_PORT: "5022"
+      RERANKER_BATCH_SIZE: ${RERANKER_BATCH_SIZE:-8}
+      RERANKER_MAX_LENGTH: ${RERANKER_MAX_LENGTH:-512}
+      RERANKER_INTRA_OP_THREADS: ${RERANKER_INTRA_OP_THREADS:-0}
+      RERANKER_INTER_OP_THREADS: ${RERANKER_INTER_OP_THREADS:-1}
 
   eve-orchestrator:
     container_name: eve-orchestrator
     hostname: eve-orchestrator
-#    image: eve-beemo-orchestrator
-#    image: eve-orchestrator
+    #    image: eve-beemo-orchestrator
+    #    image: eve-orchestrator
     stdin_open: true
     tty: true
     privileged: true
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      MEMORY_PALACE_BASE_URL: ${MEMORY_PALACE_BASE_URL:-http://host.docker.internal:8013}
+      MEMORY_PALACE_USER_KEY: ${MEMORY_PALACE_USER_KEY:-local}
     ports:
       - 5013:5013
     build:
@@ -43,7 +73,6 @@ services:
     volumes:
       - ./:/workspace
       - eve-orchestrator-volume:/app/data
-
 
   eve-vision:
     container_name: eve-vision
@@ -67,28 +96,28 @@ services:
       dockerfile: compose/ui/Dockerfile
     privileged: true
 
-#  eve-tts:
-#    container_name: eve-tts
-#    hostname: eve-tts
-#    image: eve-tts
-#    ports:
-#      - 5018:5018
-#    build:
-#      context: ./compose/tts
-#      dockerfile: Dockerfile
-#    privileged: true
-#    deploy:
-#      resources:
-#        reservations:
-#          devices:
-#            - driver: nvidia
-#              count: all
-#              capabilities: [gpu]
+  #  eve-tts:
+  #    container_name: eve-tts
+  #    hostname: eve-tts
+  #    image: eve-tts
+  #    ports:
+  #      - 5018:5018
+  #    build:
+  #      context: ./compose/tts
+  #      dockerfile: Dockerfile
+  #    privileged: true
+  #    deploy:
+  #      resources:
+  #        reservations:
+  #          devices:
+  #            - driver: nvidia
+  #              count: all
+  #              capabilities: [gpu]
 
   eve-asr:
     container_name: eve-asr
     hostname: eve-asr
-#    image: eve-asr
+    #    image: eve-asr
     ports:
       - 5019:5019
     build:
@@ -102,7 +131,7 @@ services:
   eve-wakeword:
     container_name: eve-wakeword
     hostname: eve-wakeword
-#    image: eve-wakeword
+    #    image: eve-wakeword
     ports:
       - 5020:5020
     build:

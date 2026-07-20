@@ -65,7 +65,7 @@ func main() {
 
 	pb.RegisterOrchestratorServer(grpcServer, &orchestratorServer{
 		cfg: cfg,
-		tools: orchtools.NewLocalExecutorWithConfigs(orchtools.WeatherConfig{
+		tools: orchtools.NewLocalExecutorWithAllConfigs(orchtools.WeatherConfig{
 			HTTPURL:           cfg.WeatherHTTPURL,
 			GeocodingURL:      cfg.WeatherGeocodingURL,
 			Latitude:          cfg.WeatherLatitude,
@@ -81,6 +81,11 @@ func main() {
 			Model:     cfg.OlderSisterModel,
 			TimeoutMs: cfg.OlderSisterTimeoutMs,
 			WebSearch: cfg.OlderSisterWebSearch,
+		}, orchtools.MemoryConfig{
+			BaseURL:   cfg.MemoryBaseURL,
+			UserKey:   cfg.MemoryUserKey,
+			TimeoutMs: cfg.MemoryTimeoutMs,
+			AutoSave:  cfg.MemoryAutoSave,
 		}),
 		routeSelector: selector,
 		logger:        logger,

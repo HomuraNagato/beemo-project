@@ -724,6 +724,59 @@ func TestChatBeemoDirectSkipsToolExecution(t *testing.T) {
 	}
 }
 
+func TestChatDirectResponseOptionSkipsRoutingAndToolDecision(t *testing.T) {
+	t.Parallel()
+
+	executor := &recordingExecutor{}
+	server := testServer(t)
+	server.tools = executor
+	server.routeSelector = staticRouteSelector{
+		candidates: []routing.Candidate{
+			{
+				Route: routing.Route{
+					ID:      "memory.search",
+					Handler: routing.Handler{Type: "tool", Target: "memory.search"},
+				},
+				Score: 0.99,
+			},
+		},
+	}
+	server.callCompletion = func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
+		t.Fatalf("direct_response should skip tool decision, got prompt %q", prompt)
+		return "", nil
+	}
+	server.callFinalMessage = func(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+		if !strings.Contains(prompt, "System:\nUse memory context.") {
+			t.Fatalf("direct prompt missing system message: %q", prompt)
+		}
+		if !strings.Contains(prompt, "User:\nQuestion: earliest memory") {
+			t.Fatalf("direct prompt missing user message: %q", prompt)
+		}
+		return "Mark skipped a few numbers.", nil
+	}
+
+	resp, err := server.Chat(context.Background(), &pb.ChatRequest{
+		SessionId: "direct-session",
+		Messages: []*pb.ChatMessage{
+			{Role: "system", Content: "Use memory context."},
+			{Role: "user", Content: "Question: earliest memory"},
+		},
+		Options: map[string]string{"direct_response": "true"},
+	})
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	if got, want := resp.GetText(), "Mark skipped a few numbers."; got != want {
+		t.Fatalf("unexpected response text: got %q want %q", got, want)
+	}
+	if got := len(executor.calls); got != 0 {
+		t.Fatalf("direct_response should not execute a tool, got %d calls", got)
+	}
+	if got := resp.GetTools(); len(got) != 1 || got[0] != "beemo.direct" {
+		t.Fatalf("unexpected response tools: %#v", got)
+	}
+}
+
 func TestChatVetoesHealthCalculatorRouteWithoutExplicitMetric(t *testing.T) {
 	t.Parallel()
 

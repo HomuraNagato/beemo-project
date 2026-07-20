@@ -1,0 +1,15 @@
+services:
+  eve-reranker:
+    environment:
+      RERANKER_MODEL: "BAAI/bge-reranker-v2-m3-int8"
+      RERANKER_MODEL_DIR: "/models/reranker/bge-reranker-v2-m3-int8"
+      RERANKER_MODEL_PATH: "/models/reranker/bge-reranker-v2-m3-int8/model_quantized.onnx"
+      RERANKER_MODEL_URL: "https://huggingface.co/onnx-community/bge-reranker-v2-m3-ONNX/resolve/main/onnx/model_quantized.onnx"
+      RERANKER_TOKENIZER: "sentencepiece"
+      RERANKER_TOKENIZER_PATH: "/models/reranker/bge-reranker-v2-m3-int8/tokenizer.json"
+      RERANKER_TOKENIZER_URL: "https://huggingface.co/onnx-community/bge-reranker-v2-m3-ONNX/resolve/main/tokenizer.json"
+      RERANKER_TOKENIZER_BOS_ID: "0"
+      RERANKER_TOKENIZER_EOS_ID: "2"
+      RERANKER_TOKENIZER_PAD_ID: "1"
+      RERANKER_INPUT_NAMES: "input_ids,attention_mask"
+      RERANKER_BATCH_SIZE: "4"

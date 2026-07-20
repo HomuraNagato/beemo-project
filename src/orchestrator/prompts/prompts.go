@@ -7,12 +7,12 @@ import (
 
 func ToolDecision(userQuery, activeTranscript string) string {
 	return `Choose at most one tool. Return JSON array only, or [].
-Tools: get_time(time/date), weather(forecast/current conditions), older_sister(web/current/external help), calculator(math/conversion/BMI/BMR/TDEE), beemo.direct(local direct response).
+Tools: get_time(time/date), weather(forecast/current conditions), calculator(math/conversion/BMI/BMR/TDEE), memory.search(personal/local memory), memory.remember(save durable user memory), beemo.direct(local direct response).
 Rules:
 - time/date/day/month/year/today/tomorrow/yesterday -> get_time.
 - weather/rain/temperature/forecast -> weather; include location, when, hour_local, focus if explicit.
-- ask ChatGPT/older sister/search/look up/verify -> older_sister with query and web_search when useful.
-- expert knowledge, writing, editing, or explanation requests not covered by local tools -> older_sister.
+- ask what you remember, personal history, prior life details, saved notes, projects, preferences, people, places, or "my ..." facts from memory -> memory.search with query.
+- explicit "remember this" or "save this to memory" -> memory.remember with text.
 - math, unit conversion, percent, BMI/BMR/TDEE -> calculator; include explicit values only, do not convert or duplicate measurements.
 - casual conversation, brainstorming, simple local response, or no specialized tool needed -> beemo.direct.
 - Use the active thread for immediate follow-ups only. Do not invent missing facts.
@@ -44,7 +44,9 @@ Rules:
 - Choose intent only. Do not write tool arguments.
 - Prefer the highest similarity route unless the user query clearly contradicts it.
 - calculator.bmi, calculator.bmr, and calculator.tdee require the user to explicitly ask for that metric by name.
-- Use older_sister for current external facts, product recommendations, internet search, broad expert knowledge, writing, editing, or explanation not covered by local time/weather/calculator tools.
+- Use memory.answer for questions answered by indexed local memories, notes, books, textbooks, PDFs, EPUBs, or documents, especially when passages must be retrieved and combined.
+- Use memory.search for requests to list or inspect saved personal memories and prior notes.
+- Use memory.remember only when the user explicitly asks to remember or save something.
 - Use beemo.direct only when no specialized tool or external help is needed.
 
 Candidate routes:
@@ -77,8 +79,8 @@ Tool calls:`
 
 func RetryToolDecision(userQuery, activeTranscript string) string {
 	return `Re-check tool choice after previous []. Return one JSON tool call or [].
-Tools: get_time, weather, older_sister, calculator, beemo.direct.
-Rules: time/date=>get_time; weather=>weather; ask/search/verify/expert/writing=>older_sister; math/conversion/BMI/BMR/TDEE=>calculator; casual/direct local response=>beemo.direct. Use active thread for immediate follow-ups, omit missing fields, do not answer.
+Tools: get_time, weather, calculator, memory.search, memory.remember, beemo.direct.
+Rules: time/date=>get_time; weather=>weather; personal saved/local memory=>memory.search; explicit remember/save=>memory.remember; math/conversion/BMI/BMR/TDEE=>calculator; casual/direct local response=>beemo.direct. Use active thread for immediate follow-ups, omit missing fields, do not answer.
 
 Previous answer: []
 Active conversation thread:

@@ -7,7 +7,9 @@ services:
     privileged: true
     ipc: host
     environment:
-      EMBEDDING_MAX_MODEL_LEN: "1024"
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+      CUDA_VISIBLE_DEVICES: "1"
+      EMBEDDING_MAX_MODEL_LEN: "2048"
       EMBEDDING_GPU_MEMORY_UTILIZATION: "0.12"
       EMBEDDING_CPU_OFFLOAD_GB: "0"
       EMBEDDING_SWAP_SPACE_GB: "4"
@@ -31,18 +33,18 @@ services:
       - ./models:/models
       - ./compose/reasoning_vllm/entrypoint.sh:/entrypoint.sh
     environment:
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+      CUDA_VISIBLE_DEVICES: "0"
       MODEL_DIR: /models
-      REASONING_MODEL: Qwen3-1.7B
+      REASONING_MODEL: Qwen3-4B-Instruct-2507
       REASONING_PORT: "5014"
       REASONING_HOST: 0.0.0.0
-      VLLM_REASONING_PARSER: qwen3
-      VLLM_DEFAULT_CHAT_TEMPLATE_KWARGS: '{"enable_thinking": false}'
       VLLM_TENSOR_PARALLEL_SIZE: "1"
       VLLM_GPU_MEMORY_UTILIZATION: "0.68"
-      VLLM_MAX_MODEL_LEN: "1536"
+      VLLM_MAX_MODEL_LEN: "${VLLM_MAX_MODEL_LEN:-8192}"
       VLLM_CPU_OFFLOAD_GB: "0"
       VLLM_SWAP_SPACE_GB: "0"
-      VLLM_KV_CACHE_MEMORY_BYTES: 1G
+      VLLM_KV_CACHE_MEMORY_BYTES: 1280M
     ipc: host
     deploy:
       resources:

@@ -46,7 +46,12 @@ class BeemoUIHandler(BaseHTTPRequestHandler):
                 self.write_json({"error": "message is required"}, HTTPStatus.BAD_REQUEST)
                 return
 
-            response = chat(session_id, messages)
+            options = {
+                str(key): str(value)
+                for key, value in (payload.get("options") or {}).items()
+                if str(key).strip() and str(value).strip()
+            }
+            response = chat(session_id, messages, options)
             self.write_json({"text": response.text})
         except grpc.RpcError as exc:
             logging.exception("orchestrator request failed")
@@ -93,11 +98,15 @@ class BeemoUIHandler(BaseHTTPRequestHandler):
         logging.info("ui.http %s", fmt % args)
 
 
-def chat(session_id, messages):
+def chat(session_id, messages, options=None):
     with grpc.insecure_channel(ORCH_ADDR) as channel:
         client = agent_pb2_grpc.OrchestratorStub(channel)
         return client.Chat(
-            agent_pb2.ChatRequest(session_id=session_id, messages=messages),
+            agent_pb2.ChatRequest(
+                session_id=session_id,
+                messages=messages,
+                options=options or {},
+            ),
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
 

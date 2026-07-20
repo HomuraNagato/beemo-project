@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_START_CMD = "./scripts/beemo-start.sh vllm-cpu"
+DEFAULT_START_CMD = "./scripts/beemo.sh up --profile garnetmoon --build=false"
 
 EXPRESSIONS = {
     "neutral",
@@ -342,8 +342,7 @@ class BeemoApp:
 
     def start_beemo(self):
         self.events.put(("status", "starting"))
-        if not orchestrator_running():
-            subprocess.run(self.args.start_cmd, cwd=ROOT_DIR, shell=True, check=True)
+        subprocess.run(self.args.start_cmd, cwd=ROOT_DIR, shell=True, check=True)
         self.events.put(("status", "ready"))
         self.events.put(("message", ("assistant", "Hi. I am listening.")))
         self.events.put(("start_wake_stream", None))
@@ -482,18 +481,6 @@ class BeemoApp:
     def toggle_fullscreen(self, _event=None):
         current = bool(self.root.attributes("-fullscreen"))
         self.root.attributes("-fullscreen", not current)
-
-
-def orchestrator_running():
-    proc = subprocess.run(
-        ["docker", "ps", "--filter", "name=^/eve-orchestrator$", "--filter", "status=running", "--format", "{{.Names}}"],
-        cwd=ROOT_DIR,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
-    return "eve-orchestrator" in proc.stdout.splitlines()
 
 
 def service_running(name):

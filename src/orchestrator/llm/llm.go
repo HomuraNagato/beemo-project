@@ -61,11 +61,18 @@ type llamaCPPCompletionResponse struct {
 }
 
 func CallOnce(httpURL, model, prompt string, timeout time.Duration) (string, error) {
+	return CallOnceWithMaxTokens(httpURL, model, prompt, 384, timeout)
+}
+
+func CallOnceWithMaxTokens(httpURL, model, prompt string, maxTokens int, timeout time.Duration) (string, error) {
 	if httpURL == "" {
 		return "", fmt.Errorf("LLM_HTTP_URL missing")
 	}
 	if model == "" {
 		model = "llama-3.2.gguf"
+	}
+	if maxTokens <= 0 {
+		maxTokens = 384
 	}
 
 	payload := chatRequest{
@@ -73,6 +80,7 @@ func CallOnce(httpURL, model, prompt string, timeout time.Duration) (string, err
 		Messages: []chatMessage{
 			{Role: "user", Content: prompt},
 		},
+		MaxTokens:   maxTokens,
 		Temperature: 0,
 		Stream:      false,
 	}
@@ -82,6 +90,7 @@ func CallOnce(httpURL, model, prompt string, timeout time.Duration) (string, err
 	}
 	slog.Info("llm.chat_request",
 		"model", model,
+		"max_tokens", payload.MaxTokens,
 		"temperature", payload.Temperature,
 		"prompt_chars", len(prompt),
 		"prompt_preview", logPreview(prompt),

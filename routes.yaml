@@ -37,20 +37,23 @@ domains:
       - what is the weather tomorrow?
       - what will the weather be this evening?
 
-  - id: older_sister
-    title: Older Sister
-    summary: Delegate questions to ChatGPT with internet search when the local tools or local reasoning model are not enough.
+  - id: memory
+    title: Memory Palace
+    summary: Search and answer from the indexed private corpus, including memories, watched notes, books, textbooks, PDFs, EPUBs, and documents.
     when_to_use:
-      - Use for questions that require broad internet search, recent facts, current events, product information, documentation lookup, or external source checking.
-      - Use when the user explicitly asks to ask ChatGPT, ask older sister, search the internet, look something up, or verify current information.
-      - Use for expert knowledge, writing, editing, or explanation requests that are not covered by local time, weather, or calculator tools.
+      - Use when the user asks what Beemo remembers.
+      - Use for questions about saved personal context, prior life details, people, places, projects, preferences, or watched notes.
+      - Use for factual or relational questions likely answered by indexed local books, novels, textbooks, PDFs, EPUBs, or documents.
+      - Use when the user explicitly asks to remember or save something to memory.
     when_not_to_use:
-      - Do not use for local calculator, weather, or time/date questions that have dedicated tools.
-      - Do not use for private local state unless the user explicitly wants external help with that content.
+      - Do not use for current external facts or internet search.
+      - Do not use for normal short-session follow-ups that are already present in the active thread.
     example_requests:
-      - ask older sister what changed in the latest openai api docs
-      - search the internet for the latest vllm embedding support
-      - can chatgpt look up whether this library still supports postgres 12?
+      - what do you remember about my apartment?
+      - what did I write about memory palace?
+      - who designed the observatory in the novel I indexed?
+      - what does my linear algebra textbook say about eigenvectors?
+      - remember that I prefer quiet dashboards
 
   - id: beemo
     title: Beemo Direct
@@ -136,31 +139,73 @@ routes:
       type: tool
       target: weather
 
-  - id: older_sister.search_or_advise
-    domain: older_sister
-    title: Ask Older Sister with web search
-    summary: Ask ChatGPT for help, especially when the request benefits from internet search or current external information.
+  - id: memory.answer
+    domain: memory
+    title: Answer from indexed local sources
+    summary: Retrieve, rerank, and answer factual or relational questions from indexed memories, books, textbooks, PDFs, EPUBs, documents, and watched notes.
     when_to_use:
-      - The user asks to call ChatGPT or older sister.
-      - The user asks for internet search, current information, external documentation, news, product details, recommendations, or source-backed verification.
-      - The user asks for expert knowledge, writing help, sentence improvement, editing, or explanation that is not covered by local tools.
-      - The local model is likely to be weak because the answer depends on recent or web-only information.
+      - The user asks a question whose answer is likely contained in the indexed private corpus.
+      - The user asks about characters, events, concepts, claims, or relationships in a locally indexed book, novel, textbook, PDF, EPUB, document, or note.
+      - Answering requires combining or disambiguating evidence from multiple indexed passages.
     when_not_to_use:
-      - The user asks for a supported local calculator, time, or weather operation.
-      - The user asks a purely local project question that can be answered from the repo without internet.
+      - The user explicitly asks to search the internet or verify current external information.
+      - The answer is already fully present in the active conversation thread.
+      - The user asks to save a new memory rather than retrieve existing information.
     example_requests:
-      - ask older sister to look up the latest OpenAI web search docs
-      - search the internet for current vllm support for embedding models
-      - ask chatgpt what the latest postgres docker image recommends for initialization
-      - can older sister verify whether this error is common?
+      - who designed the observatory in the novel I indexed?
+      - what does my linear algebra textbook say about orthogonal projections?
+      - according to my notes, why did we choose server-sent events?
+    required_fields: []
+    args_guidance: Run the Memory Palace retrieval pipeline with the user's complete question.
+    default_args: {}
+    handler:
+      type: pipeline
+      target: memory.answer
+
+  - id: memory.search
+    domain: memory
+    title: Search personal memory
+    summary: Retrieve relevant saved personal memories, life notes, watched notes, preferences, people, places, and projects.
+    when_to_use:
+      - The user asks what Beemo remembers about a topic.
+      - The user asks about prior saved notes, personal history, people, places, preferences, projects, or life context.
+      - The request is about local/private memory rather than internet facts.
+    when_not_to_use:
+      - The answer is already fully present in the active conversation thread.
+      - The user asks for current external facts, internet search, weather, time, or calculations.
+    example_requests:
+      - what do you remember about my move?
+      - search my memory for starlight cafe ideas
+      - what did I say about beemo and memory?
     required_fields:
       - query
-    args_guidance: Use older_sister. Include the user's request as query. Set web_search to true for current information, external docs, recent facts, or explicit internet-search requests.
+    args_guidance: Use memory.search. Include the user's request as query. Use limit 5 unless the user asks for a broader list.
     default_args:
-      web_search: true
+      limit: 5
     handler:
       type: tool
-      target: older_sister
+      target: memory.search
+
+  - id: memory.remember
+    domain: memory
+    title: Save personal memory
+    summary: Save an explicit durable fact or note to the memory palace.
+    when_to_use:
+      - The user explicitly says remember this, save this, or add this to memory.
+      - The user gives a durable personal fact and asks Beemo to keep it.
+    when_not_to_use:
+      - The user is only chatting casually and does not ask to save.
+      - The content is transient, external, or not about the user/project/life context.
+    example_requests:
+      - remember that I prefer Observable Plot for compact charts
+      - "save this to memory: starlight cafe runs behind cloudflare"
+    required_fields:
+      - text
+    args_guidance: Use memory.remember. Include the exact memory text in text and a short title if obvious.
+    default_args: {}
+    handler:
+      type: tool
+      target: memory.remember
 
   - id: beemo.direct
     domain: beemo
@@ -171,7 +216,7 @@ routes:
       - The request does not require current time, date, weather, calculations, conversions, BMI, BMR, TDEE, web search, or external expert knowledge.
     when_not_to_use:
       - The user asks for a dedicated local tool such as time, weather, or calculator.
-      - The user asks for internet search, current external information, source-backed verification, or expert help better handled by older_sister.
+      - The user asks for internet search, current external information, or source-backed external verification.
     example_requests:
       - tell me a joke
       - help me brainstorm a name

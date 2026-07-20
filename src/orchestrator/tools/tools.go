@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -50,9 +51,18 @@ type OlderSisterConfig struct {
 	WebSearch bool
 }
 
+type MemoryConfig struct {
+	BaseURL    string
+	UserKey    string
+	TimeoutMs  int
+	AutoSave   bool
+	HTTPClient *http.Client
+}
+
 type LocalExecutor struct {
 	weatherConfig     WeatherConfig
 	olderSisterConfig OlderSisterConfig
+	memoryConfig      MemoryConfig
 }
 
 type measurementComponent struct {
@@ -98,6 +108,14 @@ func NewLocalExecutorWithConfigs(weather WeatherConfig, olderSister OlderSisterC
 	}
 }
 
+func NewLocalExecutorWithAllConfigs(weather WeatherConfig, olderSister OlderSisterConfig, memory MemoryConfig) *LocalExecutor {
+	return &LocalExecutor{
+		weatherConfig:     weather,
+		olderSisterConfig: olderSister,
+		memoryConfig:      memory,
+	}
+}
+
 func (e *LocalExecutor) WeatherConfig() WeatherConfig {
 	return e.weatherConfig
 }
@@ -119,6 +137,10 @@ func (e *LocalExecutor) Execute(ctx context.Context, req Request) (Result, error
 		return executeWeather(ctx, req, e.weatherConfig)
 	case "older_sister":
 		return executeOlderSister(ctx, req, e.olderSisterConfig)
+	case "memory.search":
+		return executeMemorySearch(ctx, req, e.memoryConfig)
+	case "memory.remember":
+		return executeMemoryRemember(ctx, req, e.memoryConfig)
 	case "calculator":
 		return executeCalculator(req)
 	default:

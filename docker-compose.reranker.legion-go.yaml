@@ -1,0 +1,7 @@
+services:
+  eve-reranker:
+    environment:
+      RERANKER_BATCH_SIZE: "4"
+      RERANKER_MAX_LENGTH: "512"
+      RERANKER_INTRA_OP_THREADS: "8"
+      RERANKER_INTER_OP_THREADS: "1"

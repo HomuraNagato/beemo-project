@@ -86,6 +86,10 @@ func toolCallFromRoute(candidate routing.Candidate) (toolCall, bool, error) {
 	}
 }
 
+func isMemoryAnswerRoute(candidate routing.Candidate) bool {
+	return strings.TrimSpace(candidate.Route.Handler.Target) == "memory.answer"
+}
+
 func selectedRouteBlock(candidate routing.Candidate) string {
 	return routing.FormatCandidates([]routing.Candidate{candidate})
 }
