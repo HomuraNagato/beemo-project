@@ -48,8 +48,11 @@ func TestMemoryAnswerProfileKeepsExplanationsLong(t *testing.T) {
 	if got := memoryAnswerProfileFor("Describe what linear algebra is"); got.name != "expansive" || got.maxTokens != 384 || got.sourceLimit != memoryAskSourceLimit {
 		t.Fatalf("unexpected expansive profile: %+v", got)
 	}
-	if got := memoryAnswerProfileFor("What is El's mother's name?"); got.name != "direct" || got.maxTokens != 96 || got.sourceLimit != 4 {
+	if got := memoryAnswerProfileFor("What is El's mother's name?"); got.name != "direct" || got.maxTokens != 64 || got.sourceLimit != 4 {
 		t.Fatalf("unexpected direct profile: %+v", got)
+	}
+	if got := memoryAnswerProfileFor("What is an important book El receives?"); got.name != "direct" || got.maxTokens != 64 {
+		t.Fatalf("unexpected direct book profile: %+v", got)
 	}
 	if got := memoryAnswerProfileFor("What is linear algebra?"); got.name != "standard" || got.maxTokens != 192 {
 		t.Fatalf("unexpected standard profile: %+v", got)

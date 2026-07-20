@@ -152,10 +152,10 @@ func memoryAnswerProfileFor(question string) memoryAnswerProfile {
 			return memoryAnswerProfile{name: "expansive", maxTokens: 384, sourceLimit: memoryAskSourceLimit}
 		}
 	}
-	direct := []string{"who is", "who was", "whose ", "what is the name", "what was the name", "'s name", "when did", "when was", "where is", "where was", "how many", "which book", "which person"}
+	direct := []string{"who is", "who was", "whose ", "what is the name", "what was the name", "what is an important book", "'s name", "when did", "when was", "where is", "where was", "how many", "which book", "which person"}
 	for _, cue := range direct {
 		if strings.Contains(query, cue) {
-			return memoryAnswerProfile{name: "direct", maxTokens: 96, sourceLimit: 4}
+			return memoryAnswerProfile{name: "direct", maxTokens: 64, sourceLimit: 4}
 		}
 	}
 	return memoryAnswerProfile{name: "standard", maxTokens: 192, sourceLimit: memoryAskSourceLimit}
@@ -191,7 +191,7 @@ func buildMemoryAskPrompt(question string, sources []orchtools.MemoryRetrieveSou
 	for index, source := range sources {
 		parts = append(parts, fmt.Sprintf("[%d] %s\nUpdated: %s\nSource: %s\n%s", index+1, memoryAskTitle(source), shortMemoryAskDate(source.UpdatedAt), source.SourceURI, memoryAskEvidence(source)))
 	}
-	parts = append(parts, "Answer concisely with citations.")
+	parts = append(parts, "Answer at the depth requested, with citations.")
 	return strings.Join(parts, "\n\n")
 }
 
