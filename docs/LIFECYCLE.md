@@ -17,16 +17,15 @@ Start the Garnetmoon stack, including Memory Palace and the HTTP UI:
 beemo up --profile garnetmoon
 ```
 
-The default Garnetmoon profile uses BGE v2-m3 FP16 on Garnetmoon's second GPU.
-The slower INT8 CPU comparison is `garnetmoon-bge-cpu`.
+The default Garnetmoon profile uses GTE ModernBERT FP16 on Garnetmoon's second
+GPU.
 
 The lifecycle command reuses these manifests directly:
 
 - `beemo-project/docker-compose.yaml`
 - `beemo-project/docker-compose.gpu.yaml`
 - `beemo-project/docker-compose.reranker.garnetmoon.yaml`
-- `beemo-project/docker-compose.reranker.bge.yaml`
-- `beemo-project/docker-compose.reranker.bge-gpu.yaml`
+- `beemo-project/docker-compose.reranker.gte-modernbert-gpu.yaml`
 - `memory_palace/docker-compose.yaml`
 
 It starts services in dependency order:

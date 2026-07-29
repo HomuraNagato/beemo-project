@@ -73,17 +73,13 @@ func ResolveProfile(name string) (Profile, error) {
 	base := []string{"docker-compose.yaml"}
 	switch name {
 	case "garnetmoon", "vllm-gpu":
-		return Profile{Name: name, ComposeFiles: append(base, "docker-compose.gpu.yaml", "docker-compose.reranker.garnetmoon.yaml", "docker-compose.reranker.bge.yaml", "docker-compose.reranker.bge-gpu.yaml")}, nil
-	case "garnetmoon-bge-cpu":
-		return Profile{Name: name, ComposeFiles: append(base, "docker-compose.gpu.yaml", "docker-compose.reranker.garnetmoon.yaml", "docker-compose.reranker.bge.yaml")}, nil
-	case "garnetmoon-bge":
-		return Profile{Name: name, ComposeFiles: append(base, "docker-compose.gpu.yaml", "docker-compose.reranker.garnetmoon.yaml", "docker-compose.reranker.bge.yaml", "docker-compose.reranker.bge-gpu.yaml")}, nil
+		return Profile{Name: name, ComposeFiles: append(base, "docker-compose.gpu.yaml", "docker-compose.reranker.garnetmoon.yaml", "docker-compose.reranker.gte-modernbert-gpu.yaml")}, nil
 	case "legion-go", "llama-cpu":
 		return Profile{Name: name, ComposeFiles: append(base, "docker-compose.cpu.yaml", "docker-compose.cpu.llamacpp.yaml", "docker-compose.reranker.legion-go.yaml")}, nil
 	case "vllm-cpu":
 		return Profile{Name: name, ComposeFiles: append(base, "docker-compose.cpu.yaml", "docker-compose.cpu.vllm.yaml", "docker-compose.reranker.legion-go.yaml")}, nil
 	default:
-		return Profile{}, fmt.Errorf("unknown profile %q; expected garnetmoon, garnetmoon-bge, garnetmoon-bge-cpu, legion-go, vllm-gpu, vllm-cpu, or llama-cpu", name)
+		return Profile{}, fmt.Errorf("unknown profile %q; expected garnetmoon, legion-go, vllm-gpu, vllm-cpu, or llama-cpu", name)
 	}
 }
 

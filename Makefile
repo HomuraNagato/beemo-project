@@ -1,4 +1,4 @@
-.PHONY: build install proto init init-cpu init-gpu start start-bge start-vllm-gpu start-vllm-cpu start-llama-cpu status doctor stop logs
+.PHONY: build install proto init init-cpu init-gpu start start-vllm-gpu start-vllm-cpu start-llama-cpu status doctor stop logs
 
 build:
 	mkdir -p bin
@@ -21,9 +21,6 @@ init-gpu:
 
 start:
 	./scripts/beemo.sh up --profile garnetmoon
-
-start-bge:
-	./scripts/beemo.sh up --profile garnetmoon-bge
 
 start-vllm-gpu:
 	./scripts/beemo.sh up --profile vllm-gpu

@@ -1,0 +1,35 @@
+services:
+  eve-reranker:
+    privileged: true
+    build:
+      args:
+        RUNTIME_IMAGE: "nvidia/cuda:12.9.1-cudnn-runtime-ubuntu24.04"
+        ONNXRUNTIME_PACKAGE: "onnxruntime-linux-x64-gpu"
+    environment:
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+      CUDA_VISIBLE_DEVICES: "1"
+      RERANKER_MODEL: "Alibaba-NLP/gte-reranker-modernbert-base-fp16"
+      RERANKER_MODEL_DIR: "/models/reranker/gte-reranker-modernbert-base"
+      RERANKER_MODEL_PATH: "/models/reranker/gte-reranker-modernbert-base/onnx/model_fp16.onnx"
+      RERANKER_MODEL_URL: ""
+      RERANKER_TOKENIZER: "huggingface"
+      RERANKER_TOKENIZER_PATH: "/models/reranker/gte-reranker-modernbert-base/tokenizer.json"
+      RERANKER_TOKENIZER_URL: ""
+      RERANKER_TOKENIZER_BOS_ID: "50281"
+      RERANKER_TOKENIZER_EOS_ID: "50282"
+      RERANKER_TOKENIZER_PAD_ID: "50283"
+      RERANKER_PAIR_TEMPLATE: "bert"
+      RERANKER_INPUT_NAMES: "input_ids,attention_mask"
+      RERANKER_OUTPUT_NAMES: "logits"
+      RERANKER_EXECUTION_PROVIDER: "cuda"
+      RERANKER_DEVICE_ID: "0"
+      RERANKER_GPU_MEMORY_LIMIT_MB: "4096"
+      RERANKER_BATCH_SIZE: "16"
+      RERANKER_MAX_LENGTH: "384"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

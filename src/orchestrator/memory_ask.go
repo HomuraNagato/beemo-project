@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	memoryAskSourceLimit    = 6
-	memoryAskCandidateLimit = 40
+	memoryAskSourceLimit    = 8
+	memoryAskCandidateLimit = 50
 	memoryAskSourceChars    = 1000
 )
 
@@ -87,11 +87,41 @@ func (s *orchestratorServer) runMemoryAsk(ctx context.Context, req *pb.ChatReque
 
 	prompt := buildMemoryAskPrompt(userQuery, retrieved.Sources)
 	reasonStart := time.Now()
-	var finalText string
-	if s.callFinalMessage != nil {
-		finalText, err = callFinalMessage(s.cfg.LLMHTTPURL, s.cfg.LLMModel, prompt, callTimeout)
-	} else {
-		finalText, err = llm.CallOnceWithMaxTokens(s.cfg.LLMHTTPURL, s.cfg.LLMModel, prompt, profile.maxTokens, callTimeout)
+	callReasoner := func(value string) (string, error) {
+		if s.callFinalMessage != nil {
+			return callFinalMessage(s.cfg.LLMHTTPURL, s.cfg.LLMModel, value, callTimeout)
+		}
+		return llm.CallOnceWithMaxTokens(s.cfg.LLMHTTPURL, s.cfg.LLMModel, value, profile.maxTokens, callTimeout)
+	}
+	finalText, err := callReasoner(buildMemoryAskPlanningPrompt(userQuery, retrieved.Sources))
+	followupQuery, followup := parseMemoryFollowupQuery(finalText)
+	followupRetrieveMs := int64(0)
+	answerRetry := false
+	if err == nil && followup {
+		followupStart := time.Now()
+		followupRetrieved, followupErr := orchtools.RetrieveMemory(ctx, memoryCfg, orchtools.MemoryRetrieveRequest{
+			RequestID:           requestID + ":followup",
+			Query:               followupQuery,
+			Mode:                memoryAskOption(req.GetOptions(), "memory_search_mode", "hybrid"),
+			TimeFilter:          memoryAskOption(req.GetOptions(), "memory_time_filter", "all"),
+			Scope:               memoryAskOption(req.GetOptions(), "memory_scope", ""),
+			Collection:          memoryAskOption(req.GetOptions(), "memory_collection", ""),
+			Limit:               profile.sourceLimit,
+			CandidateLimit:      memoryAskCandidateLimit,
+			ChunkLimitPerSource: memoryAskCandidateLimit,
+		})
+		followupRetrieveMs = time.Since(followupStart).Milliseconds()
+		if followupErr != nil {
+			s.log().Error("orch.memory_ask.followup_retrieve", "request_id", requestID, "status", "fallback", "query", followupQuery, "ms", followupRetrieveMs, "err", followupErr)
+		} else {
+			retrieved.Sources = mergeMemoryAskSources(retrieved.Sources, followupRetrieved.Sources, profile.sourceLimit*2)
+			s.log().Info("orch.memory_ask.followup_retrieve", "request_id", requestID, "status", "ok", "query", followupQuery, "sources", len(followupRetrieved.Sources), "combined_sources", len(retrieved.Sources), "ms", followupRetrieveMs)
+		}
+		finalText, err = callReasoner(buildMemoryAskPrompt(userQuery, retrieved.Sources))
+	}
+	if err == nil && citationOnlyMemoryAnswer(finalText) {
+		answerRetry = true
+		finalText, err = callReasoner(buildMemoryAskPrompt(userQuery, retrieved.Sources))
 	}
 	reasonMs := time.Since(reasonStart).Milliseconds()
 	if err != nil {
@@ -119,6 +149,9 @@ func (s *orchestratorServer) runMemoryAsk(ctx context.Context, req *pb.ChatReque
 		"max_tokens", profile.maxTokens,
 		"retrieve_ms", retrieveMs,
 		"reason_ms", reasonMs,
+		"followup", followup,
+		"followup_retrieve_ms", followupRetrieveMs,
+		"answer_retry", answerRetry,
 		"total_ms", time.Since(start).Milliseconds(),
 	)
 	return chatOutcome{
@@ -183,16 +216,94 @@ func fallbackRequestID(sessionID string) string {
 }
 
 func buildMemoryAskPrompt(question string, sources []orchtools.MemoryRetrieveSource) string {
+	return buildMemoryAskContextPrompt(
+		question,
+		sources,
+		"If the context is insufficient, say what is missing.",
+		"Answer at the depth requested, with citations.",
+	)
+}
+
+func buildMemoryAskContextPrompt(question string, sources []orchtools.MemoryRetrieveSource, insufficientInstruction, finalInstruction string) string {
 	parts := []string{
-		"System:\nYou are Beemo. Answer only from the provided Memory Context. Read every numbered source before answering. Combine evidence across sources when needed, including aliases, pronouns, family relationships, and indirect references. First identify the subject of the user's question, then verify that any relationship evidence belongs to that subject. Do not answer with a relation for a different person unless the context links that person back to the asked subject. Cite only the bracketed source numbers shown before each source title, like [1] or [1][3]. If the context is insufficient, say what is missing. Match the answer depth to the question: answer direct factual questions in one or two sentences, but use several concise paragraphs when the user asks for an explanation, description, comparison, or synthesis.",
+		"System:\nYou are Beemo. Answer only from the provided Memory Context. Read every numbered source before answering. Combine evidence across sources when needed, including aliases, pronouns, family relationships, and indirect references. First identify the subject of the user's question, then verify that any relationship evidence belongs to that subject. Treat first-person questions using I, me, or my as questions about the user; prefer direct first-person memory evidence over analogous events involving fictional characters. Do not answer with a relation for a different person unless the context links that person back to the asked subject. Cite only the bracketed source numbers shown before each source title, like [1] or [1][3], and never return a citation without an answer. " + insufficientInstruction + " Match the answer depth to the question: answer direct factual questions in one or two sentences, but use several concise paragraphs when the user asks for an explanation, description, comparison, or synthesis.",
 		"User:\nQuestion: " + question,
 		"Memory Context:",
 	}
 	for index, source := range sources {
 		parts = append(parts, fmt.Sprintf("[%d] %s\nUpdated: %s\nSource: %s\n%s", index+1, memoryAskTitle(source), shortMemoryAskDate(source.UpdatedAt), source.SourceURI, memoryAskEvidence(source)))
 	}
-	parts = append(parts, "Answer at the depth requested, with citations.")
+	parts = append(parts, finalInstruction)
 	return strings.Join(parts, "\n\n")
+}
+
+func buildMemoryAskPlanningPrompt(question string, sources []orchtools.MemoryRetrieveSource) string {
+	return buildMemoryAskContextPrompt(
+		question,
+		sources,
+		"If the context is insufficient, do not answer or explain what is missing.",
+		"If the supplied context is insufficient to answer, reply only with `RETRIEVE: ` followed by one standalone follow-up search query that could locate the missing evidence. Otherwise answer normally, at the depth requested, with citations.",
+	)
+}
+
+func parseMemoryFollowupQuery(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if len(value) < len("RETRIEVE:") || !strings.EqualFold(value[:len("RETRIEVE:")], "RETRIEVE:") {
+		return "", false
+	}
+	query := strings.TrimSpace(value[len("RETRIEVE:"):])
+	if newline := strings.IndexByte(query, '\n'); newline >= 0 {
+		query = strings.TrimSpace(query[:newline])
+	}
+	return query, query != ""
+}
+
+func citationOnlyMemoryAnswer(value string) bool {
+	value = strings.TrimSpace(value)
+	removedCitation := false
+	for strings.HasPrefix(value, "[") {
+		end := strings.IndexByte(value, ']')
+		if end < 2 {
+			return false
+		}
+		for _, current := range value[1:end] {
+			if current < '0' || current > '9' {
+				return false
+			}
+		}
+		removedCitation = true
+		value = strings.TrimSpace(value[end+1:])
+	}
+	return removedCitation && strings.Trim(value, ".,;:") == ""
+}
+
+func mergeMemoryAskSources(first, second []orchtools.MemoryRetrieveSource, limit int) []orchtools.MemoryRetrieveSource {
+	if limit <= 0 {
+		return nil
+	}
+	capacity := len(first) + len(second)
+	if capacity > limit {
+		capacity = limit
+	}
+	result := make([]orchtools.MemoryRetrieveSource, 0, capacity)
+	seen := map[string]bool{}
+	for _, sources := range [][]orchtools.MemoryRetrieveSource{first, second} {
+		for _, source := range sources {
+			key := strings.TrimSpace(source.ID)
+			if key == "" {
+				key = strings.TrimSpace(source.SourceURI) + "\x00" + strings.TrimSpace(source.EvidenceText) + "\x00" + strings.TrimSpace(source.Text)
+			}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			result = append(result, source)
+			if len(result) >= limit {
+				return result
+			}
+		}
+	}
+	return result
 }
 
 func memoryAskTitle(source orchtools.MemoryRetrieveSource) string {
@@ -253,8 +364,9 @@ func memoryAskChunkLabel(line string) bool {
 
 func memoryAskDiagnostics(diagnostics orchtools.MemoryRetrieveDiagnostics) string {
 	return fmt.Sprintf(
-		"status=%s candidates=%d rerank_candidates=%d selected=%d queries=%d reranker=%s model=%s reason=%s error=%s",
+		"status=%s plan=%s candidates=%d rerank_candidates=%d selected=%d queries=%d reranker=%s model=%s reason=%s error=%s",
 		diagnostics.Status,
+		diagnostics.Plan,
 		diagnostics.CandidateCount,
 		diagnostics.RerankCandidateCount,
 		diagnostics.SelectedCount,

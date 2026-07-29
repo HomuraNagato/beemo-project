@@ -62,6 +62,7 @@ type MemoryRetrieveDiagnostics struct {
 	TotalMs              int64  `json:"total_ms,omitempty"`
 	Reranker             string `json:"reranker,omitempty"`
 	RerankerModel        string `json:"reranker_model,omitempty"`
+	Plan                 string `json:"plan,omitempty"`
 	Error                string `json:"error,omitempty"`
 }
 

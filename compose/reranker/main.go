@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,8 @@ import (
 	"sync"
 	"time"
 
+	hftokenizer "github.com/sugarme/tokenizer"
+	"github.com/sugarme/tokenizer/pretrained"
 	sentencepiece "github.com/tggo/goSentencePiece"
 	ort "github.com/yalue/onnxruntime_go"
 )
@@ -37,25 +40,30 @@ const (
 )
 
 type Config struct {
-	ModelName         string
-	ModelPath         string
-	ModelURL          string
-	TokenizerKind     string
-	TokenizerPath     string
-	TokenizerURL      string
-	TokenizerBOSID    int
-	TokenizerEOSID    int
-	TokenizerPADID    int
-	InputNames        []string
-	OutputNames       []string
-	RuntimeLibrary    string
-	ExecutionProvider string
-	DeviceID          int
-	MaxLength         int
-	BatchSize         int
-	IntraOpThreads    int
-	InterOpThreads    int
-	Port              string
+	ModelName             string
+	ModelPath             string
+	ModelURL              string
+	TokenizerKind         string
+	TokenizerPath         string
+	TokenizerURL          string
+	TokenizerServiceURL   string
+	TokenizerServiceMode  string
+	TokenizerServiceModel string
+	TokenizerBOSID        int
+	TokenizerEOSID        int
+	TokenizerPADID        int
+	PairTemplate          string
+	InputNames            []string
+	OutputNames           []string
+	RuntimeLibrary        string
+	ExecutionProvider     string
+	DeviceID              int
+	GPUMemoryLimitMB      int
+	MaxLength             int
+	BatchSize             int
+	IntraOpThreads        int
+	InterOpThreads        int
+	Port                  string
 }
 
 type Candidate struct {
@@ -95,8 +103,10 @@ func main() {
 	if err := ensureFile(cfg.ModelPath, cfg.ModelURL); err != nil {
 		log.Fatalf("model setup failed: %v", err)
 	}
-	if err := ensureFile(cfg.TokenizerPath, cfg.TokenizerURL); err != nil {
-		log.Fatalf("tokenizer artifact setup failed: %v", err)
+	if !strings.EqualFold(cfg.TokenizerKind, "jina-remote") {
+		if err := ensureFile(cfg.TokenizerPath, cfg.TokenizerURL); err != nil {
+			log.Fatalf("tokenizer artifact setup failed: %v", err)
+		}
 	}
 
 	ort.SetSharedLibraryPath(cfg.RuntimeLibrary)
@@ -160,25 +170,30 @@ func main() {
 func configFromEnv() Config {
 	modelDir := envOrDefault("RERANKER_MODEL_DIR", "/models/reranker/ms-marco-MiniLM-L6-v2")
 	return Config{
-		ModelName:         envOrDefault("RERANKER_MODEL", defaultModelName),
-		ModelPath:         envOrDefault("RERANKER_MODEL_PATH", filepath.Join(modelDir, "model.onnx")),
-		ModelURL:          envOrDefault("RERANKER_MODEL_URL", defaultModelURL),
-		TokenizerKind:     envOrDefault("RERANKER_TOKENIZER", "wordpiece"),
-		TokenizerPath:     envOrDefault("RERANKER_TOKENIZER_PATH", filepath.Join(modelDir, "vocab.txt")),
-		TokenizerURL:      envOrDefault("RERANKER_TOKENIZER_URL", defaultTokenizerURL),
-		TokenizerBOSID:    envNonNegativeInt("RERANKER_TOKENIZER_BOS_ID", 0),
-		TokenizerEOSID:    envNonNegativeInt("RERANKER_TOKENIZER_EOS_ID", 2),
-		TokenizerPADID:    envNonNegativeInt("RERANKER_TOKENIZER_PAD_ID", 1),
-		InputNames:        envCSV("RERANKER_INPUT_NAMES", []string{inputNameIDs, inputNameMask, inputNameTypeIDs}),
-		OutputNames:       envCSV("RERANKER_OUTPUT_NAMES", []string{outputNameLogits}),
-		RuntimeLibrary:    envOrDefault("ONNXRUNTIME_SHARED_LIBRARY_PATH", "/opt/onnxruntime/lib/libonnxruntime.so.1.26.0"),
-		ExecutionProvider: strings.ToLower(envOrDefault("RERANKER_EXECUTION_PROVIDER", "cpu")),
-		DeviceID:          envNonNegativeInt("RERANKER_DEVICE_ID", 0),
-		MaxLength:         envInt("RERANKER_MAX_LENGTH", defaultMaxLength),
-		BatchSize:         envInt("RERANKER_BATCH_SIZE", defaultBatchSize),
-		IntraOpThreads:    envNonNegativeInt("RERANKER_INTRA_OP_THREADS", 0),
-		InterOpThreads:    envNonNegativeInt("RERANKER_INTER_OP_THREADS", 1),
-		Port:              envOrDefault("RERANKER_PORT", defaultPort),
+		ModelName:             envOrDefault("RERANKER_MODEL", defaultModelName),
+		ModelPath:             envOrDefault("RERANKER_MODEL_PATH", filepath.Join(modelDir, "model.onnx")),
+		ModelURL:              envOrDefault("RERANKER_MODEL_URL", defaultModelURL),
+		TokenizerKind:         envOrDefault("RERANKER_TOKENIZER", "wordpiece"),
+		TokenizerPath:         envOrDefault("RERANKER_TOKENIZER_PATH", filepath.Join(modelDir, "vocab.txt")),
+		TokenizerURL:          envOrDefault("RERANKER_TOKENIZER_URL", defaultTokenizerURL),
+		TokenizerServiceURL:   strings.TrimRight(envOrDefault("RERANKER_TOKENIZER_SERVICE_URL", "http://127.0.0.1:5026"), "/"),
+		TokenizerServiceMode:  strings.ToLower(envOrDefault("RERANKER_TOKENIZER_SERVICE_MODE", "llamacpp")),
+		TokenizerServiceModel: envOrDefault("RERANKER_TOKENIZER_SERVICE_MODEL", "Qwen3-Embedding-0.6B"),
+		TokenizerBOSID:        envNonNegativeInt("RERANKER_TOKENIZER_BOS_ID", 0),
+		TokenizerEOSID:        envNonNegativeInt("RERANKER_TOKENIZER_EOS_ID", 2),
+		TokenizerPADID:        envNonNegativeInt("RERANKER_TOKENIZER_PAD_ID", 1),
+		PairTemplate:          strings.ToLower(envOrDefault("RERANKER_PAIR_TEMPLATE", "roberta")),
+		InputNames:            envCSV("RERANKER_INPUT_NAMES", []string{inputNameIDs, inputNameMask, inputNameTypeIDs}),
+		OutputNames:           envCSV("RERANKER_OUTPUT_NAMES", []string{outputNameLogits}),
+		RuntimeLibrary:        envOrDefault("ONNXRUNTIME_SHARED_LIBRARY_PATH", "/opt/onnxruntime/lib/libonnxruntime.so.1.26.0"),
+		ExecutionProvider:     strings.ToLower(envOrDefault("RERANKER_EXECUTION_PROVIDER", "cpu")),
+		DeviceID:              envNonNegativeInt("RERANKER_DEVICE_ID", 0),
+		GPUMemoryLimitMB:      envNonNegativeInt("RERANKER_GPU_MEMORY_LIMIT_MB", 0),
+		MaxLength:             envInt("RERANKER_MAX_LENGTH", defaultMaxLength),
+		BatchSize:             envInt("RERANKER_BATCH_SIZE", defaultBatchSize),
+		IntraOpThreads:        envNonNegativeInt("RERANKER_INTRA_OP_THREADS", 0),
+		InterOpThreads:        envNonNegativeInt("RERANKER_INTER_OP_THREADS", 1),
+		Port:                  envOrDefault("RERANKER_PORT", defaultPort),
 	}
 }
 
@@ -202,11 +217,16 @@ func configureExecutionProvider(options *ort.SessionOptions, cfg Config) error {
 			return err
 		}
 		defer cudaOptions.Destroy()
-		if err := cudaOptions.Update(map[string]string{
+		providerOptions := map[string]string{
 			"device_id":                 strconv.Itoa(cfg.DeviceID),
 			"do_copy_in_default_stream": "1",
 			"use_tf32":                  "1",
-		}); err != nil {
+		}
+		if cfg.GPUMemoryLimitMB > 0 {
+			providerOptions["gpu_mem_limit"] = strconv.FormatInt(int64(cfg.GPUMemoryLimitMB)*1024*1024, 10)
+			providerOptions["arena_extend_strategy"] = "kSameAsRequested"
+		}
+		if err := cudaOptions.Update(providerOptions); err != nil {
 			return err
 		}
 		return options.AppendExecutionProviderCUDA(cudaOptions)
@@ -534,39 +554,124 @@ func newPairTokenizer(cfg Config) (PairTokenizer, error) {
 	case "wordpiece":
 		return NewWordPieceTokenizer(cfg.TokenizerPath)
 	case "sentencepiece":
-		return NewSentencePieceTokenizer(cfg.TokenizerPath, cfg.TokenizerBOSID, cfg.TokenizerEOSID, cfg.TokenizerPADID)
+		return NewSentencePieceTokenizer(cfg.TokenizerPath, cfg.TokenizerBOSID, cfg.TokenizerEOSID, cfg.TokenizerPADID, cfg.PairTemplate)
+	case "huggingface":
+		return NewHuggingFaceTokenizer(cfg.TokenizerPath, cfg.TokenizerPADID)
+	case "jina-remote":
+		return NewJinaRemoteTokenizer(cfg.TokenizerServiceURL, cfg.TokenizerServiceMode, cfg.TokenizerServiceModel, cfg.TokenizerPADID), nil
 	default:
 		return nil, fmt.Errorf("unsupported tokenizer %q", cfg.TokenizerKind)
 	}
 }
 
-type SentencePieceTokenizer struct {
-	tokenizer *sentencepiece.Tokenizer
-	bosID     int64
-	eosID     int64
+type HuggingFaceTokenizer struct {
+	tokenizer *hftokenizer.Tokenizer
 	padID     int64
+	mu        sync.Mutex
 }
 
-func NewSentencePieceTokenizer(path string, bosID, eosID, padID int) (*SentencePieceTokenizer, error) {
+func NewHuggingFaceTokenizer(path string, padID int) (*HuggingFaceTokenizer, error) {
+	tokenizer, err := pretrained.FromFile(path)
+	if err != nil {
+		return nil, err
+	}
+	tokenizer.WithPadding(nil)
+	return &HuggingFaceTokenizer{tokenizer: tokenizer, padID: int64(padID)}, nil
+}
+
+func (t *HuggingFaceTokenizer) EncodePair(query, passage string, maxLength int) ([]int64, []int64, []int64, error) {
+	if maxLength < 3 {
+		return nil, nil, nil, fmt.Errorf("max length must be at least 3 for Hugging Face pairs")
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.tokenizer.WithTruncation(&hftokenizer.TruncationParams{
+		MaxLength: maxLength,
+		Strategy:  hftokenizer.LongestFirst,
+	})
+	encoded, err := t.tokenizer.EncodePair(query, passage, true)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return intsToInt64(encoded.Ids), intsToInt64(encoded.AttentionMask), intsToInt64(encoded.TypeIds), nil
+}
+
+func (t *HuggingFaceTokenizer) PadID() int64 {
+	return t.padID
+}
+
+func intsToInt64(values []int) []int64 {
+	result := make([]int64, len(values))
+	for index, value := range values {
+		result[index] = int64(value)
+	}
+	return result
+}
+
+type SentencePieceTokenizer struct {
+	tokenizer    *sentencepiece.Tokenizer
+	bosID        int64
+	eosID        int64
+	padID        int64
+	pairTemplate string
+}
+
+func NewSentencePieceTokenizer(path string, bosID, eosID, padID int, pairTemplate string) (*SentencePieceTokenizer, error) {
 	tokenizer, err := sentencepiece.NewTokenizer(path)
 	if err != nil {
 		return nil, err
 	}
+	vocabularySize, err := tokenizerVocabularySize(path, tokenizer.VocabSize())
+	if err != nil {
+		return nil, err
+	}
 	for name, id := range map[string]int{"BOS": bosID, "EOS": eosID, "PAD": padID} {
-		if id < 0 || id >= tokenizer.VocabSize() {
+		if id < 0 || id >= vocabularySize {
 			return nil, fmt.Errorf("%s token ID %d is outside tokenizer vocabulary", name, id)
 		}
 	}
 	return &SentencePieceTokenizer{
-		tokenizer: tokenizer,
-		bosID:     int64(bosID),
-		eosID:     int64(eosID),
-		padID:     int64(padID),
+		tokenizer:    tokenizer,
+		bosID:        int64(bosID),
+		eosID:        int64(eosID),
+		padID:        int64(padID),
+		pairTemplate: pairTemplate,
 	}, nil
 }
 
+func tokenizerVocabularySize(path string, fallback int) (int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return fallback, nil
+	}
+	var config struct {
+		AddedTokens []struct {
+			ID int `json:"id"`
+		} `json:"added_tokens"`
+	}
+	if err := json.Unmarshal(trimmed, &config); err != nil {
+		return 0, fmt.Errorf("parse tokenizer added tokens: %w", err)
+	}
+	size := fallback
+	for _, token := range config.AddedTokens {
+		if token.ID >= size {
+			size = token.ID + 1
+		}
+	}
+	return size, nil
+}
+
 func (t *SentencePieceTokenizer) EncodePair(query, passage string, maxLength int) ([]int64, []int64, []int64, error) {
-	const specialTokenCount = 4
+	specialTokenCount := 4
+	if t.pairTemplate == "bert" {
+		specialTokenCount = 3
+	} else if t.pairTemplate != "roberta" {
+		return nil, nil, nil, fmt.Errorf("unsupported pair template %q", t.pairTemplate)
+	}
 	if maxLength < specialTokenCount {
 		return nil, nil, nil, fmt.Errorf("max length must be at least %d for SentencePiece pairs", specialTokenCount)
 	}
@@ -580,19 +685,192 @@ func (t *SentencePieceTokenizer) EncodePair(query, passage string, maxLength int
 	}
 	truncatePair(&queryTokens, &passageTokens, maxLength-specialTokenCount)
 
-	ids := make([]int64, 0, maxLength)
-	ids = append(ids, t.bosID)
-	ids = appendIntIDs(ids, queryTokens)
-	ids = append(ids, t.eosID, t.eosID)
-	ids = appendIntIDs(ids, passageTokens)
-	ids = append(ids, t.eosID)
+	ids := buildSubwordPair(queryTokens, passageTokens, t.bosID, t.eosID, t.pairTemplate)
 	mask := filledInt64(len(ids), 1)
 	types := make([]int64, len(ids))
 	return ids, mask, types, nil
 }
 
+func buildSubwordPair(queryTokens, passageTokens []int, bosID, eosID int64, pairTemplate string) []int64 {
+	capacity := len(queryTokens) + len(passageTokens) + 3
+	if pairTemplate == "roberta" {
+		capacity++
+	}
+	ids := make([]int64, 0, capacity)
+	ids = append(ids, bosID)
+	ids = appendIntIDs(ids, queryTokens)
+	ids = append(ids, eosID)
+	if pairTemplate == "roberta" {
+		ids = append(ids, eosID)
+	}
+	ids = appendIntIDs(ids, passageTokens)
+	return append(ids, eosID)
+}
+
 func (t *SentencePieceTokenizer) PadID() int64 {
 	return t.padID
+}
+
+const (
+	jinaDocumentTokenID = 151670
+	jinaQueryTokenID    = 151671
+)
+
+const jinaPromptPrefix = `<|im_start|>system
+You are a search relevance expert who can determine a ranking of the passages based on how relevant they are to the query. If the query is a question, how relevant a passage is depends on how well it answers the question. If not, try to analyze the intent of the query and assess how well each passage satisfies the intent. If an instruction is provided, you should follow the instruction when determining the ranking.<|im_end|>
+<|im_start|>user
+I will provide you with 1 passages, each indicated by a numerical identifier. Rank the passages based on their relevance to query: %s
+<passage id="0">
+`
+
+const jinaPromptBetween = `
+</passage>
+<query>
+%s`
+
+const jinaPromptSuffix = `
+</query><|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+`
+
+type JinaRemoteTokenizer struct {
+	baseURL string
+	mode    string
+	model   string
+	padID   int64
+	client  *http.Client
+}
+
+type remoteTokenizeResponse struct {
+	Tokens []int `json:"tokens"`
+}
+
+type remoteDetokenizeResponse struct {
+	Content string `json:"content"`
+	Prompt  string `json:"prompt"`
+}
+
+func NewJinaRemoteTokenizer(baseURL, mode, model string, padID int) *JinaRemoteTokenizer {
+	return &JinaRemoteTokenizer{
+		baseURL: strings.TrimRight(baseURL, "/"),
+		mode:    strings.ToLower(strings.TrimSpace(mode)),
+		model:   model,
+		padID:   int64(padID),
+		client:  &http.Client{Timeout: 15 * time.Second},
+	}
+}
+
+func (t *JinaRemoteTokenizer) EncodePair(query, passage string, maxLength int) ([]int64, []int64, []int64, error) {
+	prefix := fmt.Sprintf(jinaPromptPrefix, query)
+	between := fmt.Sprintf(jinaPromptBetween, query)
+	prefixAndDocument, err := t.tokenize(prefix + passage)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	betweenTokens, err := t.tokenize(between)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	suffixTokens, err := t.tokenize(jinaPromptSuffix)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	fixedLength := len(betweenTokens) + len(suffixTokens) + 2
+	if len(prefixAndDocument)+fixedLength > maxLength {
+		prefixTokens, err := t.tokenize(prefix)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		documentTokens, err := t.tokenize(passage)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		available := maxLength - len(prefixTokens) - fixedLength - 2
+		if available <= 0 {
+			return nil, nil, nil, fmt.Errorf("Jina query and prompt exceed max length %d", maxLength)
+		}
+		if len(documentTokens) > available {
+			passage, err = t.detokenize(documentTokens[:available])
+			if err != nil {
+				return nil, nil, nil, err
+			}
+		}
+		prefixAndDocument, err = t.tokenize(prefix + passage)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		for len(prefixAndDocument)+fixedLength > maxLength && len(passage) > 0 {
+			passage = string([]rune(passage)[:len([]rune(passage))-1])
+			prefixAndDocument, err = t.tokenize(prefix + passage)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+		}
+	}
+	ids := make([]int64, 0, len(prefixAndDocument)+fixedLength)
+	ids = appendIntIDs(ids, prefixAndDocument)
+	ids = append(ids, jinaDocumentTokenID)
+	ids = appendIntIDs(ids, betweenTokens)
+	ids = append(ids, jinaQueryTokenID)
+	ids = appendIntIDs(ids, suffixTokens)
+	return ids, filledInt64(len(ids), 1), make([]int64, len(ids)), nil
+}
+
+func (t *JinaRemoteTokenizer) PadID() int64 {
+	return t.padID
+}
+
+func (t *JinaRemoteTokenizer) tokenize(content string) ([]int, error) {
+	var response remoteTokenizeResponse
+	request := any(map[string]string{"content": content})
+	if t.mode == "vllm" {
+		request = map[string]any{"model": t.model, "prompt": content, "add_special_tokens": false}
+	}
+	if err := t.call("/tokenize", request, &response); err != nil {
+		return nil, fmt.Errorf("remote tokenize: %w", err)
+	}
+	return response.Tokens, nil
+}
+
+func (t *JinaRemoteTokenizer) detokenize(tokens []int) (string, error) {
+	var response remoteDetokenizeResponse
+	request := map[string]any{"tokens": tokens}
+	if t.mode == "vllm" {
+		request["model"] = t.model
+	}
+	if err := t.call("/detokenize", request, &response); err != nil {
+		return "", fmt.Errorf("remote detokenize: %w", err)
+	}
+	if t.mode == "vllm" {
+		return response.Prompt, nil
+	}
+	return response.Content, nil
+}
+
+func (t *JinaRemoteTokenizer) call(path string, input, output any) error {
+	payload, err := json.Marshal(input)
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequest(http.MethodPost, t.baseURL+path, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", contentTypeJSON)
+	response, err := t.client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+		return fmt.Errorf("tokenizer returned %s: %s", response.Status, strings.TrimSpace(string(body)))
+	}
+	return json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(output)
 }
 
 func truncatePair(left, right *[]int, available int) {

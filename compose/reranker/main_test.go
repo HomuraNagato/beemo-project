@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestEncodePairReturnsCompactSequence(t *testing.T) {
 	tokenizer := &WordPieceTokenizer{vocab: map[string]int64{
@@ -43,6 +47,66 @@ func TestTruncatePairUsesLongestFirst(t *testing.T) {
 	truncatePair(&left, &right, 4)
 	if len(left) != 2 || len(right) != 2 {
 		t.Fatalf("expected balanced four-token pair, got left=%v right=%v", left, right)
+	}
+}
+
+func TestBuildSubwordPairTemplates(t *testing.T) {
+	query := []int{10, 11}
+	passage := []int{20, 21}
+
+	bert := buildSubwordPair(query, passage, 1, 2, "bert")
+	wantBert := []int64{1, 10, 11, 2, 20, 21, 2}
+	assertInt64Slice(t, bert, wantBert)
+
+	roberta := buildSubwordPair(query, passage, 1, 2, "roberta")
+	wantRoberta := []int64{1, 10, 11, 2, 2, 20, 21, 2}
+	assertInt64Slice(t, roberta, wantRoberta)
+}
+
+func TestTokenizerVocabularySizeIncludesAddedTokens(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tokenizer.json")
+	if err := os.WriteFile(path, []byte(`{"added_tokens":[{"id":12},{"id":15}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	size, err := tokenizerVocabularySize(path, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size != 16 {
+		t.Fatalf("expected vocabulary size 16, got %d", size)
+	}
+}
+
+func TestModernBERTTokenizerMatchesHuggingFace(t *testing.T) {
+	path := filepath.Join("..", "..", "models", "reranker", "gte-reranker-modernbert-base", "tokenizer.json")
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		t.Skip("GTE ModernBERT tokenizer is not installed")
+	}
+	tokenizer, err := NewHuggingFaceTokenizer(path, 50283)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, _, _, err := tokenizer.EncodePair(
+		"What is rank nullity?",
+		"The rank plus nullity equals the dimension.",
+		384,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []int64{50281, 1276, 310, 5958, 3635, 414, 32, 50282, 510, 5958, 5043, 3635, 414, 18207, 253, 7877, 15, 50282}
+	assertInt64Slice(t, ids, want)
+}
+
+func assertInt64Slice(t *testing.T, got, want []int64) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("expected %#v, got %#v", want, got)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("expected %#v, got %#v", want, got)
+		}
 	}
 }
 

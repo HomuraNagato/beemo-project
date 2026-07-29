@@ -39,7 +39,7 @@ func TestUpUsesExistingMemoryPalaceComposeAfterModelServices(t *testing.T) {
 	runner := &recordingRunner{}
 	manager := Manager{
 		Paths:   Paths{BeemoRoot: "/workspace/beemo-project", MemoryPalaceRoot: "/workspace/memory_palace"},
-		Profile: Profile{Name: "garnetmoon", ComposeFiles: []string{"docker-compose.yaml", "docker-compose.gpu.yaml", "docker-compose.reranker.garnetmoon.yaml", "docker-compose.reranker.bge.yaml", "docker-compose.reranker.bge-gpu.yaml"}},
+		Profile: Profile{Name: "garnetmoon", ComposeFiles: []string{"docker-compose.yaml", "docker-compose.gpu.yaml", "docker-compose.reranker.garnetmoon.yaml", "docker-compose.reranker.gte-modernbert-gpu.yaml"}},
 		Runner:  runner,
 		Output:  io.Discard,
 		Client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
