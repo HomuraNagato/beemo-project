@@ -63,7 +63,31 @@ time, and ONNX inference time.
 
 ## Garnetmoon baseline
 
-GTE ModernBERT FP16 reached 15/27 evidence recall at eight results on the fixed
-top-50 evaluation, compared with BGE's 13/27. Average reranking latency was
-116 ms. After warmup, the service used about 802 MiB of GPU memory, approximately
-1,572 MiB less than the prior BGE process.
+The July 30, 2026 comparison reranked the same fixed top-50 Memory Palace
+candidate shape and measured evidence recall at eight results:
+
+| Model | Ranking method | Evidence recall | Average rerank | GPU process |
+| --- | --- | ---: | ---: | ---: |
+| GTE ModernBERT FP16 | pairwise cross-encoder | 17/28 | 127 ms | 1,432 MiB |
+| Qwen3 Reranker 0.6B | pairwise cross-encoder | 16/28 | 117 ms | 4,244 MiB |
+| Jina Reranker v3.5 | listwise, 50 documents | 7/28 | 159 ms | 8,432 MiB |
+
+GTE remains the Garnetmoon default. Qwen did not improve recall and required
+about three times GTE's GPU allocation. Jina received all 50 passages in one
+listwise request, but ranked this mixed personal-memory, fiction, and textbook
+corpus substantially worse.
+
+The benchmark profiles are isolated from the production service:
+
+```sh
+docker compose -f docker-compose.reranker.qwen06-benchmark.yaml up -d --build
+docker compose -f docker-compose.reranker.jina35-benchmark.yaml up -d --build
+```
+
+Run them one at a time on GPU 1. Both expose the standard Memory Palace
+`/rerank` contract through the reusable Go proxy.
+
+The evaluation suite's corpus audit validates all 28 answer-bearing source and
+evidence anchors. Exhaustive source reranking is not a fair listwise comparison:
+18 expected sources contain more than 150 indexed passages, while production
+always supplies a bounded 50-passage pool.

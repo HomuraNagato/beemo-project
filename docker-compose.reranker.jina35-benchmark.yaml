@@ -1,0 +1,45 @@
+services:
+  eve-reranker-jina35-model:
+    container_name: eve-reranker-jina35-model
+    image: vllm/vllm-openai
+    privileged: true
+    ipc: host
+    command:
+      - /models/reranker/jina-reranker-v3.5
+      - --runner
+      - pooling
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --max-model-len
+      - "32768"
+      - --gpu-memory-utilization
+      - "0.70"
+    environment:
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+      CUDA_VISIBLE_DEVICES: "1"
+    volumes:
+      - ./models:/models:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  eve-reranker-jina35:
+    container_name: eve-reranker-jina35
+    build:
+      context: .
+      dockerfile: compose/reranker_proxy/Dockerfile
+    ports:
+      - 5024:5024
+    environment:
+      RERANKER_BACKEND_URL: http://eve-reranker-jina35-model:8000
+      RERANKER_MODEL: /models/reranker/jina-reranker-v3.5
+      RERANKER_PROXY_PORT: "5024"
+      RERANKER_PROXY_TIMEOUT: 5m
+    depends_on:
+      - eve-reranker-jina35-model

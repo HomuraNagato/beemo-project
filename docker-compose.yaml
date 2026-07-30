@@ -63,7 +63,7 @@ services:
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       MEMORY_PALACE_BASE_URL: ${MEMORY_PALACE_BASE_URL:-http://host.docker.internal:8013}
-      MEMORY_PALACE_USER_KEY: ${MEMORY_PALACE_USER_KEY:-local}
+      MEMORY_PALACE_USER_KEY: ${MEMORY_PALACE_USER_KEY:-nagato}
     ports:
       - 5013:5013
     build:

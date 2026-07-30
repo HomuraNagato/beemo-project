@@ -53,6 +53,6 @@ older_sister:
 
 memory:
   base_url: http://host.docker.internal:8013
-  user_key: local
+  user_key: nagato
   timeout_ms: 30000
   auto_save: true

@@ -1,0 +1,48 @@
+services:
+  eve-reranker-qwen06-model:
+    container_name: eve-reranker-qwen06-model
+    image: vllm/vllm-openai
+    privileged: true
+    ipc: host
+    command:
+      - /models/reranker/Qwen3-Reranker-0.6B
+      - --runner
+      - pooling
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --max-model-len
+      - "2048"
+      - --gpu-memory-utilization
+      - "0.35"
+      - --hf-overrides
+      - '{"architectures":["Qwen3ForSequenceClassification"],"classifier_from_token":["no","yes"],"is_original_qwen3_reranker":true}'
+      - --chat-template
+      - /models/reranker/Qwen3-Reranker-0.6B/chat_template.jinja
+    environment:
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+      CUDA_VISIBLE_DEVICES: "1"
+    volumes:
+      - ./models:/models:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  eve-reranker-qwen06:
+    container_name: eve-reranker-qwen06
+    build:
+      context: .
+      dockerfile: compose/reranker_proxy/Dockerfile
+    ports:
+      - 5023:5023
+    environment:
+      RERANKER_BACKEND_URL: http://eve-reranker-qwen06-model:8000
+      RERANKER_MODEL: /models/reranker/Qwen3-Reranker-0.6B
+      RERANKER_PROXY_PORT: "5023"
+    depends_on:
+      - eve-reranker-qwen06-model
