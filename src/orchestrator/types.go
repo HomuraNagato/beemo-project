@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"sync"
@@ -8,6 +9,7 @@ import (
 
 	pb "eve-beemo/proto/gen/proto"
 	"eve-beemo/src/orchestrator/config"
+	orchdb "eve-beemo/src/orchestrator/db"
 	"eve-beemo/src/orchestrator/routing"
 	orchtools "eve-beemo/src/orchestrator/tools"
 )
@@ -20,12 +22,32 @@ type orchestratorServer struct {
 	readGrammar         func(path string) (string, error)
 	callCompletion      func(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error)
 	callFinalMessage    func(httpURL, model, prompt string, timeout time.Duration) (string, error)
+	callAgentCompletion func(context.Context, string, string, string, int, time.Duration) (string, error)
 	logger              *slog.Logger
+	codeTools           pb.CodeToolsClient
+	agentStore          agentEventStore
+	approvalMu          sync.Mutex
+	pendingApprovals    map[string]pendingApproval
 	historyMu           sync.Mutex
 	pendingMu           sync.Mutex
 	pendingBySession    map[string]pendingToolState
 	transcriptMu        sync.Mutex
 	transcriptBySession map[string][]*pb.ChatMessage
+}
+
+type agentEventStore interface {
+	UpsertSession(context.Context, string, string, string, string, string) error
+	AppendEvent(context.Context, string, string, string, string, any) error
+	UpdateSessionStatus(context.Context, string, string) error
+	CreateApproval(context.Context, string, string, string, string) error
+	DecideApproval(context.Context, string, bool) error
+	ListSessions(context.Context, string, int) ([]orchdb.AgentSession, error)
+	GetSession(context.Context, string, string) (orchdb.AgentSession, []orchdb.AgentEvent, error)
+}
+
+type pendingApproval struct {
+	sessionID string
+	decision  chan bool
 }
 
 type toolCall struct {

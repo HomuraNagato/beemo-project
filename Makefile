@@ -3,9 +3,13 @@
 build:
 	mkdir -p bin
 	go build -o bin/beemo ./cmd/beemo
+	go build -o bin/beemo-code ./cmd/beemo-code
+	go build -o bin/beemo-chat ./src/tui
 
 install: build
 	install -Dm755 bin/beemo "$(HOME)/.local/bin/beemo"
+	install -Dm755 bin/beemo-code "$(HOME)/.local/bin/beemo-code"
+	install -Dm755 bin/beemo-chat "$(HOME)/.local/bin/beemo-chat"
 
 proto:
 	./scripts/gen_proto.sh

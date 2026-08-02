@@ -56,3 +56,9 @@ memory:
   user_key: nagato
   timeout_ms: 30000
   auto_save: true
+
+code:
+  socket: /run/beemo-code/beemo-code.sock
+  max_steps: 24
+  max_tokens: 1024
+  approval_timeout_ms: 300000

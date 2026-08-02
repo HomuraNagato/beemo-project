@@ -14,6 +14,7 @@ import (
 	"eve-beemo/src/orchestrator/routing"
 	orchtools "eve-beemo/src/orchestrator/tools"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
@@ -89,6 +90,8 @@ func main() {
 		}),
 		routeSelector: selector,
 		logger:        logger,
+		codeTools:     newCodeToolsClient(cfg.CodeSocket, logger),
+		agentStore:    orchestrdb.NewAgentStore(routeDB),
 	})
 	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	healthServer.SetServingStatus("eve.Orchestrator", healthpb.HealthCheckResponse_SERVING)
@@ -97,4 +100,17 @@ func main() {
 		healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
 		logger.Error("orchestrator.serve", "status", "error", "err", err)
 	}
+}
+
+func newCodeToolsClient(socket string, logger *slog.Logger) pb.CodeToolsClient {
+	socket = strings.TrimSpace(socket)
+	if socket == "" {
+		return nil
+	}
+	connection, err := grpc.NewClient("unix://"+socket, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		logger.Warn("orchestrator.code_tools", "status", "disabled", "socket", socket, "err", err)
+		return nil
+	}
+	return pb.NewCodeToolsClient(connection)
 }

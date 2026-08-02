@@ -52,6 +52,10 @@ type Config struct {
 	MemoryUserKey              string
 	MemoryTimeoutMs            int
 	MemoryAutoSave             bool
+	CodeSocket                 string
+	CodeMaxSteps               int
+	CodeMaxTokens              int
+	CodeApprovalTimeoutMs      int
 }
 
 func Load() Config {
@@ -68,6 +72,8 @@ func Load() Config {
 	}
 	setString(&cfg.MemoryBaseURL, os.Getenv("MEMORY_PALACE_BASE_URL"))
 	setString(&cfg.MemoryUserKey, os.Getenv("MEMORY_PALACE_USER_KEY"))
+	setString(&cfg.CodeSocket, os.Getenv("BEEMO_CODE_SOCKET"))
+	setString(&cfg.DatabaseURL, os.Getenv("DATABASE_URL"))
 
 	if cfg.LLMHTTPURL == "" && cfg.LLMAddr != "" {
 		cfg.LLMHTTPURL = "http://" + strings.TrimSpace(cfg.LLMAddr) + "/v1/chat/completions"
@@ -132,6 +138,10 @@ func defaultConfig() Config {
 		MemoryUserKey:              "local",
 		MemoryTimeoutMs:            30000,
 		MemoryAutoSave:             true,
+		CodeSocket:                 "/run/beemo-code/beemo-code.sock",
+		CodeMaxSteps:               24,
+		CodeMaxTokens:              1024,
+		CodeApprovalTimeoutMs:      300000,
 	}
 }
 
@@ -196,6 +206,12 @@ type yamlConfig struct {
 		TimeoutMs int    `yaml:"timeout_ms"`
 		AutoSave  *bool  `yaml:"auto_save"`
 	} `yaml:"memory"`
+	Code struct {
+		Socket            string `yaml:"socket"`
+		MaxSteps          int    `yaml:"max_steps"`
+		MaxTokens         int    `yaml:"max_tokens"`
+		ApprovalTimeoutMs int    `yaml:"approval_timeout_ms"`
+	} `yaml:"code"`
 }
 
 func loadYAML(path string) (Config, error) {
@@ -259,6 +275,10 @@ func loadYAML(path string) (Config, error) {
 	if raw.Memory.AutoSave != nil {
 		cfg.MemoryAutoSave = *raw.Memory.AutoSave
 	}
+	setString(&cfg.CodeSocket, raw.Code.Socket)
+	setInt(&cfg.CodeMaxSteps, raw.Code.MaxSteps)
+	setInt(&cfg.CodeMaxTokens, raw.Code.MaxTokens)
+	setInt(&cfg.CodeApprovalTimeoutMs, raw.Code.ApprovalTimeoutMs)
 	return cfg, nil
 }
 

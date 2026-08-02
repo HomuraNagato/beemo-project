@@ -62,8 +62,10 @@ services:
     privileged: true
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DATABASE_URL: ${DATABASE_URL:-}
       MEMORY_PALACE_BASE_URL: ${MEMORY_PALACE_BASE_URL:-http://host.docker.internal:8013}
       MEMORY_PALACE_USER_KEY: ${MEMORY_PALACE_USER_KEY:-nagato}
+      BEEMO_CODE_SOCKET: /run/beemo-code/beemo-code.sock
     ports:
       - 5013:5013
     build:
@@ -74,6 +76,7 @@ services:
     volumes:
       - ./:/workspace
       - eve-orchestrator-volume:/app/data
+      - ${BEEMO_CODE_RUNTIME_DIR:-/tmp/beemo-code}:/run/beemo-code
 
   eve-vision:
     container_name: eve-vision

@@ -35,13 +35,14 @@ body {
 }
 
 button,
-textarea {
+textarea,
+select {
   font: inherit;
 }
 
 .shell {
   display: grid;
-  grid-template-rows: minmax(230px, 33vh) minmax(0, 1fr) auto;
+  grid-template-rows: minmax(310px, 40vh) minmax(0, 1fr) auto;
   height: 100dvh;
   min-height: 560px;
   overflow: hidden;
@@ -53,6 +54,136 @@ textarea {
   justify-items: center;
   gap: 12px;
   padding: 22px 20px 10px;
+}
+
+.studio-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  width: min(980px, 100%);
+}
+
+.mode-control {
+  display: grid;
+  grid-template-columns: repeat(2, 72px);
+  min-width: 144px;
+}
+
+.mode-button {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.mode-button:first-child {
+  border-radius: 6px 0 0 6px;
+}
+
+.mode-button:last-child {
+  border-left: 0;
+  border-radius: 0 6px 6px 0;
+}
+
+.mode-button.is-active {
+  color: var(--bg);
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.workspace-control,
+.session-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.workspace-control select,
+.session-control select {
+  min-width: 0;
+  width: min(360px, 42vw);
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--panel-strong);
+}
+
+.session-control select {
+  width: min(220px, 30vw);
+}
+
+.toolbar-button {
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--panel-strong);
+  cursor: pointer;
+}
+
+.toolbar-button:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.diff-dialog {
+  width: min(1100px, calc(100vw - 32px));
+  height: min(760px, calc(100dvh - 32px));
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--panel);
+}
+
+.diff-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.72);
+}
+
+.diff-dialog header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.diff-dialog h2 {
+  margin: 0;
+  font-size: 1rem;
+  letter-spacing: 0;
+}
+
+.dialog-close {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+  font-size: 1.5rem;
+}
+
+.diff-dialog pre {
+  height: calc(100% - 61px);
+  margin: 0;
+  overflow: auto;
+  padding: 16px;
+  color: var(--text);
+  background: #0d100f;
+  font: 0.82rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .beemo-head {
@@ -177,6 +308,19 @@ textarea {
     linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent),
     var(--panel);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.activity-strip {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  background: var(--panel);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
 }
 
 .message-stage {
@@ -355,12 +499,12 @@ textarea:focus {
 
 @media (max-width: 620px) {
   .shell {
-    grid-template-rows: minmax(210px, 33vh) minmax(0, 1fr) auto;
+    grid-template-rows: minmax(340px, 48vh) minmax(0, 1fr) auto;
     min-height: 520px;
   }
 
   .beemo-head {
-    width: min(72vw, 280px);
+    width: min(58vw, 220px);
   }
 
   .input-region {
@@ -375,5 +519,25 @@ textarea:focus {
   .send-button {
     min-width: 70px;
     padding: 0 10px;
+  }
+
+  .studio-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .mode-control {
+    align-self: center;
+  }
+
+  .workspace-control,
+  .session-control {
+    justify-content: center;
+  }
+
+  .workspace-control select,
+  .session-control select {
+    width: min(70vw, 360px);
   }
 }

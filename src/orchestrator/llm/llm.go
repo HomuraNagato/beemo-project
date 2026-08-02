@@ -65,6 +65,10 @@ func CallOnce(httpURL, model, prompt string, timeout time.Duration) (string, err
 }
 
 func CallOnceWithMaxTokens(httpURL, model, prompt string, maxTokens int, timeout time.Duration) (string, error) {
+	return CallOnceWithMaxTokensContext(context.Background(), httpURL, model, prompt, maxTokens, timeout)
+}
+
+func CallOnceWithMaxTokensContext(ctx context.Context, httpURL, model, prompt string, maxTokens int, timeout time.Duration) (string, error) {
 	if httpURL == "" {
 		return "", fmt.Errorf("LLM_HTTP_URL missing")
 	}
@@ -96,7 +100,7 @@ func CallOnceWithMaxTokens(httpURL, model, prompt string, maxTokens int, timeout
 		"prompt_preview", logPreview(prompt),
 	)
 
-	return callChatRequest(httpURL, body, timeout)
+	return callChatRequestContext(ctx, httpURL, body, timeout)
 }
 
 func CallChatWithGrammar(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
@@ -247,7 +251,11 @@ func normalizeLlamaCPPGrammar(grammar string) string {
 }
 
 func callChatRequest(httpURL string, body []byte, timeout time.Duration) (string, error) {
-	respBody, err := callRawRequest(httpURL, body, timeout)
+	return callChatRequestContext(context.Background(), httpURL, body, timeout)
+}
+
+func callChatRequestContext(ctx context.Context, httpURL string, body []byte, timeout time.Duration) (string, error) {
+	respBody, err := callRawRequestContext(ctx, httpURL, body, timeout)
 	if err != nil {
 		return "", err
 	}
@@ -262,7 +270,10 @@ func callChatRequest(httpURL string, body []byte, timeout time.Duration) (string
 }
 
 func callRawRequest(httpURL string, body []byte, timeout time.Duration) ([]byte, error) {
-	ctx := context.Background()
+	return callRawRequestContext(context.Background(), httpURL, body, timeout)
+}
+
+func callRawRequestContext(ctx context.Context, httpURL string, body []byte, timeout time.Duration) ([]byte, error) {
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)

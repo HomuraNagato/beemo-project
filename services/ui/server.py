@@ -5,7 +5,7 @@ import os
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote, urlparse
 
 import grpc
 from eve_proto import agent_pb2, agent_pb2_grpc
@@ -13,25 +13,64 @@ from eve_proto import agent_pb2, agent_pb2_grpc
 
 WEB_ROOT = Path(os.getenv("BEEMO_UI_WEB_ROOT", "/app/web/beemo")).resolve()
 ORCH_ADDR = os.getenv("ORCH_ADDR", "eve-orchestrator:5013")
-REQUEST_TIMEOUT_SECONDS = float(os.getenv("BEEMO_UI_TIMEOUT_SECONDS", "120"))
+REQUEST_TIMEOUT_SECONDS = float(os.getenv("BEEMO_UI_TIMEOUT_SECONDS", "900"))
 
 
 class BeemoUIHandler(BaseHTTPRequestHandler):
     server_version = "beemo-ui/0.1"
 
     def do_GET(self):
-        if self.path == "/healthz":
+        parsed = urlparse(self.path)
+        if parsed.path == "/healthz":
             self.write_json({"ok": True})
+            return
+        if parsed.path == "/api/workspaces":
+            try:
+                self.write_json({"workspaces": list_workspaces()})
+            except grpc.RpcError as exc:
+                self.write_json({"error": exc.details() or exc.code().name}, HTTPStatus.BAD_GATEWAY)
+            return
+        if parsed.path == "/api/sessions":
+            try:
+                self.write_json({"sessions": list_sessions()})
+            except grpc.RpcError as exc:
+                self.write_json({"error": exc.details() or exc.code().name}, HTTPStatus.BAD_GATEWAY)
+            return
+        if parsed.path == "/api/session":
+            session_id = str((parse_qs(parsed.query).get("id") or [""])[0]).strip()
+            if not session_id:
+                self.write_json({"error": "session id is required"}, HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                self.write_json(get_session(session_id))
+            except grpc.RpcError as exc:
+                self.write_json({"error": exc.details() or exc.code().name}, HTTPStatus.NOT_FOUND)
             return
         self.serve_static()
 
     def do_POST(self):
-        if self.path != "/api/chat":
+        if self.path not in {"/api/chat", "/api/agent", "/api/approve", "/api/diff"}:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
 
         try:
             payload = self.read_json()
+            if self.path == "/api/diff":
+                response = get_diff(
+                    str(payload.get("session_id") or "").strip(),
+                    str(payload.get("workspace") or "").strip(),
+                )
+                self.write_json({"diff": response.diff, "error": response.error})
+                return
+            if self.path == "/api/approve":
+                response = approve(
+                    str(payload.get("session_id") or "").strip(),
+                    str(payload.get("approval_id") or "").strip(),
+                    bool(payload.get("approved")),
+                )
+                self.write_json({"accepted": response.accepted, "status": response.status})
+                return
+
             session_id = str(payload.get("session_id") or "web").strip() or "web"
             raw_messages = payload.get("messages") or []
             messages = [
@@ -51,6 +90,15 @@ class BeemoUIHandler(BaseHTTPRequestHandler):
                 for key, value in (payload.get("options") or {}).items()
                 if str(key).strip() and str(value).strip()
             }
+            if self.path == "/api/agent":
+                self.stream_agent(
+                    session_id,
+                    messages,
+                    str(payload.get("mode") or "chat").strip(),
+                    str(payload.get("workspace") or "").strip(),
+                    options,
+                )
+                return
             response = chat(session_id, messages, options)
             self.write_json({"text": response.text})
         except grpc.RpcError as exc:
@@ -60,6 +108,32 @@ class BeemoUIHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             logging.exception("chat request failed")
             self.write_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def stream_agent(self, session_id, messages, mode, workspace, options):
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        try:
+            for event in run_agent(session_id, messages, mode, workspace, options):
+                item = {
+                    "session_id": event.session_id,
+                    "type": event.type,
+                    "text": event.text,
+                    "tool": event.tool,
+                    "payload_json": event.payload_json,
+                    "timestamp_unix_ms": event.timestamp_unix_ms,
+                    "approval_id": event.approval_id,
+                }
+                self.wfile.write(json.dumps(item).encode("utf-8") + b"\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            logging.info("agent stream disconnected session=%s", session_id)
+        except grpc.RpcError as exc:
+            item = {"type": "error", "text": exc.details() or exc.code().name}
+            self.wfile.write(json.dumps(item).encode("utf-8") + b"\n")
+            self.wfile.flush()
 
     def serve_static(self):
         path = unquote(self.path.split("?", 1)[0])
@@ -108,6 +182,94 @@ def chat(session_id, messages, options=None):
                 options=options or {},
             ),
             timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+
+
+def run_agent(session_id, messages, mode, workspace, options=None):
+    channel = grpc.insecure_channel(ORCH_ADDR)
+    client = agent_pb2_grpc.OrchestratorStub(channel)
+    try:
+        yield from client.RunAgent(
+            agent_pb2.AgentRequest(
+                session_id=session_id,
+                messages=messages,
+                mode=mode,
+                workspace=workspace,
+                options=options or {},
+            ),
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+    finally:
+        channel.close()
+
+
+def approve(session_id, approval_id, approved):
+    with grpc.insecure_channel(ORCH_ADDR) as channel:
+        client = agent_pb2_grpc.OrchestratorStub(channel)
+        return client.Approve(
+            agent_pb2.ApprovalDecision(
+                session_id=session_id,
+                approval_id=approval_id,
+                approved=approved,
+            ),
+            timeout=10,
+        )
+
+
+def list_workspaces():
+    with grpc.insecure_channel(ORCH_ADDR) as channel:
+        client = agent_pb2_grpc.OrchestratorStub(channel)
+        response = client.ListAgentWorkspaces(agent_pb2.ListWorkspacesRequest(), timeout=10)
+        return list(response.roots)
+
+
+def list_sessions():
+    with grpc.insecure_channel(ORCH_ADDR) as channel:
+        client = agent_pb2_grpc.OrchestratorStub(channel)
+        response = client.ListAgentSessions(agent_pb2.SessionListRequest(limit=30), timeout=10)
+        return [
+            {
+                "session_id": item.session_id,
+                "mode": item.mode,
+                "workspace": item.workspace,
+                "status": item.status,
+                "updated_unix_ms": item.updated_unix_ms,
+            }
+            for item in response.sessions
+        ]
+
+
+def get_session(session_id):
+    with grpc.insecure_channel(ORCH_ADDR) as channel:
+        client = agent_pb2_grpc.OrchestratorStub(channel)
+        response = client.GetAgentSession(agent_pb2.SessionRequest(session_id=session_id), timeout=10)
+        return {
+            "session": {
+                "session_id": response.session.session_id,
+                "mode": response.session.mode,
+                "workspace": response.session.workspace,
+                "status": response.session.status,
+                "updated_unix_ms": response.session.updated_unix_ms,
+            },
+            "events": [
+                {
+                    "type": event.type,
+                    "text": event.text,
+                    "tool": event.tool,
+                    "payload_json": event.payload_json,
+                    "timestamp_unix_ms": event.timestamp_unix_ms,
+                }
+                for event in response.events
+            ],
+        }
+
+
+def get_diff(session_id, workspace):
+    with grpc.insecure_channel(ORCH_ADDR) as channel:
+        client = agent_pb2_grpc.OrchestratorStub(channel)
+        return client.GetAgentDiff(
+            agent_pb2.AgentDiffRequest(session_id=session_id, workspace=workspace),
+            timeout=30,
         )
 
 

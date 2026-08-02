@@ -23,10 +23,31 @@
           <span id="expressionLabel">neutral</span>
           <span id="connectionLabel">idle</span>
         </div>
+        <div class="studio-toolbar" aria-label="Beemo mode and repository">
+          <div class="mode-control" role="group" aria-label="Assistant mode">
+            <button type="button" class="mode-button is-active" data-mode="chat">Chat</button>
+            <button type="button" class="mode-button" data-mode="code">Code</button>
+          </div>
+          <label class="workspace-control" for="workspaceSelect">
+            <span>Repository</span>
+            <select id="workspaceSelect" disabled>
+              <option value="">Select a repository</option>
+            </select>
+          </label>
+          <label class="session-control" for="sessionSelect">
+            <span>Session</span>
+            <select id="sessionSelect">
+              <option value="">New session</option>
+            </select>
+          </label>
+          <button type="button" class="toolbar-button" id="newSessionButton">New</button>
+          <button type="button" class="toolbar-button" id="diffButton" disabled>Diff</button>
+        </div>
       </section>
 
       <section class="speech-region" aria-label="Beemo response">
         <div class="response-window" id="responseWindow" tabindex="0">
+          <div class="activity-strip" id="activityStrip" hidden></div>
           <div class="message-stage" id="messageStage">
             <div aria-hidden="true"></div>
             <p class="chat-line current assistant">Hi. I am listening.</p>
@@ -55,6 +76,13 @@
         <button class="send-button" type="submit">Send</button>
       </form>
     </main>
+    <dialog class="diff-dialog" id="diffDialog">
+      <header>
+        <h2>Working tree diff</h2>
+        <button type="button" class="dialog-close" id="closeDiffButton" aria-label="Close diff">&times;</button>
+      </header>
+      <pre id="diffOutput"></pre>
+    </dialog>
     <script src="/app.js"></script>
   </body>
 </html>

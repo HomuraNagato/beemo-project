@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -15,15 +17,17 @@ type UpOptions struct {
 	Memory  bool
 	UI      bool
 	Voice   bool
+	Code    bool
 	Timeout time.Duration
 }
 
 type Manager struct {
-	Paths   Paths
-	Profile Profile
-	Runner  Runner
-	Output  io.Writer
-	Client  *http.Client
+	Paths    Paths
+	Profile  Profile
+	Runner   Runner
+	Output   io.Writer
+	Client   *http.Client
+	WaitCode func(context.Context, string) error
 }
 
 func (m Manager) Init(ctx context.Context, accelerator string, models, force bool) error {
@@ -50,6 +54,11 @@ type serviceCheck struct {
 func (m Manager) Up(ctx context.Context, options UpOptions) error {
 	if options.Timeout <= 0 {
 		options.Timeout = 5 * time.Minute
+	}
+	if options.Code {
+		if err := m.startCode(ctx, options.Build, false); err != nil {
+			return err
+		}
 	}
 	if err := m.composeUp(ctx, []string{"eve-reasoning", "eve-embedding", "eve-reranker"}, options.Build); err != nil {
 		return err
@@ -113,7 +122,13 @@ func (m Manager) Down(ctx context.Context, memory, ui, voice bool) error {
 			return err
 		}
 	}
-	return m.compose(ctx, "stop", "eve-reranker", "eve-embedding", "eve-reasoning")
+	if err := m.compose(ctx, "stop", "eve-reranker", "eve-embedding", "eve-reasoning"); err != nil {
+		return err
+	}
+	if _, err := m.Runner.Output(ctx, m.Paths.BeemoRoot, "systemctl", "--user", "is-active", "beemo-code.service"); err == nil {
+		return m.Runner.Run(ctx, m.Paths.BeemoRoot, "systemctl", "--user", "stop", "beemo-code.service")
+	}
+	return nil
 }
 
 func (m Manager) Status(ctx context.Context) error {
@@ -127,6 +142,11 @@ func (m Manager) Status(ctx context.Context) error {
 	containerNames := []string{"eve-reasoning", "eve-embedding", "eve-reranker", "memory_palace", "eve-ui", "eve-orchestrator", "eve-asr", "eve-wakeword"}
 	states := m.containerStates(ctx, containerNames)
 	m.printf("profile: %s\n", m.Profile.Name)
+	codeState := "stopped"
+	if output, err := m.Runner.Output(ctx, m.Paths.BeemoRoot, "systemctl", "--user", "is-active", "beemo-code.service"); err == nil {
+		codeState = strings.TrimSpace(output)
+	}
+	m.printf("%-18s %-12s %s\n", "beemo-code", codeState, "local")
 	for _, check := range checks {
 		state := states[check.Name]
 		health := "-"
@@ -163,6 +183,11 @@ func (m Manager) Doctor(ctx context.Context) error {
 		{"Docker", func() error { _, err := m.Runner.Output(ctx, m.Paths.BeemoRoot, "docker", "version"); return err }},
 		{"Beemo Compose", func() error { return m.compose(ctx, "config", "--quiet") }},
 		{"Memory Palace Compose", func() error { return m.memoryCompose(ctx, "config", "--quiet") }},
+		{"Bubblewrap", func() error { _, err := m.Runner.Output(ctx, m.Paths.BeemoRoot, "bwrap", "--version"); return err }},
+		{"User systemd", func() error {
+			_, err := m.Runner.Output(ctx, m.Paths.BeemoRoot, "systemctl", "--user", "show-environment")
+			return err
+		}},
 	}
 	failed := false
 	for _, check := range checks {
@@ -180,6 +205,16 @@ func (m Manager) Doctor(ctx context.Context) error {
 }
 
 func (m Manager) Logs(ctx context.Context, service string, tail int, follow bool) error {
+	if service == "beemo-code" || service == "code" {
+		args := []string{"--user", "-u", "beemo-code.service"}
+		if tail > 0 {
+			args = append(args, "-n", strconv.Itoa(tail))
+		}
+		if follow {
+			args = append(args, "-f")
+		}
+		return m.Runner.Run(ctx, m.Paths.BeemoRoot, "journalctl", args...)
+	}
 	args := []string{"logs"}
 	if follow {
 		args = append(args, "-f")
@@ -199,12 +234,88 @@ func (m Manager) Restart(ctx context.Context, service string, build bool) error 
 	if service == "memory" || service == "memory_palace" {
 		return m.memoryCompose(ctx, "up", "-d", buildArg(build), "--force-recreate", "memory_palace")
 	}
+	if service == "code" || service == "beemo-code" {
+		return m.startCode(ctx, build, true)
+	}
 	args := []string{"up", "-d"}
 	if build {
 		args = append(args, "--build")
 	}
 	args = append(args, "--force-recreate", service)
 	return m.compose(ctx, args...)
+}
+
+func (m Manager) startCode(ctx context.Context, build, forceRestart bool) error {
+	binary := filepath.Join(m.Paths.BeemoRoot, "bin", "beemo-code")
+	if build {
+		if err := m.Runner.Run(ctx, m.Paths.BeemoRoot, "go", "build", "-o", binary, "./cmd/beemo-code"); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Stat(binary); err != nil {
+		return fmt.Errorf("beemo-code binary missing; run beemo up --build or make build: %w", err)
+	}
+	socket := codeSocketPath()
+	if _, err := m.Runner.Output(ctx, m.Paths.BeemoRoot, "systemctl", "--user", "is-active", "beemo-code.service"); err == nil {
+		if !build && !forceRestart {
+			if info, statErr := os.Stat(socket); statErr == nil && info.Mode()&os.ModeSocket != 0 {
+				return nil
+			}
+		}
+		if err := m.Runner.Run(ctx, m.Paths.BeemoRoot, "systemctl", "--user", "stop", "beemo-code.service"); err != nil {
+			return err
+		}
+	}
+	roots := strings.TrimSpace(os.Getenv("BEEMO_CODE_ROOTS"))
+	if roots == "" {
+		roots = filepath.Dir(m.Paths.BeemoRoot)
+	}
+	if err := m.Runner.Run(ctx, m.Paths.BeemoRoot,
+		"systemd-run", "--user", "--unit=beemo-code", "--collect",
+		"--property=Restart=on-failure", "--property=RestartSec=2",
+		"--working-directory="+m.Paths.BeemoRoot,
+		"--setenv=BEEMO_CODE_ROOTS="+roots,
+		"--setenv=BEEMO_CODE_SOCKET="+socket,
+		binary,
+	); err != nil {
+		return err
+	}
+	return m.waitCode(ctx, socket)
+}
+
+func (m Manager) waitCode(ctx context.Context, path string) error {
+	if m.WaitCode != nil {
+		return m.WaitCode(ctx, path)
+	}
+	return waitForSocket(ctx, path)
+}
+
+func codeSocketPath() string {
+	if socket := strings.TrimSpace(os.Getenv("BEEMO_CODE_SOCKET")); socket != "" {
+		return socket
+	}
+	runtimeDir := strings.TrimSpace(os.Getenv("BEEMO_CODE_RUNTIME_DIR"))
+	if runtimeDir == "" {
+		runtimeDir = "/tmp/beemo-code"
+	}
+	return filepath.Join(runtimeDir, "beemo-code.sock")
+}
+
+func waitForSocket(ctx context.Context, path string) error {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if info, err := os.Stat(path); err == nil && info.Mode()&os.ModeSocket != 0 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for beemo-code socket %s", path)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 func (m Manager) composeUp(ctx context.Context, services []string, build bool) error {

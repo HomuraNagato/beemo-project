@@ -5,7 +5,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -34,6 +36,7 @@ func run(args []string) error {
 		memory := flags.Bool("memory", true, "start Memory Palace")
 		ui := flags.Bool("ui", true, "start the Beemo HTTP UI")
 		voice := flags.Bool("voice", false, "start ASR and wake-word services")
+		code := flags.Bool("code", true, "start the local Beemo code tools")
 		timeout := flags.Duration("timeout", 5*time.Minute, "readiness timeout per service")
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
@@ -42,7 +45,25 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		return manager.Up(ctx, lifecycle.UpOptions{Build: *build, Memory: *memory, UI: *ui, Voice: *voice, Timeout: *timeout})
+		return manager.Up(ctx, lifecycle.UpOptions{Build: *build, Memory: *memory, UI: *ui, Voice: *voice, Code: *code, Timeout: *timeout})
+	case "chat":
+		binary := ""
+		if executable, err := os.Executable(); err == nil {
+			candidate := filepath.Join(filepath.Dir(executable), "beemo-chat")
+			if _, statErr := os.Stat(candidate); statErr == nil {
+				binary = candidate
+			}
+		}
+		if binary == "" {
+			paths, err := lifecycle.ResolvePaths("", "")
+			if err != nil {
+				return err
+			}
+			binary = filepath.Join(paths.BeemoRoot, "bin", "beemo-chat")
+		}
+		command := exec.CommandContext(ctx, binary, args[1:]...)
+		command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
+		return command.Run()
 	case "init":
 		flags, common := commandFlags("init")
 		accelerator := flags.String("accelerator", "gpu", "model runtime accelerator: gpu or cpu")
@@ -175,6 +196,7 @@ Commands:
   status   show container and readiness state
   doctor   validate Docker and the reused Compose manifests
   logs     follow service logs
+  chat     open the interactive Beemo conversation client
   version  print version information
 
 Profiles: garnetmoon (default), legion-go, vllm-gpu, vllm-cpu, llama-cpu
@@ -183,6 +205,7 @@ Examples:
   beemo up --profile garnetmoon
   beemo up --profile legion-go --ui=false
   beemo status
+  beemo chat --mode code --workspace /path/to/repository
   beemo logs --tail 100 memory_palace
 `)
 }

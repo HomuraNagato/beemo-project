@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -72,5 +74,37 @@ func TestRestartRoutesMemoryToItsOwnComposeProject(t *testing.T) {
 	}
 	if len(runner.commands) != 1 || runner.commands[0].dir != "/memory" {
 		t.Fatalf("expected Memory Palace compose command, got %#v", runner.commands)
+	}
+}
+
+func TestRestartCodeRestartsActiveUserServiceWithoutBuild(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "bin", "beemo-code"), []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(t.TempDir(), "beemo-code.sock")
+	t.Setenv("BEEMO_CODE_SOCKET", socket)
+
+	runner := &recordingRunner{}
+	manager := Manager{
+		Paths: Paths{BeemoRoot: root}, Profile: Profile{Name: "garnetmoon"}, Runner: runner,
+		WaitCode: func(context.Context, string) error { return nil },
+	}
+	if err := manager.Restart(context.Background(), "beemo-code", false); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.commands) < 2 {
+		t.Fatalf("expected active check and restart, got %#v", runner.commands)
+	}
+	commands := make([]string, 0, len(runner.commands))
+	for _, command := range runner.commands {
+		commands = append(commands, command.name+" "+strings.Join(command.args, " "))
+	}
+	joined := strings.Join(commands, "\n")
+	if !strings.Contains(joined, "systemctl --user stop beemo-code.service") || !strings.Contains(joined, "systemd-run --user") {
+		t.Fatalf("expected beemo-code service recreation, got %#v", runner.commands)
 	}
 }

@@ -8,6 +8,20 @@ option go_package = "eve-beemo/proto/gen;proto";
 service Orchestrator {
   rpc StreamState(StateRequest) returns (stream StateUpdate);
   rpc Chat(ChatRequest) returns (ChatResponse);
+  rpc RunAgent(AgentRequest) returns (stream AgentEvent);
+  rpc Approve(ApprovalDecision) returns (ApprovalResult);
+  rpc ListAgentWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
+  rpc ListAgentSessions(SessionListRequest) returns (SessionListResponse);
+  rpc GetAgentSession(SessionRequest) returns (AgentSessionDetail);
+  rpc GetAgentDiff(AgentDiffRequest) returns (AgentDiffResponse);
+}
+
+// Host-local repository operations. The service is exposed over a Unix socket
+// and is never published as a TCP port.
+service CodeTools {
+  rpc Health(CodeHealthRequest) returns (CodeHealthResponse);
+  rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
+  rpc Execute(CodeToolRequest) returns (CodeToolResult);
 }
 
 service WakeWord {
@@ -96,6 +110,100 @@ message ChatResponse {
   repeated string tools = 2;
   string status = 3;
   string error_kind = 4;
+}
+
+message AgentRequest {
+  string session_id = 1;
+  repeated ChatMessage messages = 2;
+  string mode = 3; // chat | code
+  string workspace = 4;
+  map<string, string> options = 5;
+}
+
+message AgentEvent {
+  string session_id = 1;
+  string type = 2; // status | assistant | tool_start | tool_result | approval | file_change | complete | error
+  string text = 3;
+  string tool = 4;
+  string payload_json = 5;
+  int64 timestamp_unix_ms = 6;
+  string approval_id = 7;
+}
+
+message ApprovalDecision {
+  string session_id = 1;
+  string approval_id = 2;
+  bool approved = 3;
+}
+
+message ApprovalResult {
+  bool accepted = 1;
+  string status = 2;
+}
+
+message CodeHealthRequest {}
+
+message CodeHealthResponse {
+  bool ready = 1;
+  string version = 2;
+}
+
+message ListWorkspacesRequest {}
+
+message ListWorkspacesResponse {
+  repeated string roots = 1;
+}
+
+message CodeToolRequest {
+  string session_id = 1;
+  string workspace = 2;
+  string action = 3;
+  string args_json = 4;
+  bool approved = 5;
+}
+
+message CodeToolResult {
+  string action = 1;
+  string output = 2;
+  string status = 3; // ok | approval_required | error
+  string error = 4;
+  string approval_id = 5;
+  bool changed = 6;
+}
+
+message SessionListRequest {
+  int32 limit = 1;
+}
+
+message AgentSessionSummary {
+  string session_id = 1;
+  string mode = 2;
+  string workspace = 3;
+  string status = 4;
+  int64 updated_unix_ms = 5;
+}
+
+message SessionListResponse {
+  repeated AgentSessionSummary sessions = 1;
+}
+
+message SessionRequest {
+  string session_id = 1;
+}
+
+message AgentSessionDetail {
+  AgentSessionSummary session = 1;
+  repeated AgentEvent events = 2;
+}
+
+message AgentDiffRequest {
+  string session_id = 1;
+  string workspace = 2;
+}
+
+message AgentDiffResponse {
+  string diff = 1;
+  string error = 2;
 }
 
 message SpeakRequest {
