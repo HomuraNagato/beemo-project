@@ -20,9 +20,10 @@ type agentDecision struct {
 }
 
 type agentObservation struct {
-	Tool   string `json:"tool"`
-	Output string `json:"output"`
-	Error  string `json:"error,omitempty"`
+	Tool    string `json:"tool"`
+	Output  string `json:"output"`
+	Error   string `json:"error,omitempty"`
+	Changed bool   `json:"changed,omitempty"`
 }
 
 func (s *orchestratorServer) RunAgent(req *pb.AgentRequest, stream pb.Orchestrator_RunAgentServer) error {
@@ -84,12 +85,20 @@ func (s *orchestratorServer) RunAgent(req *pb.AgentRequest, stream pb.Orchestrat
 func (s *orchestratorServer) runCodeAgent(req *pb.AgentRequest, stream pb.Orchestrator_RunAgentServer) error {
 	ctx := stream.Context()
 	observations := s.initialCodeObservations(ctx, req)
+	lastToolSignature := ""
+	stalledSteps := 0
+	toolSteps := 0
+	decisionFailures := 0
+	duplicateFailures := 0
+	seenEvidence := map[string]bool{}
+	verificationRequired := false
+	verifiedAfterChange := false
 	for _, observation := range observations {
 		_ = s.sendAgentEvent(ctx, stream, req.GetSessionId(), "tool_result", observation.Tool, observation.Output, observation, "")
 	}
 
-	for step := 1; step <= s.cfg.CodeMaxSteps; step++ {
-		prompt := buildCodeAgentPrompt(req, observations, step, s.cfg.CodeMaxSteps)
+	for toolSteps < s.cfg.CodeMaxSteps {
+		prompt := buildCodeAgentPrompt(req, observations, toolSteps+1, s.cfg.CodeMaxSteps, s.cfg.CodeMaxPromptChars)
 		callAgent := s.callAgentCompletion
 		if callAgent == nil {
 			callAgent = llm.CallOnceWithMaxTokensContext
@@ -100,12 +109,26 @@ func (s *orchestratorServer) runCodeAgent(req *pb.AgentRequest, stream pb.Orches
 		}
 		decision, err := parseAgentDecision(decisionText)
 		if err != nil {
-			observations = append(observations, agentObservation{Tool: "agent", Error: "invalid decision: " + err.Error()})
+			s.log().Warn("orch.agent.invalid_decision", "session", req.GetSessionId(), "error", err, "response_preview", compactAgentText(decisionText, 2000))
+			decisionFailures++
+			observation := agentObservation{Tool: "agent", Error: "invalid decision: " + err.Error()}
+			observations = appendBoundedObservations(observations, observation, 18)
+			_ = s.sendAgentEvent(ctx, stream, req.GetSessionId(), "tool_result", "agent", observation.Error, observation, "")
+			if decisionFailures >= 3 {
+				return s.sendAgentEvent(ctx, stream, req.GetSessionId(), "error", "", "Code mode stopped after three consecutive invalid model decisions.", nil, "")
+			}
 			continue
 		}
 
 		switch decision.Type {
 		case "final":
+			decisionFailures = 0
+			if verificationRequired && !verifiedAfterChange {
+				observation := agentObservation{Tool: "agent", Error: "run a focused verification command with code.exec before finalizing file changes"}
+				observations = appendBoundedObservations(observations, observation, 18)
+				_ = s.sendAgentEvent(ctx, stream, req.GetSessionId(), "tool_result", "agent", observation.Error, observation, "")
+				continue
+			}
 			text := strings.TrimSpace(decision.Text)
 			if text == "" {
 				text = "The coding task completed without a final summary."
@@ -117,12 +140,33 @@ func (s *orchestratorServer) runCodeAgent(req *pb.AgentRequest, stream pb.Orches
 			return s.sendAgentEvent(ctx, stream, req.GetSessionId(), "complete", "", "complete", nil, "")
 		case "tool":
 			if strings.TrimSpace(decision.Tool) == "" {
-				observations = append(observations, agentObservation{Tool: "agent", Error: "tool decision omitted a tool name"})
+				decisionFailures++
+				observation := agentObservation{Tool: "agent", Error: "tool decision omitted a tool name"}
+				observations = appendBoundedObservations(observations, observation, 18)
+				_ = s.sendAgentEvent(ctx, stream, req.GetSessionId(), "tool_result", "agent", observation.Error, observation, "")
+				if decisionFailures >= 3 {
+					return s.sendAgentEvent(ctx, stream, req.GetSessionId(), "error", "", "Code mode stopped after three consecutive invalid model decisions.", nil, "")
+				}
 				continue
 			}
 			if len(decision.Args) == 0 {
 				decision.Args = json.RawMessage(`{}`)
 			}
+			signature := decision.Tool + "\n" + string(decision.Args)
+			if signature == lastToolSignature && decision.Tool != "code.process_poll" {
+				duplicateFailures++
+				observations = appendBoundedObservations(observations, agentObservation{
+					Tool: decision.Tool, Error: "identical consecutive tool call skipped; refine the query, path, or read range",
+				}, 18)
+				if duplicateFailures >= 3 {
+					return s.sendAgentEvent(ctx, stream, req.GetSessionId(), "error", "", "Code mode stopped after repeated identical model decisions.", nil, "")
+				}
+				continue
+			}
+			decisionFailures = 0
+			duplicateFailures = 0
+			lastToolSignature = signature
+			toolSteps++
 			if err := s.sendAgentEvent(ctx, stream, req.GetSessionId(), "tool_start", decision.Tool, "", json.RawMessage(decision.Args), ""); err != nil {
 				return err
 			}
@@ -130,15 +174,74 @@ func (s *orchestratorServer) runCodeAgent(req *pb.AgentRequest, stream pb.Orches
 			if err != nil {
 				observation = agentObservation{Tool: decision.Tool, Error: err.Error()}
 			}
+			if observation.Changed {
+				verificationRequired = true
+				verifiedAfterChange = false
+			} else if verificationRequired && decision.Tool == "code.exec" && observation.Error == "" {
+				verifiedAfterChange = true
+			}
 			observations = appendBoundedObservations(observations, observation, 18)
+			evidenceKey := observation.Tool + "\n" + observation.Output + "\n" + observation.Error
+			if observation.Output == "" || observation.Error != "" || seenEvidence[evidenceKey] {
+				stalledSteps++
+			} else {
+				seenEvidence[evidenceKey] = true
+				stalledSteps = 0
+			}
 			if err := s.sendAgentEvent(ctx, stream, req.GetSessionId(), "tool_result", decision.Tool, observation.Output, observation, ""); err != nil {
 				return err
 			}
+			if stalledSteps == 4 {
+				observations = appendBoundedObservations(observations, agentObservation{
+					Tool: "agent", Error: "no progress after four calls; stop inspecting empty results and perform the requested change or answer with available evidence",
+				}, 18)
+			}
+			if stalledSteps >= 8 {
+				return s.sendAgentEvent(ctx, stream, req.GetSessionId(), "error", "", "Code mode stopped after repeated tool calls produced no progress.", nil, "")
+			}
 		default:
-			observations = append(observations, agentObservation{Tool: "agent", Error: "decision type must be tool or final"})
+			lastToolSignature = ""
+			decisionFailures++
+			observation := agentObservation{Tool: "agent", Error: "decision type must be tool or final"}
+			observations = appendBoundedObservations(observations, observation, 18)
+			_ = s.sendAgentEvent(ctx, stream, req.GetSessionId(), "tool_result", "agent", observation.Error, observation, "")
+			if decisionFailures >= 3 {
+				return s.sendAgentEvent(ctx, stream, req.GetSessionId(), "error", "", "Code mode stopped after three consecutive invalid model decisions.", nil, "")
+			}
 		}
 	}
-	return s.sendAgentEvent(ctx, stream, req.GetSessionId(), "error", "", "Code mode reached its tool-step limit before completing.", nil, "")
+	return s.finishCodeAgentAtLimit(ctx, req, stream, observations)
+}
+
+func (s *orchestratorServer) finishCodeAgentAtLimit(ctx context.Context, req *pb.AgentRequest, stream pb.Orchestrator_RunAgentServer, observations []agentObservation) error {
+	messages, _ := json.Marshal(compactAgentMessages(req.GetMessages(), 6000))
+	results, _ := json.Marshal(compactAgentObservations(observations, 16000))
+	prompt := fmt.Sprintf(`The Code-mode tool budget is exhausted. Do not call tools and do not output JSON.
+Write a concise handoff that clearly states:
+- work completed
+- files changed, if any
+- verification performed
+- remaining work or uncertainty
+State explicitly that the task may be incomplete because the tool budget was reached.
+Conversation JSON: %s
+Tool observations JSON: %s
+Handoff:`, messages, results)
+	callAgent := s.callAgentCompletion
+	if callAgent == nil {
+		callAgent = llm.CallOnceWithMaxTokensContext
+	}
+	text, err := callAgent(ctx, s.cfg.LLMHTTPURL, s.cfg.LLMModel, prompt, s.cfg.CodeMaxTokens, time.Duration(s.cfg.LLMTimeoutMs)*time.Millisecond)
+	if err != nil || strings.TrimSpace(text) == "" {
+		text = "I reached the Code-mode tool budget before completing the task. Earlier tool activity is preserved in this session, but the remaining work still needs to be continued."
+	} else if decision, parseErr := parseAgentDecision(text); parseErr == nil && decision.Type == "final" && strings.TrimSpace(decision.Text) != "" {
+		text = decision.Text
+	}
+	payload := map[string]any{"status": "tool_limit", "incomplete": true}
+	if err := s.sendAgentEvent(ctx, stream, req.GetSessionId(), "assistant", "", strings.TrimSpace(text), payload, ""); err != nil {
+		return err
+	}
+	_ = s.saveAgentSession(ctx, req, "code", "complete")
+	return s.sendAgentEvent(ctx, stream, req.GetSessionId(), "complete", "", "tool_limit", payload, "")
 }
 
 func (s *orchestratorServer) executeAgentTool(ctx context.Context, req *pb.AgentRequest, stream pb.Orchestrator_RunAgentServer, decision agentDecision) (agentObservation, error) {
@@ -174,7 +277,7 @@ func (s *orchestratorServer) executeAgentTool(ctx context.Context, req *pb.Agent
 		if result.GetChanged() {
 			_ = s.sendAgentEvent(ctx, stream, req.GetSessionId(), "file_change", decision.Tool, "workspace changed", nil, "")
 		}
-		return agentObservation{Tool: decision.Tool, Output: result.GetOutput()}, nil
+		return agentObservation{Tool: decision.Tool, Output: result.GetOutput(), Changed: result.GetChanged()}, nil
 	}
 
 	if !supportedTool(decision.Tool) || decision.Tool == "beemo.direct" {
@@ -372,19 +475,40 @@ func (s *orchestratorServer) saveAgentSession(ctx context.Context, req *pb.Agent
 	return s.agentStore.UpsertSession(ctx, req.GetSessionId(), s.cfg.MemoryUserKey, mode, req.GetWorkspace(), status)
 }
 
-func buildCodeAgentPrompt(req *pb.AgentRequest, observations []agentObservation, step, maxSteps int) string {
-	messages, _ := json.Marshal(req.GetMessages())
-	results, _ := json.Marshal(observations)
-	return fmt.Sprintf(`You are Beemo in explicit Code mode. Work carefully in the selected repository.
+func buildCodeAgentPrompt(req *pb.AgentRequest, observations []agentObservation, step, maxSteps, maxChars int) string {
+	if maxChars <= 0 {
+		maxChars = 40000
+	}
+	messageBudget := maxChars / 4
+	observationBudget := maxChars / 2
+	render := func() string {
+		messages, _ := json.Marshal(compactAgentMessages(req.GetMessages(), messageBudget))
+		results, _ := json.Marshal(compactAgentObservations(observations, observationBudget))
+		return fmt.Sprintf(`You are Beemo in explicit Code mode. Work carefully in the selected repository.
 You may use Memory Palace and ordinary Beemo tools when relevant. Inspect before editing, preserve unrelated changes, run focused verification, and inspect the final diff.
-Return exactly one JSON object, without markdown:
-{"type":"tool","tool":"code.search","args":{"query":"name","path":"."}}
-or {"type":"final","text":"concise result and verification"}.
+Return exactly one JSON object, without markdown. A tool decision has fields type="tool", tool=<available tool name>, and args=<that tool's argument object>. A final decision has fields type="final" and text=<concise result and verification>.
+
+Search policy:
+- Start with likely entry points, project documentation, and exact terms or identifiers from the latest user request.
+- Use code.files to discover filenames and code.search for file contents.
+- Narrow by path, glob, and fixed string whenever possible; broaden incrementally only after a targeted search returns no useful matches.
+- Prefer distinctive identifiers or domain nouns over an entire natural-language question.
+- Matches found only in tests, generated files, or these agent instructions are secondary evidence; continue into production code or documentation.
+- Every initial search term must come from the user request or repository evidence, never from these instructions.
+- Read relevant ranges around matches instead of collecting whole files. When a read is truncated, continue from a later offset rather than repeating it.
+- A truncated result means the search must be narrowed or continued with a more specific query.
+
+Editing policy:
+- All path arguments are relative to the selected workspace; use "." for its root and do not repeat the absolute workspace path.
+- An empty listing means the workspace is empty. For a requested new file, create it instead of continuing to inspect.
+- Use code.create for a new file and code.patch to modify an existing file.
 
 Available tools:
 - code.list {path}
+- code.files {path?, query?, glob?, max_results?}
 - code.read {path, offset?, limit?}
-- code.search {query, path?}
+- code.search {query, path?, glob?, fixed_strings?, max_results?}
+- code.create {path, content} for a new file only
 - code.patch {patch} using a standard unified Git diff
 - code.exec {command}
 - code.process_start {command}
@@ -406,6 +530,74 @@ Step: %d of %d
 Conversation JSON: %s
 Tool observations JSON: %s
 Next decision:`, req.GetWorkspace(), step, maxSteps, messages, results)
+	}
+	prompt := render()
+	for len(prompt) > maxChars && (observationBudget > 1000 || messageBudget > 1000) {
+		if observationBudget >= messageBudget && observationBudget > 1000 {
+			observationBudget = max(1000, observationBudget-(len(prompt)-maxChars)-512)
+		} else {
+			messageBudget = max(1000, messageBudget-(len(prompt)-maxChars)-512)
+		}
+		prompt = render()
+	}
+	return prompt
+}
+
+func compactAgentMessages(messages []*pb.ChatMessage, budget int) []*pb.ChatMessage {
+	result := make([]*pb.ChatMessage, 0, len(messages))
+	used := 0
+	for i := len(messages) - 1; i >= 0; i-- {
+		content := compactAgentText(messages[i].GetContent(), min(3000, max(0, budget-used)))
+		if content == "" {
+			break
+		}
+		result = append(result, &pb.ChatMessage{Role: messages[i].GetRole(), Content: content})
+		used += len(content)
+		if used >= budget {
+			break
+		}
+	}
+	for left, right := 0, len(result)-1; left < right; left, right = left+1, right-1 {
+		result[left], result[right] = result[right], result[left]
+	}
+	return result
+}
+
+func compactAgentObservations(observations []agentObservation, budget int) []agentObservation {
+	result := make([]agentObservation, 0, len(observations))
+	used := 0
+	for i := len(observations) - 1; i >= 0; i-- {
+		remaining := budget - used
+		if remaining <= 0 {
+			break
+		}
+		value := observations[i]
+		value.Output = compactAgentText(value.Output, min(6000, remaining))
+		remaining -= len(value.Output)
+		value.Error = compactAgentText(value.Error, min(2000, max(0, remaining)))
+		used += len(value.Tool) + len(value.Output) + len(value.Error)
+		result = append(result, value)
+	}
+	for left, right := 0, len(result)-1; left < right; left, right = left+1, right-1 {
+		result[left], result[right] = result[right], result[left]
+	}
+	return result
+}
+
+func compactAgentText(value string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(value) <= limit {
+		return value
+	}
+	marker := fmt.Sprintf("\n[model context truncated: %d characters omitted]\n", len(value)-limit)
+	if len(marker) >= limit {
+		return marker[:limit]
+	}
+	available := limit - len(marker)
+	head := available * 3 / 4
+	return value[:head] + marker + value[len(value)-(available-head):]
 }
 
 func parseAgentDecision(text string) (agentDecision, error) {
@@ -414,12 +606,12 @@ func parseAgentDecision(text string) (agentDecision, error) {
 	trimmed = strings.TrimPrefix(trimmed, "```")
 	trimmed = strings.TrimSuffix(trimmed, "```")
 	start := strings.Index(trimmed, "{")
-	end := strings.LastIndex(trimmed, "}")
-	if start < 0 || end < start {
+	if start < 0 {
 		return agentDecision{}, fmt.Errorf("response did not contain a JSON object")
 	}
 	var decision agentDecision
-	if err := json.Unmarshal([]byte(trimmed[start:end+1]), &decision); err != nil {
+	decoder := json.NewDecoder(strings.NewReader(trimmed[start:]))
+	if err := decoder.Decode(&decision); err != nil {
 		return agentDecision{}, err
 	}
 	decision.Type = strings.ToLower(strings.TrimSpace(decision.Type))

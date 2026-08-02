@@ -59,6 +59,7 @@ memory:
 
 code:
   socket: /run/beemo-code/beemo-code.sock
-  max_steps: 24
+  max_steps: 64
   max_tokens: 1024
+  max_prompt_chars: 40000
   approval_timeout_ms: 300000

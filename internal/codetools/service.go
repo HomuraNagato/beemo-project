@@ -111,17 +111,16 @@ func (s *Service) execute(ctx context.Context, workspace, action string, args ma
 			return &pb.CodeToolResult{Action: action, Status: "approval_required", Output: "reading a potentially sensitive file requires approval", ApprovalId: newID()}, nil
 		}
 		return s.read(workspace, path, intArg(args, "offset"), intArg(args, "limit"))
-	case "code.search":
-		query := stringArg(args, "query")
-		if query == "" {
-			return nil, fmt.Errorf("query is required")
-		}
+	case "code.create":
 		path := stringArg(args, "path")
-		if path == "" {
-			path = "."
+		if sensitivePath(path) && !approved {
+			return &pb.CodeToolResult{Action: action, Status: "approval_required", Output: "creating a potentially sensitive file requires approval", ApprovalId: newID()}, nil
 		}
-		command := "rg --line-number --color never -- " + shellQuote(query) + " " + shellQuote(path)
-		return s.run(ctx, workspace, action, command, "", false, false)
+		return s.create(workspace, path, stringArgRaw(args, "content"))
+	case "code.search":
+		return s.search(ctx, workspace, args)
+	case "code.files":
+		return s.files(ctx, workspace, args)
 	case "code.patch":
 		patch := stringArg(args, "patch")
 		if err := validatePatch(patch); err != nil {
@@ -240,6 +239,157 @@ func (s *Service) list(workspace, relative string) (*pb.CodeToolResult, error) {
 	return ok("code.list", strings.Join(lines, "\n"), false), nil
 }
 
+func (s *Service) create(workspace, relative, content string) (*pb.CodeToolResult, error) {
+	if strings.TrimSpace(relative) == "" {
+		return nil, fmt.Errorf("path is required")
+	}
+	maxBytes := s.cfg.MaxReadBytes
+	if maxBytes <= 0 {
+		maxBytes = 256 * 1024
+	}
+	if len(content) > maxBytes {
+		return nil, fmt.Errorf("content exceeds %d-byte file limit", maxBytes)
+	}
+	path, err := s.resolver.WritablePath(workspace, relative)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		if os.IsExist(err) {
+			return nil, fmt.Errorf("file already exists; use code.patch to modify it: %s", relative)
+		}
+		return nil, err
+	}
+	if _, err := file.WriteString(content); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if err := file.Close(); err != nil {
+		return nil, err
+	}
+	return ok("code.create", relative, true), nil
+}
+
+func (s *Service) search(ctx context.Context, workspace string, args map[string]any) (*pb.CodeToolResult, error) {
+	query := stringArg(args, "query")
+	if query == "" {
+		return nil, fmt.Errorf("query is required")
+	}
+	path := stringArg(args, "path")
+	if path == "" {
+		path = "."
+	}
+	parts := []string{"rg", "--line-number", "--no-heading", "--color", "never", "--max-columns", "500", "--max-columns-preview"}
+	fixedStrings, err := optionalBoolArg(args, "fixed_strings")
+	if err != nil {
+		return nil, err
+	}
+	if fixedStrings {
+		parts = append(parts, "--fixed-strings")
+	}
+	if glob := stringArg(args, "glob"); glob != "" {
+		parts = append(parts, "--glob", shellQuote(glob))
+	}
+	parts = append(parts, "--", shellQuote(query), shellQuote(path))
+	output, err := s.runSearchCommand(ctx, workspace, strings.Join(parts, " "))
+	if err != nil {
+		return nil, err
+	}
+	return ok("code.search", s.limitSearchOutput(output, intArg(args, "max_results")), false), nil
+}
+
+func (s *Service) files(ctx context.Context, workspace string, args map[string]any) (*pb.CodeToolResult, error) {
+	path := stringArg(args, "path")
+	if path == "" {
+		path = "."
+	}
+	parts := []string{"rg", "--files", "--color", "never"}
+	if glob := stringArg(args, "glob"); glob != "" {
+		parts = append(parts, "--glob", shellQuote(glob))
+	}
+	parts = append(parts, "--", shellQuote(path))
+	output, err := s.runSearchCommand(ctx, workspace, strings.Join(parts, " "))
+	if err != nil {
+		return nil, err
+	}
+	if path == "." {
+		lines := strings.Split(output, "\n")
+		for i := range lines {
+			lines[i] = strings.TrimPrefix(lines[i], "./")
+		}
+		output = strings.Join(lines, "\n")
+	}
+	if query := strings.ToLower(stringArg(args, "query")); query != "" {
+		matches := make([]string, 0)
+		for _, line := range strings.Split(output, "\n") {
+			if strings.Contains(strings.ToLower(line), query) {
+				matches = append(matches, line)
+			}
+		}
+		output = strings.Join(matches, "\n")
+	}
+	return ok("code.files", s.limitSearchOutput(output, intArg(args, "max_results")), false), nil
+}
+
+func (s *Service) runSearchCommand(ctx context.Context, workspace, command string) (string, error) {
+	// ripgrep uses exit code 1 for a valid search with no matches.
+	command += `; status=$?; [ "$status" -eq 0 ] || [ "$status" -eq 1 ]`
+	result, err := s.run(ctx, workspace, "search", command, "", false, false)
+	if err != nil {
+		return "", err
+	}
+	return result.GetOutput(), nil
+}
+
+func (s *Service) limitSearchOutput(output string, requested int) string {
+	defaultResults := s.cfg.SearchDefaultResults
+	if defaultResults <= 0 {
+		defaultResults = 50
+	}
+	maxResults := s.cfg.SearchMaxResults
+	if maxResults <= 0 {
+		maxResults = 200
+	}
+	maxBytes := s.cfg.SearchMaxBytes
+	if maxBytes <= 0 {
+		maxBytes = 16 * 1024
+	}
+	if requested <= 0 {
+		requested = defaultResults
+	}
+	requested = min(requested, maxResults)
+	return limitResultLines(strings.TrimSpace(output), requested, maxBytes)
+}
+
+func limitResultLines(output string, maxLines, maxBytes int) string {
+	if output == "" {
+		return ""
+	}
+	lines := strings.Split(output, "\n")
+	kept := make([]string, 0, min(len(lines), maxLines))
+	used := 0
+	for _, line := range lines {
+		additional := len(line)
+		if len(kept) > 0 {
+			additional++
+		}
+		if len(kept) >= maxLines || used+additional > maxBytes {
+			break
+		}
+		kept = append(kept, line)
+		used += additional
+	}
+	result := strings.Join(kept, "\n")
+	if omitted := len(lines) - len(kept); omitted > 0 {
+		result += fmt.Sprintf("\n[truncated: %d additional results]", omitted)
+	}
+	return result
+}
+
 func (s *Service) read(workspace, relative string, offset, limit int) (*pb.CodeToolResult, error) {
 	if strings.TrimSpace(relative) == "" {
 		return nil, fmt.Errorf("path is required")
@@ -308,10 +458,30 @@ func stringArg(args map[string]any, name string) string {
 	return strings.TrimSpace(fmt.Sprint(value))
 }
 
+func stringArgRaw(args map[string]any, name string) string {
+	value, ok := args[name]
+	if !ok || value == nil {
+		return ""
+	}
+	return fmt.Sprint(value)
+}
+
 func intArg(args map[string]any, name string) int {
 	value := stringArg(args, name)
 	n, _ := strconv.Atoi(value)
 	return n
+}
+
+func optionalBoolArg(args map[string]any, name string) (bool, error) {
+	value, ok := args[name]
+	if !ok || value == nil {
+		return false, nil
+	}
+	result, err := strconv.ParseBool(strings.TrimSpace(fmt.Sprint(value)))
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean", name)
+	}
+	return result, nil
 }
 
 func validatePatch(patch string) error {

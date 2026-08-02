@@ -55,6 +55,7 @@ type Config struct {
 	CodeSocket                 string
 	CodeMaxSteps               int
 	CodeMaxTokens              int
+	CodeMaxPromptChars         int
 	CodeApprovalTimeoutMs      int
 }
 
@@ -139,8 +140,9 @@ func defaultConfig() Config {
 		MemoryTimeoutMs:            30000,
 		MemoryAutoSave:             true,
 		CodeSocket:                 "/run/beemo-code/beemo-code.sock",
-		CodeMaxSteps:               24,
+		CodeMaxSteps:               64,
 		CodeMaxTokens:              1024,
+		CodeMaxPromptChars:         40000,
 		CodeApprovalTimeoutMs:      300000,
 	}
 }
@@ -210,6 +212,7 @@ type yamlConfig struct {
 		Socket            string `yaml:"socket"`
 		MaxSteps          int    `yaml:"max_steps"`
 		MaxTokens         int    `yaml:"max_tokens"`
+		MaxPromptChars    int    `yaml:"max_prompt_chars"`
 		ApprovalTimeoutMs int    `yaml:"approval_timeout_ms"`
 	} `yaml:"code"`
 }
@@ -278,6 +281,7 @@ func loadYAML(path string) (Config, error) {
 	setString(&cfg.CodeSocket, raw.Code.Socket)
 	setInt(&cfg.CodeMaxSteps, raw.Code.MaxSteps)
 	setInt(&cfg.CodeMaxTokens, raw.Code.MaxTokens)
+	setInt(&cfg.CodeMaxPromptChars, raw.Code.MaxPromptChars)
 	setInt(&cfg.CodeApprovalTimeoutMs, raw.Code.ApprovalTimeoutMs)
 	return cfg, nil
 }

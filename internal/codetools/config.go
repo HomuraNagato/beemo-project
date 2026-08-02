@@ -11,19 +11,25 @@ import (
 const DefaultRuntimeDir = "/tmp/beemo-code"
 
 type Config struct {
-	Socket       string
-	Roots        []string
-	MaxOutput    int
-	MaxReadBytes int
-	CommandTTL   int
+	Socket               string
+	Roots                []string
+	MaxOutput            int
+	MaxReadBytes         int
+	SearchDefaultResults int
+	SearchMaxResults     int
+	SearchMaxBytes       int
+	CommandTTL           int
 }
 
 func LoadConfig() (Config, error) {
 	cfg := Config{
-		Socket:       codeSocketFromEnvironment(),
-		MaxOutput:    256 * 1024,
-		MaxReadBytes: 256 * 1024,
-		CommandTTL:   120,
+		Socket:               codeSocketFromEnvironment(),
+		MaxOutput:            256 * 1024,
+		MaxReadBytes:         256 * 1024,
+		SearchDefaultResults: 50,
+		SearchMaxResults:     200,
+		SearchMaxBytes:       16 * 1024,
+		CommandTTL:           120,
 	}
 	if raw := strings.TrimSpace(os.Getenv("BEEMO_CODE_ROOTS")); raw != "" {
 		cfg.Roots = splitRoots(raw)

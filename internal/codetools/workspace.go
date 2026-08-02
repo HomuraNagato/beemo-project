@@ -31,7 +31,11 @@ func (r Resolver) ExistingPath(workspace, relative string) (string, error) {
 	if strings.TrimSpace(relative) == "" {
 		return root, nil
 	}
-	return r.resolve(filepath.Join(root, relative), false)
+	target := relative
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(root, target)
+	}
+	return r.resolve(target, false)
 }
 
 func (r Resolver) WritablePath(workspace, relative string) (string, error) {
@@ -39,7 +43,11 @@ func (r Resolver) WritablePath(workspace, relative string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	target, err := filepath.Abs(filepath.Join(root, relative))
+	target := relative
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(root, target)
+	}
+	target, err = filepath.Abs(target)
 	if err != nil {
 		return "", err
 	}
