@@ -37,6 +37,9 @@ var (
 	convertTargetUnitPattern = regexp.MustCompile(`(?i)\b(?:to|into|in)\s+([a-z]+(?:/[a-z]+)+|[a-z]+(?:\s+per\s+[a-z]+)?)\s*[\.\?!,]*$`)
 	weatherHourPattern       = regexp.MustCompile(`(?i)\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b`)
 	percentOfPattern         = regexp.MustCompile(`(?i)\b(\d+(?:\.\d+)?)\s*(?:%|percent)\s+of\s+(\d+(?:\.\d+)?)\b`)
+	arithmeticPrefixPattern  = regexp.MustCompile(`(?i)^\s*(?:what\s+is|what's|calculate|compute|evaluate)\s+`)
+	arithmeticAllowedPattern = regexp.MustCompile(`^[0-9eE+\-*/().\s]+$`)
+	arithmeticBinaryPattern  = regexp.MustCompile(`\d\s*[+\-*/]\s*[+\-]?\d`)
 )
 
 func TryFillPending(req PendingFillRequest) (PlannedCall, bool, error) {
@@ -286,6 +289,27 @@ func InferToolCall(text string) (PlannedCall, bool, error) {
 		}
 	}
 	return PlannedCall{}, false, nil
+}
+
+func InferArithmeticCall(text string) (PlannedCall, bool, error) {
+	expression := strings.ToLower(strings.TrimSpace(text))
+	expression = arithmeticPrefixPattern.ReplaceAllString(expression, "")
+	expression = strings.TrimSpace(strings.TrimRight(expression, "?!."))
+	replacer := strings.NewReplacer(
+		"multiplied by", "*",
+		"divided by", "/",
+		"plus", "+",
+		"minus", "-",
+		"times", "*",
+	)
+	expression = strings.Join(strings.Fields(replacer.Replace(expression)), " ")
+	if expression == "" || !arithmeticAllowedPattern.MatchString(expression) || !arithmeticBinaryPattern.MatchString(expression) {
+		return PlannedCall{}, false, nil
+	}
+	return rawPlannedCall("calculator", map[string]any{
+		"operation":  "expression",
+		"expression": expression,
+	})
 }
 
 func rawPlannedCall(action string, args map[string]any) (PlannedCall, bool, error) {

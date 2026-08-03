@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import queue
@@ -185,19 +186,31 @@ class OrchestratorClient:
         self.channel.close()
 
     def chat(self, session_id: str, prompt: str) -> tuple[str, list[str], str, str]:
-        response = self.stub.Chat(
-            agent_pb2.ChatRequest(
+        response_text = ""
+        tools: list[str] = []
+        status = "ok"
+        error_kind = ""
+        events = self.stub.RunAgent(
+            agent_pb2.AgentRequest(
                 session_id=session_id,
                 messages=[agent_pb2.ChatMessage(role="user", content=prompt)],
+                mode="chat",
             ),
             timeout=self.timeout_secs,
         )
-        return (
-            response.text.strip(),
-            list(response.tools),
-            response.status.strip(),
-            response.error_kind.strip(),
-        )
+        for event in events:
+            if event.type == "assistant":
+                response_text = event.text.strip()
+                if event.payload_json:
+                    try:
+                        tools = list(json.loads(event.payload_json).get("tools", []))
+                    except (json.JSONDecodeError, AttributeError, TypeError):
+                        pass
+            elif event.type == "error":
+                status = "error"
+                error_kind = "orchestrator_agent"
+                response_text = event.text.strip()
+        return response_text, tools, status, error_kind
 
 
 class PulseRecorder:
@@ -407,7 +420,8 @@ class WakeLoop:
         self.followup_enabled = cfg_bool(config, "followup.enabled", env_bool("WAKEWORD_FOLLOWUP_ENABLED", True))
         self.followup_timeout_secs = cfg_float(config, "followup.timeout_secs", env_float("WAKEWORD_FOLLOWUP_TIMEOUT_SECS", 12.0))
         self.followup_max_turns = cfg_int(config, "followup.max_turns", env_int("WAKEWORD_FOLLOWUP_MAX_TURNS", 4))
-        self.session_id = cfg_str(config, "server.session_id", os.getenv("WAKEWORD_SESSION_ID", "voice-loop"))
+        self.session_id = os.getenv("WAKEWORD_SESSION_ID", "").strip() or cfg_str(config, "server.session_id", "voice-loop")
+        self.session_file = os.getenv("BEEMO_SESSION_FILE", "/run/beemo/session-id").strip()
         self.wake_phrases = cfg_list(config, "detector.phrases", split_phrases(os.getenv("WAKEWORD_PHRASES", "")))
         if not self.wake_phrases:
             self.wake_phrases = split_phrases("")
@@ -431,6 +445,17 @@ class WakeLoop:
         self.recorder.stop()
         self.asr_client.close()
         self.orchestrator_client.close()
+
+    def active_session_id(self) -> str:
+        if self.session_file:
+            try:
+                with open(self.session_file, "r", encoding="utf-8") as handle:
+                    session_id = handle.read().strip()
+                if session_id:
+                    return session_id
+            except OSError as err:
+                logging.warning("wakeword.session_file_unavailable path=%s error=%s", self.session_file, err)
+        return self.session_id
 
     def publish_wake(
         self,
@@ -534,6 +559,9 @@ class WakeLoop:
             logging.info("wakeword.heard transcript=%r confidence=%.2f matched=false", transcript, confidence)
             return None
 
+        session_id = self.active_session_id()
+        self.session_id = session_id
+
         if not prompt:
             logging.info("wakeword.heard transcript=%r confidence=%.2f matched=true prompt=<empty>", transcript, confidence)
             if publish_source:
@@ -552,7 +580,7 @@ class WakeLoop:
                 confidence=confidence,
             )
         try:
-            response, tools, status, error_kind = self.orchestrator_client.chat(self.session_id, prompt)
+            response, tools, status, error_kind = self.orchestrator_client.chat(session_id, prompt)
         except grpc.RpcError as err:
             details = err.details() if hasattr(err, "details") else str(err)
             logging.exception("wakeword.orchestrator_error details=%r", details)

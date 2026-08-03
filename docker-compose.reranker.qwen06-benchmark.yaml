@@ -1,7 +1,7 @@
 services:
   eve-reranker-qwen06-model:
     container_name: eve-reranker-qwen06-model
-    image: vllm/vllm-openai
+    image: docker.io/vllm/vllm-openai
     privileged: true
     ipc: host
     command:

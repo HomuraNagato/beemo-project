@@ -188,6 +188,17 @@ func (s *orchestratorServer) runChat(ctx context.Context, req *pb.ChatRequest) (
 		catalogRoutes = selector.Routes()
 	}
 
+	if strings.TrimSpace(decisionText) == "" {
+		if inferred, ok, ierr := orchtools.InferArithmeticCall(userQuery); ierr != nil {
+			return chatOutcome{}, ierr
+		} else if ok {
+			inferredText, jerr := json.Marshal([]toolCall{fromPlannedCall(inferred)})
+			if jerr != nil {
+				return chatOutcome{}, jerr
+			}
+			decisionText = string(inferredText)
+		}
+	}
 	if strings.TrimSpace(decisionText) == "" && s.cfg.DeterministicToolShortcuts {
 		if inferred, ok, ierr := orchtools.InferToolCall(userQuery); ierr != nil {
 			return chatOutcome{}, ierr

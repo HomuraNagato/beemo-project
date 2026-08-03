@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -10,6 +12,8 @@ import (
 	pb "eve-beemo/proto/gen/proto"
 	"eve-beemo/src/orchestrator/llm"
 	orchtools "eve-beemo/src/orchestrator/tools"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type agentDecision struct {
@@ -46,13 +50,15 @@ func (s *orchestratorServer) RunAgent(req *pb.AgentRequest, stream pb.Orchestrat
 	if err := s.saveAgentSession(ctx, req, mode, status); err != nil {
 		s.log().Warn("orch.agent.session", "session", req.GetSessionId(), "err", err)
 	}
-	if s.agentStore != nil {
-		userText := latestUserQuery(req.GetMessages())
-		if strings.TrimSpace(userText) != "" {
+	userText := latestUserQuery(req.GetMessages())
+	if strings.TrimSpace(userText) != "" {
+		timestampUnixMs := time.Now().UnixMilli()
+		if s.agentStore != nil {
 			if err := s.agentStore.AppendEvent(ctx, req.GetSessionId(), "user", "", userText, nil); err != nil {
 				s.log().Warn("orch.agent.user_event", "session", req.GetSessionId(), "err", err)
 			}
 		}
+		s.publishState(req.GetSessionId(), "user", userText, timestampUnixMs)
 	}
 	if err := s.sendAgentEvent(ctx, stream, req.GetSessionId(), "status", "", "thinking", nil, ""); err != nil {
 		return err
@@ -400,6 +406,9 @@ func (s *orchestratorServer) GetAgentSession(ctx context.Context, req *pb.Sessio
 	}
 	session, events, err := s.agentStore.GetSession(ctx, s.cfg.MemoryUserKey, strings.TrimSpace(req.GetSessionId()))
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "agent session not found")
+		}
 		return nil, err
 	}
 	detail := &pb.AgentSessionDetail{Session: &pb.AgentSessionSummary{
@@ -465,6 +474,7 @@ func (s *orchestratorServer) sendAgentEvent(ctx context.Context, stream pb.Orche
 			}
 		}
 	}
+	s.publishState(sessionID, eventType, text, event.GetTimestampUnixMs())
 	return stream.Send(event)
 }
 

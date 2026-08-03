@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -47,6 +48,16 @@ func run(args []string) error {
 		}
 		return manager.Up(ctx, lifecycle.UpOptions{Build: *build, Memory: *memory, UI: *ui, Voice: *voice, Code: *code, Timeout: *timeout})
 	case "chat":
+		chatArgs := append([]string(nil), args[1:]...)
+		if !hasSessionArg(chatArgs) {
+			paths, err := lifecycle.ResolvePaths("", "")
+			if err != nil {
+				return err
+			}
+			if sessionID, readErr := lifecycle.ReadSession(paths); readErr == nil {
+				chatArgs = append([]string{"--session", sessionID}, chatArgs...)
+			}
+		}
 		binary := ""
 		if executable, err := os.Executable(); err == nil {
 			candidate := filepath.Join(filepath.Dir(executable), "beemo-chat")
@@ -61,7 +72,7 @@ func run(args []string) error {
 			}
 			binary = filepath.Join(paths.BeemoRoot, "bin", "beemo-chat")
 		}
-		command := exec.CommandContext(ctx, binary, args[1:]...)
+		command := exec.CommandContext(ctx, binary, chatArgs...)
 		command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
 		return command.Run()
 	case "init":
@@ -215,4 +226,13 @@ func envOrDefault(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func hasSessionArg(args []string) bool {
+	for _, arg := range args {
+		if arg == "-session" || arg == "--session" || strings.HasPrefix(arg, "-session=") || strings.HasPrefix(arg, "--session=") {
+			return true
+		}
+	}
+	return false
 }

@@ -3,7 +3,7 @@ services:
   eve-embedding:
     container_name: eve-embedding
     hostname: eve-embedding
-    image: vllm/vllm-openai
+    image: docker.io/vllm/vllm-openai
     privileged: true
     ipc: host
     environment:
@@ -25,7 +25,7 @@ services:
   eve-reasoning:
     container_name: eve-reasoning
     hostname: eve-reasoning
-    image: vllm/vllm-openai
+    image: docker.io/vllm/vllm-openai
     privileged: true
     ports:
       - 5014:5014

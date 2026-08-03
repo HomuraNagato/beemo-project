@@ -1,8 +1,21 @@
 services:
+  eve-db:
+    container_name: eve-db
+    hostname: eve-db
+    image: docker.io/pgvector/pgvector:pg16
+    ports:
+      - "5438:5432"
+    environment:
+      POSTGRES_USER: ${PENSIEVE_POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${PENSIEVE_POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${PENSIEVE_POSTGRES_DB:-beemo}
+    volumes:
+      - eve-db-volume:/var/lib/postgresql/data
+
   eve-embedding:
     container_name: eve-embedding
     hostname: eve-embedding
-    image: vllm/vllm-openai
+    image: docker.io/vllm/vllm-openai
     privileged: true
     ports:
       - 5021:5021
@@ -99,6 +112,10 @@ services:
       context: .
       dockerfile: compose/ui/Dockerfile
     privileged: true
+    environment:
+      BEEMO_SESSION_FILE: /run/beemo/session-id
+    volumes:
+      - ./.beemo-session:/run/beemo/session-id:ro
 
   #  eve-tts:
   #    container_name: eve-tts
@@ -144,17 +161,21 @@ services:
     environment:
       PYTHONUNBUFFERED: "1"
       WAKEWORD_CONFIG: /config/wakeword.yaml
+      BEEMO_SESSION_FILE: /run/beemo/session-id
     depends_on:
       - eve-asr
       - eve-orchestrator
     volumes:
       - ./config:/config:ro
       - ./models:/models
+      - ./.beemo-session:/run/beemo/session-id:ro
       - type: bind
         source: ${PULSE_SOCKET_PATH:-/run/user/1000/pulse/native}
         target: /tmp/pulse/native
         read_only: true
 
 volumes:
+  eve-db-volume:
+    name: eve-db-volume
   eve-orchestrator-volume:
     name: eve-orchestrator-volume

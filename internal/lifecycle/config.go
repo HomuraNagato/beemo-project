@@ -12,6 +12,7 @@ const DefaultProfile = "garnetmoon"
 type Profile struct {
 	Name         string
 	ComposeFiles []string
+	LocalDB      bool
 }
 
 type Paths struct {
@@ -75,9 +76,9 @@ func ResolveProfile(name string) (Profile, error) {
 	case "garnetmoon", "vllm-gpu":
 		return Profile{Name: name, ComposeFiles: append(base, "docker-compose.gpu.yaml", "docker-compose.reranker.garnetmoon.yaml", "docker-compose.reranker.gte-modernbert-gpu.yaml")}, nil
 	case "legion-go", "llama-cpu":
-		return Profile{Name: name, ComposeFiles: append(base, "docker-compose.cpu.yaml", "docker-compose.cpu.llamacpp.yaml", "docker-compose.reranker.legion-go.yaml")}, nil
+		return Profile{Name: name, ComposeFiles: append(base, "docker-compose.cpu.yaml", "docker-compose.cpu.llamacpp.yaml", "docker-compose.reranker.legion-go.yaml"), LocalDB: true}, nil
 	case "vllm-cpu":
-		return Profile{Name: name, ComposeFiles: append(base, "docker-compose.cpu.yaml", "docker-compose.cpu.vllm.yaml", "docker-compose.reranker.legion-go.yaml")}, nil
+		return Profile{Name: name, ComposeFiles: append(base, "docker-compose.cpu.yaml", "docker-compose.cpu.vllm.yaml", "docker-compose.reranker.legion-go.yaml"), LocalDB: true}, nil
 	default:
 		return Profile{}, fmt.Errorf("unknown profile %q; expected garnetmoon, legion-go, vllm-gpu, vllm-cpu, or llama-cpu", name)
 	}

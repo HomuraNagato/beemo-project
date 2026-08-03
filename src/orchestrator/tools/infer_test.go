@@ -181,6 +181,35 @@ func TestInferToolCallForObviousTools(t *testing.T) {
 	}
 }
 
+func TestInferArithmeticCall(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		text     string
+		wantOK   bool
+		wantExpr string
+	}{
+		{text: "what is 8 + 2?", wantOK: true, wantExpr: `"expression":"8 + 2"`},
+		{text: "3 plus 3", wantOK: true, wantExpr: `"expression":"3 + 3"`},
+		{text: "calculate 18 * (7 + 3)", wantOK: true, wantExpr: `"expression":"18 * (7 + 3)"`},
+		{text: "what happened in 2026-08-02?", wantOK: false},
+		{text: "what is my BMI?", wantOK: false},
+	}
+
+	for _, tt := range tests {
+		call, ok, err := InferArithmeticCall(tt.text)
+		if err != nil {
+			t.Fatalf("InferArithmeticCall(%q) returned error: %v", tt.text, err)
+		}
+		if ok != tt.wantOK {
+			t.Fatalf("InferArithmeticCall(%q) ok=%v want %v", tt.text, ok, tt.wantOK)
+		}
+		if ok && (call.Action != "calculator" || !jsonContains(call.Args, tt.wantExpr)) {
+			t.Fatalf("InferArithmeticCall(%q) returned %#v", tt.text, call)
+		}
+	}
+}
+
 func TestExtractCalculatorHealthPatchIncludesHealthFields(t *testing.T) {
 	t.Parallel()
 

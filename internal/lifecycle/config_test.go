@@ -25,4 +25,7 @@ func TestResolveProfileReusesLegionRerankerOverride(t *testing.T) {
 		!slices.Contains(profile.ComposeFiles, "docker-compose.cpu.llamacpp.yaml") {
 		t.Fatalf("unexpected compose files: %#v", profile.ComposeFiles)
 	}
+	if !profile.LocalDB {
+		t.Fatal("expected Legion Go profile to manage a local database")
+	}
 }

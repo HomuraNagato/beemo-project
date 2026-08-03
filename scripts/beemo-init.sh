@@ -138,8 +138,8 @@ PY
 
 init_models() {
   case "$ACCEL" in
-    cpu) vllm_image="vllm/vllm-openai-cpu:latest-x86_64" ;;
-    gpu) vllm_image="vllm/vllm-openai" ;;
+    cpu) vllm_image="docker.io/vllm/vllm-openai-cpu:latest-x86_64" ;;
+    gpu) vllm_image="docker.io/vllm/vllm-openai" ;;
   esac
 
   download_model "reasoning" "$(config_value llm model)" "$vllm_image"

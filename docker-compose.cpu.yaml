@@ -3,7 +3,7 @@ services:
   eve-embedding:
     container_name: eve-embedding
     hostname: eve-embedding
-    image: vllm/vllm-openai-cpu:latest-x86_64
+    image: docker.io/vllm/vllm-openai-cpu:latest-x86_64
     privileged: true
     environment:
       VLLM_DEVICE: cpu

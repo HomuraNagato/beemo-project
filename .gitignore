@@ -9,11 +9,15 @@ memory
 *~
 
 .env
+.beemo-session
 
 # generated/runtime files
 __pycache__/
 *.pyc
 history/*.jsonl
 bin/
+web/beemo/.svelte-kit/
+web/beemo/build/
+web/beemo/node_modules/
 
 #*

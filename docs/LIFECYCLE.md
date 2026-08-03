@@ -46,6 +46,22 @@ beemo logs --tail 100 memory_palace
 beemo down
 ```
 
+## Sessions
+
+`beemo up` creates a new shared session. Restarting any service with
+`beemo restart <service>` also creates a new session, even when the UI and
+wakeword services remain running. The UI follows the new session
+automatically, wakeword uses it for the next utterance, and a newly opened
+`beemo chat` uses it by default.
+
+Show the active session with `beemo status`. Rotation does not delete earlier
+sessions, so they remain available for explicit inspection or future startup
+resume support. The CLI can currently open one directly:
+
+```sh
+beemo chat --session <session-id> --resume
+```
+
 Use `--memory=false`, `--ui=false`, or `--voice=true` to change optional
 features. Set `BEEMO_ROOT` and `MEMORY_PALACE_ROOT` when running outside the
 workspace layout.

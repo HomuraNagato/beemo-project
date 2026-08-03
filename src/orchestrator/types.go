@@ -33,6 +33,14 @@ type orchestratorServer struct {
 	pendingBySession    map[string]pendingToolState
 	transcriptMu        sync.Mutex
 	transcriptBySession map[string][]*pb.ChatMessage
+	stateMu             sync.Mutex
+	stateSubscribers    map[uint64]stateSubscriber
+	stateSubscriberID   uint64
+}
+
+type stateSubscriber struct {
+	sessionID string
+	updates   chan *pb.StateUpdate
 }
 
 type agentEventStore interface {

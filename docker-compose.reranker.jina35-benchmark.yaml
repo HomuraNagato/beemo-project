@@ -1,7 +1,7 @@
 services:
   eve-reranker-jina35-model:
     container_name: eve-reranker-jina35-model
-    image: vllm/vllm-openai
+    image: docker.io/vllm/vllm-openai
     privileged: true
     ipc: host
     command:

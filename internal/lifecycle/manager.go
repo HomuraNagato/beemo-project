@@ -52,8 +52,21 @@ type serviceCheck struct {
 }
 
 func (m Manager) Up(ctx context.Context, options UpOptions) error {
+	sessionID, err := RotateSession(m.Paths)
+	if err != nil {
+		return err
+	}
+	m.printf("session: %s\n", sessionID)
 	if options.Timeout <= 0 {
 		options.Timeout = 5 * time.Minute
+	}
+	if m.Profile.LocalDB {
+		if err := m.composeUp(ctx, []string{"eve-db"}, false); err != nil {
+			return err
+		}
+		if err := m.waitPostgres(ctx, options.Timeout); err != nil {
+			return err
+		}
 	}
 	if options.Code {
 		if err := m.startCode(ctx, options.Build, false); err != nil {
@@ -125,6 +138,11 @@ func (m Manager) Down(ctx context.Context, memory, ui, voice bool) error {
 	if err := m.compose(ctx, "stop", "eve-reranker", "eve-embedding", "eve-reasoning"); err != nil {
 		return err
 	}
+	if m.Profile.LocalDB {
+		if err := m.compose(ctx, "stop", "eve-db"); err != nil {
+			return err
+		}
+	}
 	if _, err := m.Runner.Output(ctx, m.Paths.BeemoRoot, "systemctl", "--user", "is-active", "beemo-code.service"); err == nil {
 		return m.Runner.Run(ctx, m.Paths.BeemoRoot, "systemctl", "--user", "stop", "beemo-code.service")
 	}
@@ -139,14 +157,20 @@ func (m Manager) Status(ctx context.Context) error {
 		{Name: "memory_palace", URL: "http://127.0.0.1:8013/health"},
 		{Name: "eve-ui", URL: "http://127.0.0.1:5017/healthz"},
 	}
-	containerNames := []string{"eve-reasoning", "eve-embedding", "eve-reranker", "memory_palace", "eve-ui", "eve-orchestrator", "eve-asr", "eve-wakeword"}
+	containerNames := []string{"eve-db", "eve-reasoning", "eve-embedding", "eve-reranker", "memory_palace", "eve-ui", "eve-orchestrator", "eve-asr", "eve-wakeword"}
 	states := m.containerStates(ctx, containerNames)
 	m.printf("profile: %s\n", m.Profile.Name)
+	if sessionID, err := ReadSession(m.Paths); err == nil {
+		m.printf("session: %s\n", sessionID)
+	}
 	codeState := "stopped"
 	if output, err := m.Runner.Output(ctx, m.Paths.BeemoRoot, "systemctl", "--user", "is-active", "beemo-code.service"); err == nil {
 		codeState = strings.TrimSpace(output)
 	}
 	m.printf("%-18s %-12s %s\n", "beemo-code", codeState, "local")
+	if m.Profile.LocalDB {
+		m.printf("%-18s %-12s %s\n", "eve-db", states["eve-db"], "local")
+	}
 	for _, check := range checks {
 		state := states[check.Name]
 		health := "-"
@@ -231,6 +255,11 @@ func (m Manager) Restart(ctx context.Context, service string, build bool) error 
 	if service == "" {
 		return fmt.Errorf("service is required")
 	}
+	sessionID, err := RotateSession(m.Paths)
+	if err != nil {
+		return err
+	}
+	m.printf("session: %s\n", sessionID)
 	if service == "memory" || service == "memory_palace" {
 		return m.memoryCompose(ctx, "up", "-d", buildArg(build), "--force-recreate", "memory_palace")
 	}
@@ -385,6 +414,28 @@ func (m Manager) waitOrchestrator(ctx context.Context, timeout time.Duration) er
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+func (m Manager) waitPostgres(ctx context.Context, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := m.Runner.Output(ctx, m.Paths.BeemoRoot, "docker", "exec", "eve-db", "pg_isready", "-U", "postgres", "-d", "beemo"); err == nil {
+			m.printf("%-18s ready\n", "database")
+			return nil
+		}
+		state := m.containerState(ctx, "eve-db")
+		if state == "exited" || state == "dead" {
+			return fmt.Errorf("eve-db stopped before becoming ready")
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for PostgreSQL readiness")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
 		}
 	}
 }

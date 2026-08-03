@@ -8,11 +8,14 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	pb "eve-beemo/proto/gen/proto"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 const defaultTimeout = 15 * time.Minute
@@ -24,11 +27,11 @@ type transcriptEntry struct {
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:5013", "orchestrator gRPC address")
-	sessionID := flag.String("session", "tui", "chat session id")
+	sessionID := flag.String("session", "voice-loop", "chat session id")
 	timeout := flag.Duration("timeout", defaultTimeout, "request timeout")
 	mode := flag.String("mode", "chat", "session mode: chat or code")
 	workspace := flag.String("workspace", "", "repository path for Code mode")
-	resume := flag.Bool("resume", false, "resume the persisted session id")
+	resume := flag.Bool("resume", true, "resume the persisted session id")
 	flag.Parse()
 
 	conn, err := grpc.NewClient(*addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -46,12 +49,15 @@ func main() {
 	var transcript []transcriptEntry
 	var messages []*pb.ChatMessage
 	currentExpression := defaultExpression()
+	var sessionEventTimestamp int64
 	if *resume {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		detail, resumeErr := client.GetAgentSession(ctx, &pb.SessionRequest{SessionId: *sessionID})
 		cancel()
 		if resumeErr != nil {
-			fmt.Fprintf(os.Stderr, "resume error: %v\n", resumeErr)
+			if status.Code(resumeErr) != codes.NotFound {
+				fmt.Fprintf(os.Stderr, "resume error: %v\n", resumeErr)
+			}
 		} else {
 			*mode = detail.GetSession().GetMode()
 			*workspace = detail.GetSession().GetWorkspace()
@@ -63,8 +69,17 @@ func main() {
 				messages = append(messages, &pb.ChatMessage{Role: event.GetType(), Content: content})
 				transcript = append(transcript, transcriptEntry{role: event.GetType(), content: stripExpressionTag(content)})
 			}
+			if events := detail.GetEvents(); len(events) > 0 {
+				sessionEventTimestamp = events[len(events)-1].GetTimestampUnixMs()
+			}
 		}
 	}
+	var requestActive atomic.Bool
+	var ignoreThrough atomic.Int64
+	ignoreThrough.Store(sessionEventTimestamp)
+	watchDone := make(chan struct{})
+	defer close(watchDone)
+	go watchSession(client, *sessionID, sessionEventTimestamp, &requestActive, &ignoreThrough, watchDone)
 
 	render(*addr, *sessionID, currentExpression, transcript)
 
@@ -140,8 +155,13 @@ func main() {
 			continue
 		}
 
+		if syncedMessages, syncedTranscript, ok := loadSession(client, *sessionID); ok {
+			messages = syncedMessages
+			transcript = syncedTranscript
+		}
 		transcript = append(transcript, transcriptEntry{role: "user", content: line})
 		messages = append(messages, &pb.ChatMessage{Role: "user", Content: line})
+		requestActive.Store(true)
 		currentExpression = expressionForEmotion("thinking")
 		render(*addr, *sessionID, currentExpression, transcript)
 
@@ -154,6 +174,7 @@ func main() {
 		})
 		if err != nil {
 			cancel()
+			requestActive.Store(false)
 			currentExpression = expressionForEmotion("error")
 			transcript = append(transcript, transcriptEntry{
 				role:    "system",
@@ -210,7 +231,80 @@ func main() {
 		reply = stripExpressionTag(reply)
 		transcript = append(transcript, transcriptEntry{role: "assistant", content: reply})
 		messages = append(messages, &pb.ChatMessage{Role: "assistant", Content: reply})
+		ignoreThrough.Store(latestSessionTimestamp(client, *sessionID))
+		requestActive.Store(false)
 		render(*addr, *sessionID, currentExpression, transcript)
+	}
+}
+
+func latestSessionTimestamp(client pb.OrchestratorClient, sessionID string) int64 {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	detail, err := client.GetAgentSession(ctx, &pb.SessionRequest{SessionId: sessionID})
+	if err != nil {
+		return 0
+	}
+	events := detail.GetEvents()
+	if len(events) == 0 {
+		return 0
+	}
+	return events[len(events)-1].GetTimestampUnixMs()
+}
+
+func loadSession(client pb.OrchestratorClient, sessionID string) ([]*pb.ChatMessage, []transcriptEntry, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	detail, err := client.GetAgentSession(ctx, &pb.SessionRequest{SessionId: sessionID})
+	if err != nil {
+		return nil, nil, false
+	}
+	var messages []*pb.ChatMessage
+	var transcript []transcriptEntry
+	for _, event := range detail.GetEvents() {
+		if event.GetType() != "user" && event.GetType() != "assistant" {
+			continue
+		}
+		content := strings.TrimSpace(event.GetText())
+		messages = append(messages, &pb.ChatMessage{Role: event.GetType(), Content: content})
+		transcript = append(transcript, transcriptEntry{role: event.GetType(), content: stripExpressionTag(content)})
+	}
+	return messages, transcript, true
+}
+
+func watchSession(client pb.OrchestratorClient, sessionID string, seen int64, requestActive *atomic.Bool, ignoreThrough *atomic.Int64, done <-chan struct{}) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-done:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	stream, err := client.StreamState(ctx, &pb.StateRequest{SessionId: sessionID})
+	if err != nil {
+		fmt.Printf("\nsession sync unavailable: %v\n> ", err)
+		return
+	}
+	for {
+		update, err := stream.Recv()
+		if err != nil {
+			if ctx.Err() == nil {
+				fmt.Printf("\nsession sync stopped: %v\n> ", err)
+			}
+			return
+		}
+		if ignored := ignoreThrough.Load(); ignored > seen {
+			seen = ignored
+		}
+		if update.GetTimestampUnixMs() <= seen {
+			continue
+		}
+		seen = update.GetTimestampUnixMs()
+		if requestActive.Load() || (update.GetState() != "user" && update.GetState() != "assistant") {
+			continue
+		}
+		fmt.Printf("\n%s: %s\n> ", strings.ToUpper(update.GetState()), stripExpressionTag(strings.TrimSpace(update.GetMessage())))
 	}
 }
 

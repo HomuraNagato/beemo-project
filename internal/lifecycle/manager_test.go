@@ -39,8 +39,9 @@ func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error)
 
 func TestUpUsesExistingMemoryPalaceComposeAfterModelServices(t *testing.T) {
 	runner := &recordingRunner{}
+	root := t.TempDir()
 	manager := Manager{
-		Paths:   Paths{BeemoRoot: "/workspace/beemo-project", MemoryPalaceRoot: "/workspace/memory_palace"},
+		Paths:   Paths{BeemoRoot: root, MemoryPalaceRoot: "/workspace/memory_palace"},
 		Profile: Profile{Name: "garnetmoon", ComposeFiles: []string{"docker-compose.yaml", "docker-compose.gpu.yaml", "docker-compose.reranker.garnetmoon.yaml", "docker-compose.reranker.gte-modernbert-gpu.yaml"}},
 		Runner:  runner,
 		Output:  io.Discard,
@@ -68,7 +69,7 @@ func TestUpUsesExistingMemoryPalaceComposeAfterModelServices(t *testing.T) {
 
 func TestRestartRoutesMemoryToItsOwnComposeProject(t *testing.T) {
 	runner := &recordingRunner{}
-	manager := Manager{Paths: Paths{BeemoRoot: "/beemo", MemoryPalaceRoot: "/memory"}, Profile: Profile{Name: "garnetmoon"}, Runner: runner}
+	manager := Manager{Paths: Paths{BeemoRoot: t.TempDir(), MemoryPalaceRoot: "/memory"}, Profile: Profile{Name: "garnetmoon"}, Runner: runner}
 	if err := manager.Restart(context.Background(), "memory_palace", false); err != nil {
 		t.Fatal(err)
 	}

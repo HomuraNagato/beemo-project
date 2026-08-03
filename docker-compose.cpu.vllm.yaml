@@ -3,7 +3,7 @@ services:
   eve-reasoning:
     container_name: eve-reasoning
     hostname: eve-reasoning
-    image: vllm/vllm-openai-cpu:latest-x86_64
+    image: docker.io/vllm/vllm-openai-cpu:latest-x86_64
     privileged: true
     ports:
       - 5014:5014
