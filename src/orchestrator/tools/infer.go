@@ -252,16 +252,12 @@ func InferToolCall(text string) (PlannedCall, bool, error) {
 	lower := strings.ToLower(trimmed)
 
 	switch {
+	case isInternetSearchRequest(lower):
+		return rawPlannedCall("internet.search", map[string]any{"query": internetSearchQuery(trimmed)})
 	case isOlderSisterRequest(lower):
-		return rawPlannedCall("older_sister", map[string]any{
-			"query":      olderSisterQuery(trimmed),
-			"web_search": true,
-		})
+		return rawPlannedCall("older_sister", map[string]any{"query": olderSisterQuery(trimmed)})
 	case isOlderSisterFallbackRequest(lower):
-		return rawPlannedCall("older_sister", map[string]any{
-			"query":      trimmed,
-			"web_search": false,
-		})
+		return rawPlannedCall("older_sister", map[string]any{"query": trimmed})
 	case isWeatherRequest(lower):
 		return rawPlannedCall("weather", extractWeatherUpdate(trimmed))
 	case isConvertRequest(trimmed):
@@ -289,6 +285,14 @@ func InferToolCall(text string) (PlannedCall, bool, error) {
 		}
 	}
 	return PlannedCall{}, false, nil
+}
+
+func InferInternetSearchCall(text string) (PlannedCall, bool, error) {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" || !isInternetSearchRequest(strings.ToLower(trimmed)) {
+		return PlannedCall{}, false, nil
+	}
+	return rawPlannedCall("internet.search", map[string]any{"query": internetSearchQuery(trimmed)})
 }
 
 func InferArithmeticCall(text string) (PlannedCall, bool, error) {
@@ -366,7 +370,11 @@ func isWeatherRequest(lower string) bool {
 }
 
 func isOlderSisterRequest(lower string) bool {
-	return containsAny(lower, "older sister", "chatgpt", "search the internet", "look up", "lookup", "web search", "search for", "verify whether")
+	return containsAny(lower, "older sister", "chatgpt")
+}
+
+func isInternetSearchRequest(lower string) bool {
+	return containsAny(lower, "search the internet", "look up", "lookup", "web search", "search online", "verify online", "verify whether")
 }
 
 func isOlderSisterFallbackRequest(lower string) bool {
@@ -392,10 +400,17 @@ func olderSisterQuery(text string) string {
 		"ask older sister ",
 		"ask chatgpt to ",
 		"ask chatgpt ",
-		"search the internet for ",
-		"search for ",
-		"look up ",
 	} {
+		if strings.HasPrefix(strings.ToLower(trimmed), prefix) {
+			return strings.TrimSpace(trimmed[len(prefix):])
+		}
+	}
+	return trimmed
+}
+
+func internetSearchQuery(text string) string {
+	trimmed := strings.TrimSpace(text)
+	for _, prefix := range []string{"search the internet for ", "search online for ", "web search for ", "look up ", "lookup "} {
 		if strings.HasPrefix(strings.ToLower(trimmed), prefix) {
 			return strings.TrimSpace(trimmed[len(prefix):])
 		}

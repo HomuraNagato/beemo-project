@@ -7,10 +7,11 @@ import (
 
 func ToolDecision(userQuery, activeTranscript string) string {
 	return `Choose at most one tool. Return JSON array only, or [].
-Tools: get_time(time/date), weather(forecast/current conditions), calculator(math/conversion/BMI/BMR/TDEE), memory.search(personal/local memory), memory.remember(save durable user memory), beemo.direct(local direct response).
+Tools: get_time(time/date), weather(forecast/current conditions), internet.search(current public web evidence), calculator(math/conversion/BMI/BMR/TDEE), memory.search(personal/local memory), memory.remember(save durable user memory), beemo.direct(local direct response).
 Rules:
 - time/date/day/month/year/today/tomorrow/yesterday -> get_time.
 - weather/rain/temperature/forecast -> weather; include location, when, hour_local, focus if explicit.
+- current external facts, news, online lookup, or web verification -> internet.search with the complete question as query.
 - ask what you remember, personal history, prior life details, saved notes, projects, preferences, people, places, or "my ..." facts from memory -> memory.search with query.
 - explicit "remember this" or "save this to memory" -> memory.remember with text.
 - math, unit conversion, percent, BMI/BMR/TDEE -> calculator; include explicit values only, do not convert or duplicate measurements.
@@ -47,6 +48,7 @@ Rules:
 - Use memory.answer for questions answered by indexed local memories, notes, books, textbooks, PDFs, EPUBs, or documents, especially when passages must be retrieved and combined.
 - Use memory.search for requests to list or inspect saved personal memories and prior notes.
 - Use memory.remember only when the user explicitly asks to remember or save something.
+- Use internet.search for current external information or explicit requests to search or verify online.
 - Use beemo.direct only when no specialized tool or external help is needed.
 
 Candidate routes:
@@ -79,8 +81,8 @@ Tool calls:`
 
 func RetryToolDecision(userQuery, activeTranscript string) string {
 	return `Re-check tool choice after previous []. Return one JSON tool call or [].
-Tools: get_time, weather, calculator, memory.search, memory.remember, beemo.direct.
-Rules: time/date=>get_time; weather=>weather; personal saved/local memory=>memory.search; explicit remember/save=>memory.remember; math/conversion/BMI/BMR/TDEE=>calculator; casual/direct local response=>beemo.direct. Use active thread for immediate follow-ups, omit missing fields, do not answer.
+Tools: get_time, weather, internet.search, calculator, memory.search, memory.remember, beemo.direct.
+Rules: time/date=>get_time; weather=>weather; current external facts/web verification=>internet.search; personal saved/local memory=>memory.search; explicit remember/save=>memory.remember; math/conversion/BMI/BMR/TDEE=>calculator; casual/direct local response=>beemo.direct. Use active thread for immediate follow-ups, omit missing fields, do not answer.
 
 Previous answer: []
 Active conversation thread:
@@ -91,7 +93,7 @@ Tool calls:`
 
 func FinalResponse(originalUserQuery, latestUserReply, activeTranscript, decision, toolResult string) string {
 	return fmt.Sprintf(
-		"Answer using only this context. Treat Tool result as factual source data. Preserve the exact quantities, units, and labels from Tool result; do not reinterpret, correct, or rename them from the user query. Convert raw values into a natural, concise answer only when that does not change the meaning. For ISO timestamps, state the time/date in plain language. Do not invent facts. Never write placeholders such as [ISO timestamp]. If Tool result is empty, answer directly only when Decision is beemo.direct; otherwise say the needed tool did not return a result.\nOriginal user query: %s\nLatest user reply: %s\nActive conversation thread:\n%s\nDecision: %s\nTool result: %s\nConcise answer:",
+		"Answer using only this context. Treat Tool result as factual source data. Preserve the exact quantities, units, and labels from Tool result; do not reinterpret, correct, or rename them from the user query. Convert raw values into a natural, concise answer only when that does not change the meaning. For ISO timestamps, state the time/date in plain language. For numbered internet evidence, cite supporting claims with the matching bracketed source number and do not invent citations. Do not add a separate source list; the application appends it. Do not invent facts. Never write placeholders such as [ISO timestamp]. If Tool result is empty, answer directly only when Decision is beemo.direct; otherwise say the needed tool did not return a result.\nOriginal user query: %s\nLatest user reply: %s\nActive conversation thread:\n%s\nDecision: %s\nTool result: %s\nConcise answer:",
 		originalUserQuery,
 		latestUserReply,
 		transcriptBlock(activeTranscript),

@@ -20,14 +20,4 @@
   $: controller?.setTalking(talking);
 </script>
 
-<canvas bind:this={canvas} width="1280" height="800" aria-label={`Beemo face: ${expression}`}></canvas>
-
-<style>
-  canvas {
-    display: block;
-    width: 100%;
-    height: 100%;
-    min-height: 0;
-    background: #073c3b;
-  }
-</style>
+<canvas class="block h-full min-h-0 w-full bg-[#073c3b]" bind:this={canvas} width="1280" height="800" aria-label={`Beemo face: ${expression}`}></canvas>

@@ -49,7 +49,14 @@ older_sister:
   http_url: https://api.openai.com/v1/responses
   model: gpt-5-mini
   timeout_ms: 120000
-  web_search: true
+
+internet:
+  http_url: https://api.search.brave.com/res/v1/llm/context
+  timeout_ms: 30000
+  result_count: 20
+  max_urls: 8
+  max_tokens: 6000
+  safe_search: moderate
 
 memory:
   base_url: http://host.docker.internal:8013

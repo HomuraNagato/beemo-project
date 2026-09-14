@@ -15,6 +15,7 @@ memory
 __pycache__/
 *.pyc
 history/*.jsonl
+history/**/*.jsonl
 bin/
 web/beemo/.svelte-kit/
 web/beemo/build/

@@ -75,6 +75,7 @@ services:
     privileged: true
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
       DATABASE_URL: ${DATABASE_URL:-}
       MEMORY_PALACE_BASE_URL: ${MEMORY_PALACE_BASE_URL:-http://host.docker.internal:8013}
       MEMORY_PALACE_USER_KEY: ${MEMORY_PALACE_USER_KEY:-nagato}
@@ -115,7 +116,7 @@ services:
     environment:
       BEEMO_SESSION_FILE: /run/beemo/session-id
     volumes:
-      - ./.beemo-session:/run/beemo/session-id:ro
+      - ./.beemo-session:/run/beemo/session-id
 
   #  eve-tts:
   #    container_name: eve-tts

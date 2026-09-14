@@ -1,0 +1,122 @@
+cases:
+  - id: noisy_scholomance_els_mother
+    category: narrative_relationship
+    question: "In the Scholomance trilogy, what is El's mother's name?"
+    sources:
+      - title: "A Deadly Education (The Scholomance)"
+        source_uri: "oracle://scholomance/a-deadly-education"
+        evidence: "He gaped at me. Gwen Higgins is your mother?"
+      - title: "The Once and Future King"
+        source_uri: "oracle://books/the-once-and-future-king"
+        evidence: "Gwen used to say that all his warmth was for his mother."
+      - title: "Legendborn"
+        source_uri: "oracle://books/legendborn"
+        evidence: "The account explains that another character's mother knew the craft, but it does not identify El or her family."
+    expected:
+      all_of: ["Gwen Higgins"]
+      none_of: ["context is insufficient", "cannot determine", "not provided"]
+      required_citations: [1]
+      forbidden_citations: [2, 3]
+
+  - id: noisy_scholomance_golden_stone_sutras
+    category: narrative_relationship
+    question: "What important written work does El receive, and why is it historically significant to wizard communities?"
+    sources:
+      - title: "The Last Graduate (The Scholomance)"
+        source_uri: "oracle://scholomance/the-last-graduate"
+        evidence: "The spellbook I had managed to get my hands on last term was a priceless copy of the long-lost Golden Stone sutras; the library had let it come in range."
+      - title: "A Deadly Education (The Scholomance)"
+        source_uri: "oracle://scholomance/a-deadly-education"
+        evidence: "The Golden Stone sutras are famous because they are the first known enclave-builder spells; before them, enclaves happened only by accident."
+      - title: "The Golden Enclaves (The Scholomance)"
+        source_uri: "oracle://scholomance/the-golden-enclaves"
+        evidence: "El remembers that her father's family once lived in an ancient enclave that was destroyed centuries earlier."
+      - title: "The Last Graduate (The Scholomance)"
+        source_uri: "oracle://scholomance/the-last-graduate-modern-spells"
+        evidence: "Purochana's enclave spells might be less expensive than modern spells, which require substantial resources and access."
+    expected:
+      all_of: ["Golden Stone", "enclave"]
+      none_of: ["context is insufficient", "cannot determine", "not provided"]
+      required_citations: [1, 2]
+
+  - id: noisy_upfal_chapter_one_problem
+    category: textbook_structure
+    question: "What is a problem in ch 1 of Upfal's probability textbook?"
+    sources:
+      - title: "Probability and Computing"
+        source_uri: "oracle://textbooks/upfal-chapter-1"
+        evidence: "Exercise 1.12 calls the exercise the Monty Hall problem. There are three curtains: one conceals a prize and the other two conceal goats."
+      - title: "Probability and Computing"
+        source_uri: "oracle://textbooks/upfal-chapter-11"
+        evidence: "Chapter 11 applies the Monte Carlo method to estimating the number of satisfying assignments of a DNF formula."
+      - title: "Probability and Computing"
+        source_uri: "oracle://textbooks/upfal-chapter-17"
+        evidence: "A later exercise studies sequentially placing balls into bins and asks when the first collision occurs."
+      - title: "Probability and Measure"
+        source_uri: "oracle://textbooks/billingsley-problem-13"
+        evidence: "Problem 13.8 asks the reader to prove that an everywhere upper semicontinuous real function is measurable."
+    expected:
+      all_of: ["Monty Hall"]
+      none_of: ["no explicitly stated problem", "no identified problem", "does not contain"]
+      required_citations: [1]
+      forbidden_citations: [2, 3, 4]
+
+  - id: noisy_clrs_loop_correctness
+    category: textbook_synthesis
+    question: "What three obligations establish that a loop invariant proves an algorithm correct?"
+    sources:
+      - title: "Introduction to Algorithms"
+        source_uri: "oracle://textbooks/clrs-loop-invariants"
+        evidence: "Initialization: the invariant is true before the first loop iteration. Maintenance: it remains true before the next iteration. Termination: it helps prove correctness when the loop stops."
+      - title: "Introduction to Algorithms"
+        source_uri: "oracle://textbooks/clrs-difference-constraints"
+        evidence: "A system of difference constraints represents inequalities using a linear-programming matrix with one 1 and one negative 1 in each row."
+      - title: "Probability and Computing"
+        source_uri: "oracle://textbooks/upfal-markov-chain"
+        evidence: "The gambler's ruin example is represented as a Markov chain with two absorbing recurrent states."
+    expected:
+      all_of: ["Initialization", "Maintenance", "Termination"]
+      none_of: ["context is insufficient", "cannot determine"]
+      required_citations: [1]
+      forbidden_citations: [2, 3]
+
+  - id: noisy_billingsley_chapter_one_scope
+    category: textbook_synthesis
+    question: "What major probabilistic subjects does the first chapter of Billingsley's text develop before general measure and integration?"
+    sources:
+      - title: "Probability and Measure"
+        source_uri: "oracle://textbooks/billingsley-chapter-1"
+        evidence: "The remainder of Chapter 1 treats laws of large numbers, optimality of bold play in gambling, Markov chains, large deviations, and the law of the iterated logarithm. These developments motivate the general theory of measure and integration in Chapters 2 and 3."
+      - title: "Probability and Computing"
+        source_uri: "oracle://textbooks/upfal-markov-chain"
+        evidence: "A gambler's ruin process can be represented as a Markov chain with two absorbing recurrent states."
+      - title: "Probability and Measure"
+        source_uri: "oracle://textbooks/billingsley-chapter-2-problem"
+        evidence: "A later problem asks whether an everywhere upper semicontinuous real function must be measurable."
+    expected:
+      all_of: ["laws of large numbers", "Markov chains", "large deviations"]
+      none_of: ["context is insufficient", "cannot determine"]
+      required_citations: [1]
+      forbidden_citations: [2, 3]
+
+  - id: noisy_strang_column_and_null_spaces
+    category: textbook_synthesis
+    question: "Contrast the vectors represented by a matrix's column space with those represented by its nullspace."
+    sources:
+      - title: "Linear Algebra and Its Applications"
+        source_uri: "oracle://textbooks/strang-column-space"
+        evidence: "The column space contains all linear combinations of the columns of A and is a subspace of R^m."
+      - title: "Linear Algebra and Its Applications"
+        source_uri: "oracle://textbooks/strang-nullspace"
+        evidence: "The nullspace N(A) consists of the solutions to Ax = 0 and has dimension n minus the rank."
+      - title: "Introduction to Algorithms"
+        source_uri: "oracle://textbooks/clrs-difference-constraints"
+        evidence: "Difference constraints can be represented by a matrix inequality Ax less than or equal to b."
+      - title: "Linear Algebra and Its Applications"
+        source_uri: "oracle://textbooks/strang-exercise"
+        evidence: "An exercise asks for a matrix whose nullspace consists of vectors satisfying a given scalar equation."
+    expected:
+      all_of: ["linear combinations", "Ax = 0"]
+      none_of: ["context is insufficient", "cannot determine"]
+      required_citations: [1, 2]
+      forbidden_citations: [3, 4]

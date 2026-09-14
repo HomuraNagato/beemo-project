@@ -26,6 +26,10 @@ func (f *fakeCodeToolsClient) ListWorkspaces(context.Context, *pb.ListWorkspaces
 	return &pb.ListWorkspacesResponse{Roots: []string{"/repo"}}, nil
 }
 
+func (f *fakeCodeToolsClient) BrowseDirectories(context.Context, *pb.BrowseDirectoriesRequest, ...grpc.CallOption) (*pb.BrowseDirectoriesResponse, error) {
+	return &pb.BrowseDirectoriesResponse{Path: "/repo", IsGit: true, Roots: []string{"/repo"}}, nil
+}
+
 func (f *fakeCodeToolsClient) Execute(_ context.Context, req *pb.CodeToolRequest, _ ...grpc.CallOption) (*pb.CodeToolResult, error) {
 	f.actions = append(f.actions, req.GetAction())
 	if req.GetAction() == "code.read" {

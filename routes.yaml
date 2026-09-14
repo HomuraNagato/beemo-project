@@ -55,6 +55,21 @@ domains:
       - what does my linear algebra textbook say about eigenvectors?
       - remember that I prefer quiet dashboards
 
+  - id: internet
+    title: Internet search
+    summary: Retrieve current or external information from public web sources when internet access is enabled for the session.
+    when_to_use:
+      - Use for current facts, news, product information, changing documentation, or claims requiring online verification.
+      - Use when the user explicitly asks to search, browse, look up, or verify something online.
+    when_not_to_use:
+      - Do not use for private indexed memories or local documents.
+      - Do not use for ordinary conversation or stable reasoning that needs no external evidence.
+    example_requests:
+      - search online for the latest vLLM release notes
+      - who currently leads this organization?
+      - verify whether this product still supports Linux
+      - what happened in the news today?
+
   - id: beemo
     title: Beemo Direct
     summary: Answer directly with Beemo's local reasoning model when no specialized tool is needed.
@@ -161,6 +176,30 @@ routes:
     handler:
       type: pipeline
       target: memory.answer
+
+  - id: internet.search
+    domain: internet
+    title: Search the public internet
+    summary: Retrieve extracted passages and source URLs from current public web pages for a locally generated answer.
+    when_to_use:
+      - The answer depends on current or externally published information.
+      - The user explicitly asks to search, browse, look up, research, or verify online.
+      - Reliable source citations are needed for an external factual claim.
+    when_not_to_use:
+      - The request concerns indexed private memories, books, notes, or local files.
+      - The request is casual conversation, creative writing, or self-contained reasoning.
+    example_requests:
+      - search the internet for current GPU driver support
+      - what are the latest changes to Svelte?
+      - verify this claim using online sources
+      - find recent reporting about this event
+    required_fields:
+      - query
+    args_guidance: Include the user's complete external-information question as query.
+    default_args: {}
+    handler:
+      type: tool
+      target: internet.search
 
   - id: memory.search
     domain: memory

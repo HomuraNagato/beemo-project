@@ -1,0 +1,80 @@
+cases:
+  - id: scholomance_els_mother
+    category: narrative_relationship
+    question: "In the Scholomance trilogy, what is El's mother's name?"
+    sources:
+      - title: "A Deadly Education (The Scholomance)"
+        source_uri: "oracle://scholomance/a-deadly-education"
+        evidence: "He gaped at me. Gwen Higgins is your mother?"
+    expected:
+      all_of: ["Gwen Higgins"]
+      none_of: ["context is insufficient", "cannot determine", "not provided"]
+      require_citation: true
+
+  - id: scholomance_golden_stone_sutras
+    category: narrative_relationship
+    question: "What important written work does El receive, and why is it historically significant to wizard communities?"
+    sources:
+      - title: "The Last Graduate (The Scholomance)"
+        source_uri: "oracle://scholomance/the-last-graduate"
+        evidence: "The spellbook I had managed to get my hands on last term was a priceless copy of the long-lost Golden Stone sutras; the library had let it come in range."
+      - title: "A Deadly Education (The Scholomance)"
+        source_uri: "oracle://scholomance/a-deadly-education"
+        evidence: "The Golden Stone sutras are famous because they are the first known enclave-builder spells; before them, enclaves happened only by accident."
+    expected:
+      all_of: ["Golden Stone", "enclave"]
+      none_of: ["context is insufficient", "cannot determine", "not provided"]
+      require_citation: true
+      required_citations: [1, 2]
+
+  - id: upfal_chapter_one_problem
+    category: textbook_structure
+    question: "What is a problem in ch 1 of Upfal's probability textbook?"
+    sources:
+      - title: "Probability and Computing"
+        source_uri: "oracle://textbooks/upfal-probability-and-computing"
+        evidence: "Exercise 1.12 calls the exercise the Monty Hall problem. There are three curtains: one conceals a prize and the other two conceal goats."
+    expected:
+      all_of: ["Monty Hall"]
+      none_of: ["no explicitly stated problem", "no identified problem", "does not contain"]
+      require_citation: true
+
+  - id: clrs_loop_correctness
+    category: textbook_synthesis
+    question: "What three obligations establish that a loop invariant proves an algorithm correct?"
+    sources:
+      - title: "Introduction to Algorithms"
+        source_uri: "oracle://textbooks/clrs"
+        evidence: "Initialization: the invariant is true before the first loop iteration. Maintenance: it remains true before the next iteration. Termination: it helps prove correctness when the loop stops."
+    expected:
+      all_of: ["Initialization", "Maintenance", "Termination"]
+      none_of: ["context is insufficient", "cannot determine"]
+      require_citation: true
+
+  - id: billingsley_chapter_one_scope
+    category: textbook_synthesis
+    question: "What major probabilistic subjects does the first chapter of Billingsley's text develop before general measure and integration?"
+    sources:
+      - title: "Probability and Measure"
+        source_uri: "oracle://textbooks/billingsley-probability-and-measure"
+        evidence: "The remainder of Chapter 1 treats laws of large numbers, optimality of bold play in gambling, Markov chains, large deviations, and the law of the iterated logarithm. These developments motivate the general theory of measure and integration in Chapters 2 and 3."
+    expected:
+      all_of: ["laws of large numbers", "Markov chains", "large deviations"]
+      none_of: ["context is insufficient", "cannot determine"]
+      require_citation: true
+
+  - id: strang_column_and_null_spaces
+    category: textbook_synthesis
+    question: "Contrast the vectors represented by a matrix's column space with those represented by its nullspace."
+    sources:
+      - title: "Linear Algebra and Its Applications"
+        source_uri: "oracle://textbooks/strang-linear-algebra"
+        evidence: "The column space contains all linear combinations of the columns of A and is a subspace of R^m."
+      - title: "Linear Algebra and Its Applications"
+        source_uri: "oracle://textbooks/strang-linear-algebra"
+        evidence: "The nullspace N(A) consists of the solutions to Ax = 0 and has dimension n minus the rank."
+    expected:
+      all_of: ["linear combinations", "Ax = 0"]
+      none_of: ["context is insufficient", "cannot determine"]
+      require_citation: true
+      required_citations: [1, 2]

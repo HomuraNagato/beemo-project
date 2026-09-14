@@ -1,14 +1,9 @@
-import { readFileSync, watch, type FSWatcher } from "node:fs";
+import { watch, type FSWatcher } from "node:fs";
+import { activeSessionId, sessionFile } from "$lib/server/session";
 
 const encoder = new TextEncoder();
-const sessionFile = process.env.BEEMO_SESSION_FILE || "/run/beemo/session-id";
-
 function readSession(): string {
-  try {
-    return readFileSync(sessionFile, "utf8").trim();
-  } catch {
-    return "";
-  }
+  return activeSessionId();
 }
 
 function event(sessionId: string): Uint8Array {

@@ -194,7 +194,6 @@ class OrchestratorClient:
             agent_pb2.AgentRequest(
                 session_id=session_id,
                 messages=[agent_pb2.ChatMessage(role="user", content=prompt)],
-                mode="chat",
             ),
             timeout=self.timeout_secs,
         )

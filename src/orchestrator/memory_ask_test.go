@@ -55,7 +55,7 @@ func TestMemoryAnswerProfileKeepsExplanationsLong(t *testing.T) {
 	if got := memoryAnswerProfileFor("What is an important book El receives?"); got.name != "direct" || got.maxTokens != 64 {
 		t.Fatalf("unexpected direct book profile: %+v", got)
 	}
-	if got := memoryAnswerProfileFor("What is linear algebra?"); got.name != "standard" || got.maxTokens != 192 {
+	if got := memoryAnswerProfileFor("What is linear algebra?"); got.name != "standard" || got.maxTokens != 320 {
 		t.Fatalf("unexpected standard profile: %+v", got)
 	}
 }

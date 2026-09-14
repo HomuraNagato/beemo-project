@@ -79,6 +79,24 @@ func TestChatFinalResponseFlow(t *testing.T) {
 	}
 }
 
+func TestChatBlocksInternetToolWhileSessionIsOffline(t *testing.T) {
+	t.Parallel()
+
+	executor := &recordingExecutor{}
+	server := testServer(t)
+	server.tools = executor
+	response, err := server.Chat(context.Background(), chatRequest("search the internet for the latest Svelte release"))
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	if got, want := response.GetText(), "Internet access is disabled for this session. Enter /internet to enable it."; got != want {
+		t.Fatalf("unexpected response: got %q want %q", got, want)
+	}
+	if len(executor.calls) != 0 {
+		t.Fatalf("internet executor was called while disabled: %#v", executor.calls)
+	}
+}
+
 func TestChatReturnsNeedsInputWithoutFinalLLMCall(t *testing.T) {
 	t.Parallel()
 

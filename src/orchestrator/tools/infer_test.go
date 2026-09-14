@@ -141,9 +141,15 @@ func TestInferToolCallForObviousTools(t *testing.T) {
 		},
 		{
 			name:       "older sister",
-			text:       "ask older sister to search for current vllm docs",
+			text:       "ask older sister for advice about vllm",
 			wantAction: "older_sister",
-			wantArg:    `"web_search":true`,
+			wantArg:    `"query":"for advice about vllm"`,
+		},
+		{
+			name:       "internet search",
+			text:       "search the internet for current vllm docs",
+			wantAction: "internet.search",
+			wantArg:    `"query":"current vllm docs"`,
 		},
 		{
 			name:       "percent",

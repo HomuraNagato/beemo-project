@@ -31,14 +31,17 @@ type agentObservation struct {
 }
 
 func (s *orchestratorServer) RunAgent(req *pb.AgentRequest, stream pb.Orchestrator_RunAgentServer) error {
-	mode := strings.ToLower(strings.TrimSpace(req.GetMode()))
-	if mode == "" {
-		mode = "chat"
-	}
+	ctx := stream.Context()
+	mode, workspace := s.resolveAgentState(ctx, req)
 	if mode != "chat" && mode != "code" {
 		return fmt.Errorf("unsupported agent mode %q", mode)
 	}
-	ctx := stream.Context()
+	req.Mode = mode
+	req.Workspace = workspace
+	if req.Options == nil {
+		req.Options = map[string]string{}
+	}
+	req.Options["internet_enabled"] = fmt.Sprintf("%t", s.sessionInternetEnabled(ctx, req.GetSessionId()))
 	defer func() {
 		if ctx.Err() != nil && s.agentStore != nil {
 			statusCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -62,6 +65,9 @@ func (s *orchestratorServer) RunAgent(req *pb.AgentRequest, stream pb.Orchestrat
 	}
 	if err := s.sendAgentEvent(ctx, stream, req.GetSessionId(), "status", "", "thinking", nil, ""); err != nil {
 		return err
+	}
+	if command, ok := parseAgentControl(userText); ok {
+		return s.runAgentControl(ctx, req, stream, command)
 	}
 
 	if mode == "chat" {
@@ -289,6 +295,9 @@ func (s *orchestratorServer) executeAgentTool(ctx context.Context, req *pb.Agent
 	if !supportedTool(decision.Tool) || decision.Tool == "beemo.direct" {
 		return agentObservation{}, fmt.Errorf("unsupported agent tool %q", decision.Tool)
 	}
+	if decision.Tool == "internet.search" && !strings.EqualFold(req.GetOptions()["internet_enabled"], "true") {
+		return agentObservation{Tool: decision.Tool, Error: "internet access is disabled; enter /internet to enable it for this session"}, nil
+	}
 	result, err := s.tools.Execute(ctx, orchtools.Request{SessionID: req.GetSessionId(), Action: decision.Tool, Args: decision.Args})
 	if err != nil {
 		return agentObservation{}, err
@@ -393,8 +402,8 @@ func (s *orchestratorServer) ListAgentSessions(ctx context.Context, req *pb.Sess
 	response := &pb.SessionListResponse{Sessions: make([]*pb.AgentSessionSummary, 0, len(sessions))}
 	for _, session := range sessions {
 		response.Sessions = append(response.Sessions, &pb.AgentSessionSummary{
-			SessionId: session.SessionID, Mode: session.Mode, Workspace: session.Workspace,
-			Status: session.Status, UpdatedUnixMs: session.UpdatedAt.UnixMilli(),
+			SessionId: session.SessionID, Name: session.Name, Mode: session.Mode, Workspace: session.Workspace,
+			Status: session.Status, UpdatedUnixMs: session.UpdatedAt.UnixMilli(), InternetEnabled: session.InternetEnabled,
 		})
 	}
 	return response, nil
@@ -412,8 +421,8 @@ func (s *orchestratorServer) GetAgentSession(ctx context.Context, req *pb.Sessio
 		return nil, err
 	}
 	detail := &pb.AgentSessionDetail{Session: &pb.AgentSessionSummary{
-		SessionId: session.SessionID, Mode: session.Mode, Workspace: session.Workspace,
-		Status: session.Status, UpdatedUnixMs: session.UpdatedAt.UnixMilli(),
+		SessionId: session.SessionID, Name: session.Name, Mode: session.Mode, Workspace: session.Workspace,
+		Status: session.Status, UpdatedUnixMs: session.UpdatedAt.UnixMilli(), InternetEnabled: session.InternetEnabled,
 	}}
 	for _, event := range events {
 		detail.Events = append(detail.Events, &pb.AgentEvent{
@@ -474,7 +483,11 @@ func (s *orchestratorServer) sendAgentEvent(ctx context.Context, stream pb.Orche
 			}
 		}
 	}
-	s.publishState(sessionID, eventType, text, event.GetTimestampUnixMs())
+	if payload != nil {
+		s.publishStatePayload(sessionID, eventType, text, payload)
+	} else {
+		s.publishState(sessionID, eventType, text, event.GetTimestampUnixMs())
+	}
 	return stream.Send(event)
 }
 
@@ -491,6 +504,10 @@ func buildCodeAgentPrompt(req *pb.AgentRequest, observations []agentObservation,
 	}
 	messageBudget := maxChars / 4
 	observationBudget := maxChars / 2
+	internetTool := ""
+	if strings.EqualFold(req.GetOptions()["internet_enabled"], "true") {
+		internetTool = "- internet.search {query}\n"
+	}
 	render := func() string {
 		messages, _ := json.Marshal(compactAgentMessages(req.GetMessages(), messageBudget))
 		results, _ := json.Marshal(compactAgentObservations(observations, observationBudget))
@@ -533,13 +550,14 @@ Available tools:
 - weather {location, when?}
 - calculator {operation and operation-specific values}
 - older_sister {query}
+%s
 
 Do not claim success until verification supports it. Dependency downloads, destructive commands, commits, pushes, and network commands require user approval.
 Workspace: %s
 Step: %d of %d
 Conversation JSON: %s
 Tool observations JSON: %s
-Next decision:`, req.GetWorkspace(), step, maxSteps, messages, results)
+Next decision:`, internetTool, req.GetWorkspace(), step, maxSteps, messages, results)
 	}
 	prompt := render()
 	for len(prompt) > maxChars && (observationBudget > 1000 || messageBudget > 1000) {

@@ -90,6 +90,10 @@ func isMemoryAnswerRoute(candidate routing.Candidate) bool {
 	return strings.TrimSpace(candidate.Route.Handler.Target) == "memory.answer"
 }
 
+func isInternetRoute(candidate routing.Candidate) bool {
+	return strings.TrimSpace(candidate.Route.Handler.Target) == "internet.search"
+}
+
 func selectedRouteBlock(candidate routing.Candidate) string {
 	return routing.FormatCandidates([]routing.Candidate{candidate})
 }

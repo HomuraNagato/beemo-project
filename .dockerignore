@@ -4,4 +4,7 @@
 models
 library
 memory
+web/beemo/node_modules
+web/beemo/.svelte-kit
+web/beemo/build
 *.~

@@ -403,7 +403,7 @@ func TestGeocodeWeatherLocationRetriesNormalizedVariants(t *testing.T) {
 	}
 }
 
-func TestResolveOlderSisterCallFillsQueryAndWebSearch(t *testing.T) {
+func TestResolveOlderSisterCallFillsQuery(t *testing.T) {
 	t.Parallel()
 
 	call, err := ResolveOlderSisterCall(PlannedCall{
@@ -414,17 +414,14 @@ func TestResolveOlderSisterCallFillsQueryAndWebSearch(t *testing.T) {
 		t.Fatalf("ResolveOlderSisterCall returned error: %v", err)
 	}
 	got := string(call.Args)
-	for _, fragment := range []string{
-		`"query":"search the internet for current vllm embedding support"`,
-		`"web_search":true`,
-	} {
+	for _, fragment := range []string{`"query":"search the internet for current vllm embedding support"`} {
 		if !strings.Contains(got, fragment) {
 			t.Fatalf("resolved older_sister args missing %s in %s", fragment, got)
 		}
 	}
 }
 
-func TestOlderSisterCallsResponsesAPIWithWebSearch(t *testing.T) {
+func TestOlderSisterCallsResponsesAPIWithoutWebSearch(t *testing.T) {
 	var sawAuth bool
 	var sawWebSearch bool
 	originalDo := olderSisterHTTPDo
@@ -457,12 +454,8 @@ func TestOlderSisterCallsResponsesAPIWithWebSearch(t *testing.T) {
 		HTTPURL:   "https://api.openai.com/v1/responses",
 		Model:     "gpt-5-mini",
 		TimeoutMs: 500,
-		WebSearch: true,
 	})
-	raw, err := json.Marshal(map[string]any{
-		"query":      "what changed in the latest docs?",
-		"web_search": true,
-	})
+	raw, err := json.Marshal(map[string]any{"query": "what changed in the latest docs?"})
 	if err != nil {
 		t.Fatalf("marshal args: %v", err)
 	}
@@ -476,8 +469,8 @@ func TestOlderSisterCallsResponsesAPIWithWebSearch(t *testing.T) {
 	if !sawAuth {
 		t.Fatal("expected Authorization header")
 	}
-	if !sawWebSearch {
-		t.Fatal("expected web_search tool in request")
+	if sawWebSearch {
+		t.Fatal("older sister must not receive the web_search tool")
 	}
 }
 

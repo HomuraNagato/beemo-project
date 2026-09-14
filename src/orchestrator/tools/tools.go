@@ -23,6 +23,12 @@ type Result struct {
 	Status   string
 	Missing  []string
 	Question string
+	Sources  []Source
+}
+
+type Source struct {
+	Title string
+	URL   string
 }
 
 type Executor interface {
@@ -48,7 +54,16 @@ type OlderSisterConfig struct {
 	HTTPURL   string
 	Model     string
 	TimeoutMs int
-	WebSearch bool
+}
+
+type InternetConfig struct {
+	APIKey      string
+	HTTPURL     string
+	TimeoutMs   int
+	ResultCount int
+	MaxURLs     int
+	MaxTokens   int
+	SafeSearch  string
 }
 
 type MemoryConfig struct {
@@ -62,6 +77,7 @@ type MemoryConfig struct {
 type LocalExecutor struct {
 	weatherConfig     WeatherConfig
 	olderSisterConfig OlderSisterConfig
+	internetConfig    InternetConfig
 	memoryConfig      MemoryConfig
 }
 
@@ -108,10 +124,11 @@ func NewLocalExecutorWithConfigs(weather WeatherConfig, olderSister OlderSisterC
 	}
 }
 
-func NewLocalExecutorWithAllConfigs(weather WeatherConfig, olderSister OlderSisterConfig, memory MemoryConfig) *LocalExecutor {
+func NewLocalExecutorWithAllConfigs(weather WeatherConfig, olderSister OlderSisterConfig, internet InternetConfig, memory MemoryConfig) *LocalExecutor {
 	return &LocalExecutor{
 		weatherConfig:     weather,
 		olderSisterConfig: olderSister,
+		internetConfig:    internet,
 		memoryConfig:      memory,
 	}
 }
@@ -137,6 +154,8 @@ func (e *LocalExecutor) Execute(ctx context.Context, req Request) (Result, error
 		return executeWeather(ctx, req, e.weatherConfig)
 	case "older_sister":
 		return executeOlderSister(ctx, req, e.olderSisterConfig)
+	case "internet.search":
+		return executeInternetSearch(ctx, req, e.internetConfig)
 	case "memory.search":
 		return executeMemorySearch(ctx, req, e.memoryConfig)
 	case "memory.remember":

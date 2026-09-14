@@ -39,6 +39,32 @@ func toolResultForPrompt(result orchtools.Result) string {
 	return fmt.Sprintf("%s (%s)", timestamp.Format("January 2, 2006 at 3:04 PM MST"), output)
 }
 
+func appendInternetSources(answer string, results []orchtools.Result) string {
+	seen := map[string]bool{}
+	var lines []string
+	for _, result := range results {
+		if result.Action != "internet.search" {
+			continue
+		}
+		for _, source := range result.Sources {
+			url := strings.TrimSpace(source.URL)
+			if url == "" || seen[url] {
+				continue
+			}
+			seen[url] = true
+			title := strings.TrimSpace(source.Title)
+			if title == "" {
+				title = url
+			}
+			lines = append(lines, fmt.Sprintf("[%d] %s: %s", len(lines)+1, title, url))
+		}
+	}
+	if len(lines) == 0 {
+		return strings.TrimSpace(answer)
+	}
+	return strings.TrimSpace(answer) + "\n\nSources:\n" + strings.Join(lines, "\n")
+}
+
 func isSimpleCurrentTimeQuery(text string) bool {
 	lower := strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(text)), " "))
 	if lower == "" {

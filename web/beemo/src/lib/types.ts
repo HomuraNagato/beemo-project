@@ -11,6 +11,7 @@ export type AgentEventType =
   | "user"
   | "status"
   | "assistant"
+  | "control"
   | "tool_start"
   | "tool_result"
   | "approval"
@@ -33,6 +34,7 @@ export interface StateUpdate {
   state: AgentEventType;
   message: string;
   timestampUnixMs: number;
+  payloadJson: string;
 }
 
 export interface WakeEvent {
@@ -50,10 +52,26 @@ export interface WakeEvent {
 
 export interface SessionSummary {
   sessionId: string;
+  name: string;
   mode: "chat" | "code";
   workspace: string;
   status: string;
+  internetEnabled: boolean;
   updatedUnixMs: number;
+}
+
+export interface CodeProject {
+  path: string;
+  name: string;
+  isGit: boolean;
+  createdUnixMs: number;
+  lastUsedUnixMs: number;
+}
+
+export interface DirectoryEntry {
+  name: string;
+  path: string;
+  isGit: boolean;
 }
 
 export interface ChatMessage {

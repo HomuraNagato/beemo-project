@@ -52,6 +52,7 @@ func (s *orchestratorServer) runChat(ctx context.Context, req *pb.ChatRequest) (
 	if userQuery == "" {
 		userQuery = latestUserQuery(effectiveMessages)
 	}
+	internetEnabled := s.sessionInternetEnabled(ctx, req.GetSessionId())
 	s.log().Info("orch.chat.start", "session", req.GetSessionId(), "user_query", userQuery)
 	if userQuery == "" {
 		return chatOutcome{History: historyEntry{
@@ -199,6 +200,17 @@ func (s *orchestratorServer) runChat(ctx context.Context, req *pb.ChatRequest) (
 			decisionText = string(inferredText)
 		}
 	}
+	if strings.TrimSpace(decisionText) == "" {
+		if inferred, ok, ierr := orchtools.InferInternetSearchCall(userQuery); ierr != nil {
+			return chatOutcome{}, ierr
+		} else if ok {
+			inferredText, jerr := json.Marshal([]toolCall{fromPlannedCall(inferred)})
+			if jerr != nil {
+				return chatOutcome{}, jerr
+			}
+			decisionText = string(inferredText)
+		}
+	}
 	if strings.TrimSpace(decisionText) == "" && s.cfg.DeterministicToolShortcuts {
 		if inferred, ok, ierr := orchtools.InferToolCall(userQuery); ierr != nil {
 			return chatOutcome{}, ierr
@@ -252,6 +264,9 @@ func (s *orchestratorServer) runChat(ctx context.Context, req *pb.ChatRequest) (
 						Status:    "error",
 						Error:     fmt.Sprintf("route_validation: %v", verr),
 					}}, verr
+				}
+				if isInternetRoute(selectedCandidate) && !internetEnabled {
+					return internetDisabledOutcome(req.GetSessionId(), userQuery, effectiveMessages, strings.TrimSpace(selectedCandidate.Route.ID)), nil
 				}
 				routeCandidates = []routing.Candidate{selectedCandidate}
 				s.log().Info("orch.chat.route_decision", "session", req.GetSessionId(), "decision", routeText, "route", strings.TrimSpace(selectedCandidate.Route.ID))
@@ -342,6 +357,9 @@ func (s *orchestratorServer) runChat(ctx context.Context, req *pb.ChatRequest) (
 	}
 
 	toolCalls = filterSupportedToolCalls(toolCalls)
+	if hasToolCall(toolCalls, "internet.search") && !internetEnabled {
+		return internetDisabledOutcome(req.GetSessionId(), userQuery, effectiveMessages, decisionText), nil
+	}
 	if len(routeCandidates) > 0 && len(toolCalls) == 0 {
 		err := fmt.Errorf("routed decision returned no supported tool calls")
 		return chatOutcome{History: historyEntry{
@@ -466,6 +484,12 @@ func (s *orchestratorServer) runChat(ctx context.Context, req *pb.ChatRequest) (
 				return chatOutcome{}, rerr
 			}
 			resolvedTool = resolved
+		case "internet.search":
+			resolved, rerr := orchtools.ResolveInternetSearchCall(resolvedTool, userQuery)
+			if rerr != nil {
+				return chatOutcome{}, rerr
+			}
+			resolvedTool = resolved
 		}
 
 		tool = fromPlannedCall(resolvedTool)
@@ -554,6 +578,7 @@ func (s *orchestratorServer) runChat(ctx context.Context, req *pb.ChatRequest) (
 			Error:      fmt.Sprintf("llm_followup: %v", err),
 		}}, err
 	}
+	finalText = appendInternetSources(finalText, successfulResults)
 	if !containsString(toolsRequested, "memory.remember") {
 		go s.maybeAutoSaveMemory(req.GetSessionId(), userQuery)
 	}
@@ -573,6 +598,28 @@ func (s *orchestratorServer) runChat(ctx context.Context, req *pb.ChatRequest) (
 			Status:     "ok",
 		},
 	}, nil
+}
+
+func internetDisabledOutcome(sessionID, userQuery string, messages []*pb.ChatMessage, decision string) chatOutcome {
+	const response = "Internet access is disabled for this session. Enter /internet to enable it."
+	return chatOutcome{
+		Response:   response,
+		Path:       "internet_disabled",
+		Transcript: appendAssistantMessage(messages, response),
+		History: historyEntry{
+			Timestamp: time.Now().Format(time.RFC3339), SessionID: sessionID, UserQuery: userQuery,
+			Decision: decision, Response: response, Status: "ok",
+		},
+	}
+}
+
+func hasToolCall(calls []toolCall, name string) bool {
+	for _, call := range calls {
+		if strings.TrimSpace(call.Tool) == name {
+			return true
+		}
+	}
+	return false
 }
 
 func routeCandidateLabels(candidates []routing.Candidate) []string {

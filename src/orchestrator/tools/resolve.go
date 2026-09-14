@@ -126,9 +126,26 @@ func ResolveOlderSisterCall(call PlannedCall, explicitText string) (PlannedCall,
 	if strings.TrimSpace(args.Query) == "" {
 		args.Query = strings.TrimSpace(explicitText)
 	}
-	if args.WebSearch == nil {
-		enabled := true
-		args.WebSearch = &enabled
+	updated, err := json.Marshal(args)
+	if err != nil {
+		return PlannedCall{}, err
+	}
+	call.Args = updated
+	return call, nil
+}
+
+func ResolveInternetSearchCall(call PlannedCall, explicitText string) (PlannedCall, error) {
+	if strings.TrimSpace(call.Action) != "internet.search" {
+		return call, nil
+	}
+	args := internetSearchArgs{}
+	if len(call.Args) > 0 {
+		if err := json.Unmarshal(call.Args, &args); err != nil {
+			return PlannedCall{}, fmt.Errorf("invalid internet.search args for resolution: %w", err)
+		}
+	}
+	if strings.TrimSpace(args.Query) == "" {
+		args.Query = strings.TrimSpace(explicitText)
 	}
 	updated, err := json.Marshal(args)
 	if err != nil {

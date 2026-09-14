@@ -1,10 +1,17 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import FaceDisplay from "$lib/components/FaceDisplay.svelte";
+  import FaceControls from "$lib/components/FaceControls.svelte";
+  import ConversationOverlay from "$lib/components/ConversationOverlay.svelte";
+  import MessageComposer from "$lib/components/MessageComposer.svelte";
+  import ProjectManagerDialog from "$lib/components/ProjectManagerDialog.svelte";
+  import SessionManagerDialog from "$lib/components/SessionManagerDialog.svelte";
+  import { X } from "@lucide/svelte";
   import { cleanReply, expressionFromText } from "$lib/expressions";
-  import type { AgentEvent, ChatMessage, FaceExpression, SessionSummary, StateUpdate, WakeEvent } from "$lib/types";
+  import type { AgentEvent, ChatMessage, CodeProject, FaceExpression, SessionSummary, StateUpdate, WakeEvent } from "$lib/types";
 
   type Mode = "chat" | "code";
+  const conversationHideDelayMs = 20_000;
 
   let expression: FaceExpression = "calm";
   let talking = false;
@@ -12,36 +19,38 @@
   let voiceStatus = "voice connecting";
   let mode: Mode = "chat";
   let workspace = "";
-  let workspaces: string[] = [];
-  let sessions: SessionSummary[] = [];
+  let internetEnabled = false;
   let sessionId = "";
   let messages: ChatMessage[] = [];
   let visibleMessages: ChatMessage[] = [{ role: "assistant", content: "Hi. I am listening." }];
+  let conversationOpen = true;
+  let conversationExpanded = false;
   let activity = "";
   let composer = "";
   let activeController: AbortController | null = null;
   let diffDialog: HTMLDialogElement;
+  let projectDialog: ProjectManagerDialog;
+  let sessionDialog: SessionManagerDialog;
   let diffOutput = "";
   let talkingTimer: ReturnType<typeof setTimeout> | undefined;
+  let conversationTimer: ReturnType<typeof setTimeout> | undefined;
   let stateEvents: EventSource | undefined;
   let wakeEvents: EventSource | undefined;
   let runtimeEvents: EventSource | undefined;
   let latestSessionEventTimestamp = 0;
 
+  $: if (composer.trim()) holdConversation();
+
   onMount(() => {
-    void initialize();
     runtimeEvents = connectRuntimeEvents();
     return () => {
       runtimeEvents?.close();
       wakeEvents?.close();
       stateEvents?.close();
       if (talkingTimer) clearTimeout(talkingTimer);
+      if (conversationTimer) clearTimeout(conversationTimer);
     };
   });
-
-  async function initialize(): Promise<void> {
-    await Promise.all([loadWorkspaces(), loadSessions()]);
-  }
 
   function connectRuntimeEvents(): EventSource {
     const events = new EventSource("/api/runtime-events");
@@ -57,6 +66,9 @@
     sessionId = nextSessionId;
     messages = [];
     visibleMessages = [{ role: "assistant", content: "Hi. I am listening." }];
+    conversationOpen = true;
+    conversationExpanded = false;
+    holdConversation();
     activity = "";
     expression = "calm";
     status = "new session";
@@ -100,6 +112,10 @@
   function handleStateUpdate(event: StateUpdate): void {
     if (event.sessionId !== sessionId || event.timestampUnixMs <= latestSessionEventTimestamp) return;
     latestSessionEventTimestamp = event.timestampUnixMs;
+    if (event.state === "control") {
+      handleControl(event.payloadJson);
+      return;
+    }
     const content = cleanReply(event.message);
     if (event.state === "user" || event.state === "assistant") {
       const latest = messages.at(-1);
@@ -115,9 +131,12 @@
       expression = expressionFromText(content);
       status = "responding";
       animateTalking(content);
+      scheduleConversationHide();
     } else if (event.state === "error") {
       expression = "worried";
       status = "error";
+      conversationOpen = true;
+      holdConversation();
     }
   }
 
@@ -139,13 +158,59 @@
       expression = event.status === "error" ? "worried" : expressionFromText(event.response);
       status = event.status || "idle";
       animateTalking(event.response);
+      if (event.status === "error") holdConversation();
+      else scheduleConversationHide();
     }
   }
 
   function showMessage(role: ChatMessage["role"], content: string): void {
+    if (!content) return;
     const latest = visibleMessages.at(-1);
     if (latest?.role === role && latest.content === content) return;
-    visibleMessages = [...visibleMessages, { role, content }].slice(-2);
+    visibleMessages = [...visibleMessages, { role, content }].slice(-20);
+    conversationOpen = true;
+  }
+
+  function holdConversation(): void {
+    if (conversationTimer) clearTimeout(conversationTimer);
+    conversationTimer = undefined;
+  }
+
+  function scheduleConversationHide(): void {
+    holdConversation();
+    if (conversationExpanded || status === "error" || status === "offline") return;
+    conversationTimer = setTimeout(() => {
+      conversationOpen = false;
+      conversationTimer = undefined;
+    }, conversationHideDelayMs);
+  }
+
+  function toggleConversation(): void {
+    if (conversationOpen) {
+      if (composer.trim()) return;
+      closeConversation();
+      return;
+    }
+    conversationOpen = true;
+    scheduleConversationHide();
+  }
+
+  function expandConversation(): void {
+    conversationOpen = true;
+    conversationExpanded = true;
+    holdConversation();
+  }
+
+  function collapseConversation(): void {
+    conversationExpanded = false;
+    scheduleConversationHide();
+  }
+
+  function closeConversation(): void {
+    if (composer.trim()) return;
+    conversationOpen = false;
+    conversationExpanded = false;
+    holdConversation();
   }
 
   function showActivity(value: string): void {
@@ -163,6 +228,8 @@
   }
 
   async function sendMessage(text: string): Promise<void> {
+    holdConversation();
+    conversationOpen = true;
     messages = [...messages, { role: "user", content: text }];
     showMessage("user", text);
     expression = "thinking";
@@ -173,7 +240,7 @@
       method: "POST",
       headers: { "Content-Type": "application/json" },
       signal: activeController.signal,
-      body: JSON.stringify({ sessionId, messages, mode, workspace }),
+      body: JSON.stringify({ sessionId, messages }),
     });
     if (!response.ok || !response.body) {
       const payload = await response.json() as { error?: string };
@@ -208,12 +275,15 @@
     activity = "";
     status = "responding";
     animateTalking(reply);
+    scheduleConversationHide();
     activeController = null;
-    await loadSessions();
   }
 
   async function handleAgentEvent(event: AgentEvent): Promise<string> {
     switch (event.type) {
+      case "control":
+        handleControl(event.payloadJson);
+        break;
       case "assistant":
         return event.text || "";
       case "tool_start":
@@ -252,10 +322,6 @@
     }
     const text = composer.trim();
     if (!text) return;
-    if (mode === "code" && !workspace) {
-      showMessage("assistant", "Select a repository before using Code mode.");
-      return;
-    }
     composer = "";
     try {
       await sendMessage(text);
@@ -264,59 +330,10 @@
       expression = "worried";
       status = "offline";
       showMessage("assistant", error instanceof Error ? error.message : String(error));
+      holdConversation();
     } finally {
       activeController = null;
     }
-  }
-
-  function setMode(nextMode: Mode): void {
-    mode = nextMode;
-    if (mode === "chat") workspace = "";
-    status = mode;
-  }
-
-  async function loadWorkspaces(): Promise<void> {
-    try {
-      const response = await fetch("/api/workspaces", { cache: "no-store" });
-      const payload = await response.json() as { workspaces?: string[]; error?: string };
-      if (!response.ok || payload.error) throw new Error(payload.error || "workspace request failed");
-      workspaces = payload.workspaces || [];
-    } catch (error) {
-      showActivity(`Repositories unavailable: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  async function loadSessions(): Promise<void> {
-    try {
-      const response = await fetch("/api/sessions", { cache: "no-store" });
-      const payload = await response.json() as { sessions?: SessionSummary[]; error?: string };
-      if (!response.ok || payload.error) throw new Error(payload.error || "session request failed");
-      sessions = payload.sessions || [];
-    } catch (error) {
-      showActivity(`Sessions unavailable: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  async function resumeSession(nextSessionId: string): Promise<void> {
-    if (!nextSessionId) {
-      startNewSession();
-      return;
-    }
-    const response = await fetch(`/api/session?id=${encodeURIComponent(nextSessionId)}`, { cache: "no-store" });
-    const payload = await response.json() as { session: SessionSummary; events: AgentEvent[]; error?: string };
-    if (!response.ok || payload.error) throw new Error(payload.error || "session could not be loaded");
-    sessionId = payload.session.sessionId;
-    stateEvents = connectStateEvents();
-    wakeEvents = connectWakeEvents();
-    mode = payload.session.mode;
-    workspace = payload.session.workspace;
-    messages = payload.events
-      .filter((event) => event.type === "user" || event.type === "assistant")
-      .map((event) => ({ role: event.type as ChatMessage["role"], content: cleanReply(event.text) }));
-    visibleMessages = messages.slice(-2);
-    latestSessionEventTimestamp = payload.events.at(-1)?.timestampUnixMs || 0;
-    if (visibleMessages.length === 0) visibleMessages = [{ role: "assistant", content: "Session resumed." }];
-    status = "resumed";
   }
 
   async function syncSession(): Promise<void> {
@@ -327,26 +344,43 @@
       const payload = await response.json() as { session: SessionSummary; events: AgentEvent[] };
       mode = payload.session.mode;
       workspace = payload.session.workspace;
+      internetEnabled = payload.session.internetEnabled;
       messages = payload.events
         .filter((event) => event.type === "user" || event.type === "assistant")
         .map((event) => ({ role: event.type as ChatMessage["role"], content: cleanReply(event.text) }));
-      visibleMessages = messages.slice(-2);
+      visibleMessages = messages.slice(-20);
       latestSessionEventTimestamp = payload.events.at(-1)?.timestampUnixMs || 0;
     } catch {
       status = "offline";
     }
   }
 
-  function startNewSession(): void {
-    sessionId = `web-${Date.now()}`;
-    stateEvents = connectStateEvents();
-    wakeEvents = connectWakeEvents();
-    messages = [];
-    visibleMessages = [{ role: "assistant", content: "Hi. I am listening." }];
-    activity = "";
-    expression = "calm";
-    status = mode;
-    latestSessionEventTimestamp = 0;
+  function handleControl(payloadJson: string): void {
+    if (!payloadJson) return;
+    try {
+      const payload = JSON.parse(payloadJson) as { action?: string; mode?: Mode; workspace?: string; internetEnabled?: boolean };
+      if (payload.mode) mode = payload.mode;
+      if (payload.workspace !== undefined) workspace = payload.workspace;
+      if (payload.internetEnabled !== undefined) internetEnabled = payload.internetEnabled;
+      if (payload.action === "project_picker" || payload.action === "project_manager") void projectDialog.open();
+    } catch { /* Ignore malformed optional control metadata. */ }
+  }
+
+  function applySession(session: SessionSummary): void {
+    mode = session.mode;
+    workspace = session.workspace;
+    internetEnabled = session.internetEnabled;
+    activateSession(session.sessionId);
+  }
+
+  async function selectProject(project: CodeProject): Promise<void> {
+    if (!sessionId) return;
+    const response = await fetch("/api/project-selection", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId, path: project.path }) });
+    const payload = await response.json() as { session?: SessionSummary; error?: string };
+    if (!response.ok || payload.error || !payload.session) { showActivity(payload.error || "Project could not be selected"); return; }
+    mode = payload.session.mode;
+    workspace = payload.session.workspace;
+    status = `code · ${project.path.split("/").filter(Boolean).at(-1) || "project"}`;
   }
 
   async function showDiff(): Promise<void> {
@@ -370,133 +404,44 @@
   <link rel="icon" href="/assets/display-texture.jpg" />
 </svelte:head>
 
-<main class="shell" aria-label="Beemo interface">
-  <section class="face-region" aria-label="Beemo face display">
+<main class="h-dvh min-h-[420px] overflow-hidden bg-beemo-bg" aria-label="Beemo interface">
+  <section class="relative h-full min-h-0 overflow-hidden" aria-label="Beemo face display">
     <FaceDisplay {expression} {talking} />
-
-    <header class="top-bar">
-      <div class="brand">
-        <strong>Beemo</strong>
-        <span>{expression}</span>
-      </div>
-      <div class="status-row" aria-live="polite">
-        <span>{status}</span>
-        <span class:online={voiceStatus === "voice ready"}>{voiceStatus}</span>
-      </div>
-    </header>
-
-    <div class="studio-toolbar" aria-label="Assistant controls">
-      <div class="mode-control" role="group" aria-label="Assistant mode">
-        <button type="button" class:active={mode === "chat"} on:click={() => setMode("chat")}>Chat</button>
-        <button type="button" class:active={mode === "code"} on:click={() => setMode("code")}>Code</button>
-      </div>
-      {#if mode === "code"}
-        <label>
-          <span>Repository</span>
-          <select bind:value={workspace}>
-            <option value="">Select a repository</option>
-            {#each workspaces as item}
-              <option value={item}>{item.split("/").filter(Boolean).at(-1) || item}</option>
-            {/each}
-          </select>
-        </label>
-      {/if}
-      <label>
-        <span>Session</span>
-        <select value={sessionId} on:change={(event) => void resumeSession(event.currentTarget.value)}>
-          <option value="">New session</option>
-          {#each sessions as session}
-            <option value={session.sessionId}>{session.workspace.split("/").filter(Boolean).at(-1) || "chat"} · {new Date(session.updatedUnixMs).toLocaleString()}</option>
-          {/each}
-        </select>
-      </label>
-      <button type="button" on:click={startNewSession}>New</button>
-      <button type="button" disabled={mode !== "code" || !workspace} on:click={() => void showDiff()}>Diff</button>
-    </div>
-  </section>
-
-  <section class="conversation-region" aria-label="Conversation">
-    {#if activity}<div class="activity">{activity}</div>{/if}
-    <div class="messages" aria-live="polite">
-      {#each visibleMessages as message, index}
-        <p class:previous={index < visibleMessages.length - 1} class:user={message.role === "user"}>{message.content}</p>
-      {/each}
-    </div>
-    <form on:submit|preventDefault={() => void submit()}>
-      <textarea bind:value={composer} rows="2" placeholder="Message Beemo" aria-label="Message to Beemo" on:keydown={(event) => {
-        if (event.key === "Enter" && !event.shiftKey) {
-          event.preventDefault();
-          void submit();
-        }
-      }}></textarea>
-      <button class="send-button" type="submit">{activeController ? "Stop" : "Send"}</button>
-    </form>
+    <FaceControls
+      onprojects={() => void projectDialog.open()}
+      onsessions={() => void sessionDialog.open()}
+      onface={toggleConversation}
+    />
+    {#if conversationOpen}
+      <ConversationOverlay
+        messages={visibleMessages}
+        {activity}
+        {status}
+        {voiceStatus}
+        {mode}
+      {workspace}
+      {internetEnabled}
+        expanded={conversationExpanded}
+        onexpand={expandConversation}
+        oncollapse={collapseConversation}
+        onclose={closeConversation}
+        onhold={holdConversation}
+        onrelease={scheduleConversationHide}
+        onswitch={() => void projectDialog.open()}
+        ondiff={() => void showDiff()}
+      />
+      <MessageComposer bind:value={composer} busy={Boolean(activeController)} onsubmit={() => void submit()} />
+    {/if}
   </section>
 </main>
 
-<dialog bind:this={diffDialog} class="diff-dialog">
-  <header>
-    <h2>Working tree diff</h2>
-    <button type="button" aria-label="Close diff" on:click={() => diffDialog.close()}>&times;</button>
+<ProjectManagerDialog bind:this={projectDialog} {sessionId} activeWorkspace={workspace} onstate={(nextMode, nextWorkspace) => { mode = nextMode; workspace = nextWorkspace; }} onselect={selectProject} />
+<SessionManagerDialog bind:this={sessionDialog} activeSessionId={sessionId} onactivate={applySession} />
+
+<dialog bind:this={diffDialog} class="h-[min(760px,calc(100dvh-28px))] w-[min(1100px,calc(100vw-28px))] rounded-lg border border-[#52625d] bg-beemo-panel p-0 text-beemo-text backdrop:bg-black/80">
+  <header class="flex items-center justify-between border-b border-beemo-border px-4 py-3">
+    <h2 class="m-0 text-base font-semibold">Working tree diff</h2>
+    <button class="grid size-11 cursor-pointer place-items-center rounded-sm border-0 bg-transparent text-beemo-text hover:bg-[#303a37]" type="button" aria-label="Close diff" title="Close" on:click={() => diffDialog.close()}><X size={21} /></button>
   </header>
-  <pre>{diffOutput}</pre>
+  <pre class="m-0 h-[calc(100%-69px)] overflow-auto bg-[#0d100f] p-4 font-mono text-sm leading-6 whitespace-pre-wrap text-beemo-text">{diffOutput}</pre>
 </dialog>
-
-<style>
-  :global(*) { box-sizing: border-box; }
-  :global(html), :global(body) { height: 100%; margin: 0; }
-  :global(body) { background: #111413; color: #edf7f2; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-  :global(button), :global(textarea), :global(select) { font: inherit; }
-  :global(button:focus-visible), :global(textarea:focus-visible), :global(select:focus-visible) { outline: 2px solid #f0c36a; outline-offset: 2px; }
-
-  .shell { display: grid; grid-template-rows: minmax(300px, 58vh) minmax(250px, 1fr); height: 100dvh; min-height: 550px; overflow: hidden; }
-  .face-region { position: relative; min-height: 0; overflow: hidden; border-bottom: 1px solid #41504b; }
-  .top-bar { position: absolute; inset: 0 0 auto; display: flex; justify-content: space-between; align-items: flex-start; padding: 18px 20px; pointer-events: none; }
-  .brand { display: grid; gap: 3px; text-shadow: 0 2px 10px #00110d; }
-  .brand strong { font-size: 1.45rem; }
-  .brand span { color: #f0c36a; font-size: 0.78rem; text-transform: uppercase; }
-  .status-row { display: flex; gap: 8px; }
-  .status-row span { min-width: 82px; padding: 6px 9px; border: 1px solid rgba(220, 238, 231, 0.34); border-radius: 6px; background: rgba(12, 18, 18, 0.82); color: #c4d3ce; font-size: 0.76rem; text-align: center; }
-  .status-row span.online { color: #80e7c5; border-color: rgba(128, 231, 197, 0.5); }
-
-  .studio-toolbar { position: absolute; inset: auto 0 0; display: flex; align-items: center; justify-content: center; gap: 9px; padding: 12px 16px; background: rgba(10, 16, 16, 0.9); border-top: 1px solid rgba(220, 238, 231, 0.22); }
-  .studio-toolbar label { display: flex; align-items: center; gap: 7px; min-width: 0; color: #a9bbb5; font-size: 0.75rem; }
-  .studio-toolbar select { width: min(250px, 25vw); height: 34px; min-width: 0; padding: 0 8px; border: 1px solid #52625d; border-radius: 6px; color: #edf7f2; background: #202725; }
-  .studio-toolbar button, .mode-control button { height: 34px; padding: 0 12px; border: 1px solid #52625d; border-radius: 6px; color: #edf7f2; background: #202725; cursor: pointer; }
-  .studio-toolbar button:disabled { opacity: 0.45; cursor: not-allowed; }
-  .mode-control { display: grid; grid-template-columns: repeat(2, 68px); }
-  .mode-control button { border-radius: 0; }
-  .mode-control button:first-child { border-radius: 6px 0 0 6px; }
-  .mode-control button:last-child { border-left: 0; border-radius: 0 6px 6px 0; }
-  .mode-control button.active { color: #101514; border-color: #66d9b4; background: #66d9b4; font-weight: 700; }
-
-  .conversation-region { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-height: 0; background: #171b1a; }
-  .activity { padding: 7px 18px; border-bottom: 1px solid #38443f; color: #f0c36a; background: #202523; font: 0.76rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
-  .messages { display: grid; align-content: center; gap: 18px; min-height: 0; overflow-y: auto; padding: 22px clamp(20px, 6vw, 90px); }
-  .messages p { width: min(900px, 100%); margin: 0 auto; color: #8ee4c6; text-align: center; font-size: clamp(1.18rem, 2vw, 1.9rem); line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; }
-  .messages p.user { color: #f0c36a; }
-  .messages p.previous { font-size: clamp(0.84rem, 1.1vw, 1rem); opacity: 0.5; }
-  form { display: grid; grid-template-columns: minmax(0, 1fr) 84px; gap: 10px; padding: 12px clamp(14px, 4vw, 50px) calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid #41504b; background: #111413; }
-  textarea { width: 100%; height: 50px; max-height: 50px; resize: none; padding: 12px; border: 1px solid #52625d; border-radius: 6px; outline: 0; color: #edf7f2; background: #242b29; line-height: 1.35; }
-  textarea:focus { border-color: #66d9b4; }
-  .send-button { height: 50px; border: 1px solid #66d9b4; border-radius: 6px; color: #101514; background: #66d9b4; font-weight: 700; cursor: pointer; }
-
-  .diff-dialog { width: min(1100px, calc(100vw - 28px)); height: min(760px, calc(100dvh - 28px)); padding: 0; border: 1px solid #52625d; border-radius: 8px; color: #edf7f2; background: #171b1a; }
-  .diff-dialog::backdrop { background: rgba(0, 0, 0, 0.78); }
-  .diff-dialog header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid #41504b; }
-  .diff-dialog h2 { margin: 0; font-size: 1rem; }
-  .diff-dialog button { width: 36px; height: 36px; border: 0; color: #edf7f2; background: transparent; font-size: 1.5rem; cursor: pointer; }
-  .diff-dialog pre { height: calc(100% - 61px); margin: 0; overflow: auto; padding: 16px; color: #edf7f2; background: #0d100f; font: 0.82rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
-
-  @media (max-width: 760px) {
-    .shell { grid-template-rows: minmax(290px, 48vh) minmax(260px, 1fr); overflow: auto; }
-    .top-bar { padding: 12px; }
-    .brand strong { font-size: 1.15rem; }
-    .status-row span { min-width: 68px; padding: 5px 6px; font-size: 0.68rem; }
-    .studio-toolbar { justify-content: flex-start; overflow-x: auto; padding: 9px 10px; }
-    .studio-toolbar label span { display: none; }
-    .studio-toolbar select { width: 180px; }
-    .messages { padding: 16px; }
-    form { grid-template-columns: minmax(0, 1fr) 68px; gap: 7px; padding-inline: 9px; }
-  }
-</style>

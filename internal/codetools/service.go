@@ -43,6 +43,50 @@ func (s *Service) ListWorkspaces(context.Context, *pb.ListWorkspacesRequest) (*p
 	return &pb.ListWorkspacesResponse{Roots: discoverRepositories(s.resolver.Roots())}, nil
 }
 
+func (s *Service) BrowseDirectories(_ context.Context, req *pb.BrowseDirectoriesRequest) (*pb.BrowseDirectoriesResponse, error) {
+	roots := s.resolver.Roots()
+	requested := strings.TrimSpace(req.GetPath())
+	if requested == "" {
+		return &pb.BrowseDirectoriesResponse{Roots: roots}, nil
+	}
+	current, err := s.resolver.Workspace(requested)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(current)
+	if err != nil {
+		return nil, err
+	}
+	response := &pb.BrowseDirectoriesResponse{Path: current, Roots: roots, IsGit: isGitRepository(current)}
+	parent := filepath.Dir(current)
+	if parent != current {
+		if resolvedParent, resolveErr := s.resolver.Workspace(parent); resolveErr == nil {
+			response.Parent = resolvedParent
+		}
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Name() == ".git" {
+			continue
+		}
+		path, resolveErr := s.resolver.Workspace(filepath.Join(current, entry.Name()))
+		if resolveErr != nil {
+			continue
+		}
+		response.Directories = append(response.Directories, &pb.DirectoryEntry{
+			Name: entry.Name(), Path: path, IsGit: isGitRepository(path),
+		})
+	}
+	sort.Slice(response.Directories, func(i, j int) bool {
+		return strings.ToLower(response.Directories[i].GetName()) < strings.ToLower(response.Directories[j].GetName())
+	})
+	return response, nil
+}
+
+func isGitRepository(path string) bool {
+	info, err := os.Stat(filepath.Join(path, ".git"))
+	return err == nil && (info.IsDir() || info.Mode().IsRegular())
+}
+
 func discoverRepositories(roots []string) []string {
 	seen := map[string]bool{}
 	result := []string{}

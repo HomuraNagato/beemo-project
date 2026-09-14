@@ -9,6 +9,7 @@ import (
 
 	pb "eve-beemo/proto/gen/proto"
 	"eve-beemo/src/orchestrator/llm"
+	"eve-beemo/src/orchestrator/memoryprompt"
 	orchtools "eve-beemo/src/orchestrator/tools"
 )
 
@@ -191,7 +192,7 @@ func memoryAnswerProfileFor(question string) memoryAnswerProfile {
 			return memoryAnswerProfile{name: "direct", maxTokens: 64, sourceLimit: 4}
 		}
 	}
-	return memoryAnswerProfile{name: "standard", maxTokens: 192, sourceLimit: memoryAskSourceLimit}
+	return memoryAnswerProfile{name: "standard", maxTokens: 320, sourceLimit: memoryAskSourceLimit}
 }
 
 func memoryAskRequested(options map[string]string) bool {
@@ -216,34 +217,22 @@ func fallbackRequestID(sessionID string) string {
 }
 
 func buildMemoryAskPrompt(question string, sources []orchtools.MemoryRetrieveSource) string {
-	return buildMemoryAskContextPrompt(
-		question,
-		sources,
-		"If the context is insufficient, say what is missing.",
-		"Answer at the depth requested, with citations.",
-	)
-}
-
-func buildMemoryAskContextPrompt(question string, sources []orchtools.MemoryRetrieveSource, insufficientInstruction, finalInstruction string) string {
-	parts := []string{
-		"System:\nYou are Beemo. Answer only from the provided Memory Context. Read every numbered source before answering. Combine evidence across sources when needed, including aliases, pronouns, family relationships, and indirect references. First identify the subject of the user's question, then verify that any relationship evidence belongs to that subject. Treat first-person questions using I, me, or my as questions about the user; prefer direct first-person memory evidence over analogous events involving fictional characters. Do not answer with a relation for a different person unless the context links that person back to the asked subject. Cite only the bracketed source numbers shown before each source title, like [1] or [1][3], and never return a citation without an answer. " + insufficientInstruction + " Match the answer depth to the question: answer direct factual questions in one or two sentences, but use several concise paragraphs when the user asks for an explanation, description, comparison, or synthesis.",
-		"User:\nQuestion: " + question,
-		"Memory Context:",
-	}
-	for index, source := range sources {
-		parts = append(parts, fmt.Sprintf("[%d] %s\nUpdated: %s\nSource: %s\n%s", index+1, memoryAskTitle(source), shortMemoryAskDate(source.UpdatedAt), source.SourceURI, memoryAskEvidence(source)))
-	}
-	parts = append(parts, finalInstruction)
-	return strings.Join(parts, "\n\n")
+	return memoryprompt.BuildAnswer(question, memoryPromptSources(sources))
 }
 
 func buildMemoryAskPlanningPrompt(question string, sources []orchtools.MemoryRetrieveSource) string {
-	return buildMemoryAskContextPrompt(
-		question,
-		sources,
-		"If the context is insufficient, do not answer or explain what is missing.",
-		"If the supplied context is insufficient to answer, reply only with `RETRIEVE: ` followed by one standalone follow-up search query that could locate the missing evidence. Otherwise answer normally, at the depth requested, with citations.",
-	)
+	return memoryprompt.BuildPlanning(question, memoryPromptSources(sources))
+}
+
+func memoryPromptSources(sources []orchtools.MemoryRetrieveSource) []memoryprompt.Source {
+	result := make([]memoryprompt.Source, 0, len(sources))
+	for _, source := range sources {
+		result = append(result, memoryprompt.Source{
+			Title: memoryAskTitle(source), UpdatedAt: shortMemoryAskDate(source.UpdatedAt),
+			SourceURI: source.SourceURI, Evidence: memoryAskEvidence(source),
+		})
+	}
+	return result
 }
 
 func parseMemoryFollowupQuery(value string) (string, bool) {

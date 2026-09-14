@@ -314,6 +314,12 @@ func inferRouteForCall(action string, args map[string]any) (Route, bool) {
 			Domain:  "weather",
 			Handler: Handler{Type: "tool", Target: "weather"},
 		}, true
+	case "internet.search":
+		return Route{
+			ID:      "internet.search",
+			Domain:  "internet",
+			Handler: Handler{Type: "tool", Target: "internet.search"},
+		}, true
 	case "calculator":
 		operation := strings.TrimSpace(stringField(args["operation"]))
 		switch operation {
@@ -336,10 +342,9 @@ func inferRouteForCall(action string, args map[string]any) (Route, bool) {
 		}
 	case "older_sister":
 		return Route{
-			ID:          "older_sister.search_or_advise",
-			Domain:      "older_sister",
-			DefaultArgs: map[string]any{"web_search": true},
-			Handler:     Handler{Type: "tool", Target: "older_sister"},
+			ID:      "older_sister.search_or_advise",
+			Domain:  "older_sister",
+			Handler: Handler{Type: "tool", Target: "older_sister"},
 		}, true
 	}
 	return Route{}, false

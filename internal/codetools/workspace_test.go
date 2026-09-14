@@ -28,6 +28,35 @@ func TestResolverRejectsPathsOutsideRootsAndSymlinkEscapes(t *testing.T) {
 	}
 }
 
+func TestBrowseDirectoriesStaysWithinConfiguredRoots(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(filepath.Join(project, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "notes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(Config{Roots: []string{root}})
+	response, err := service.BrowseDirectories(context.Background(), &pb.BrowseDirectoriesRequest{Path: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.GetParent() != "" || len(response.GetDirectories()) != 2 {
+		t.Fatalf("unexpected browse response: %#v", response)
+	}
+	if response.GetDirectories()[1].GetName() != "project" || !response.GetDirectories()[1].GetIsGit() {
+		t.Fatalf("expected git project entry: %#v", response.GetDirectories())
+	}
+	if _, err := service.BrowseDirectories(context.Background(), &pb.BrowseDirectoriesRequest{Path: outside}); err == nil {
+		t.Fatal("expected outside browse path to be rejected")
+	}
+}
+
 func TestApprovalReasonCoversDependencyAndDestructiveCommands(t *testing.T) {
 	tests := []string{
 		"pnpm add lucide-svelte",

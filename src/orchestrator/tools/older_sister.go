@@ -12,19 +12,12 @@ import (
 )
 
 type olderSisterArgs struct {
-	Query     string `json:"query,omitempty"`
-	WebSearch *bool  `json:"web_search,omitempty"`
+	Query string `json:"query,omitempty"`
 }
 
 type olderSisterRequest struct {
-	Model       string                 `json:"model"`
-	Input       string                 `json:"input"`
-	Tools       []map[string]any       `json:"tools,omitempty"`
-	ToolChoice  string                 `json:"tool_choice,omitempty"`
-	Include     []string               `json:"include,omitempty"`
-	Reasoning   map[string]string      `json:"reasoning,omitempty"`
-	Temperature *float64               `json:"temperature,omitempty"`
-	Text        map[string]interface{} `json:"text,omitempty"`
+	Model string `json:"model"`
+	Input string `json:"input"`
 }
 
 type olderSisterResponse struct {
@@ -76,17 +69,6 @@ func executeOlderSister(ctx context.Context, req Request, cfg OlderSisterConfig)
 		Model: model,
 		Input: olderSisterPrompt(query),
 	}
-	useSearch := cfg.WebSearch
-	if args.WebSearch != nil {
-		useSearch = *args.WebSearch
-	}
-	if useSearch {
-		payload.Tools = []map[string]any{{"type": "web_search"}}
-		payload.ToolChoice = "auto"
-		payload.Include = []string{"web_search_call.action.sources"}
-		payload.Reasoning = map[string]string{"effort": "low"}
-	}
-
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return Result{}, err
@@ -155,5 +137,5 @@ func parseOlderSisterResponse(raw []byte) (string, error) {
 }
 
 func olderSisterPrompt(query string) string {
-	return "You are Older Sister, a careful external advisor for Beemo. Answer the user's request directly. If you use web search, include concise source links or citations in the answer when the information depends on current internet results.\n\nUser request: " + query
+	return "You are Older Sister, a careful external advisor for Beemo. Answer the user's request directly using your own knowledge. You do not have internet access.\n\nUser request: " + query
 }

@@ -43,6 +43,7 @@ export function GET({ url }): Response {
           state: text(update.state),
           message: text(update.message),
           timestampUnixMs: number(update.timestampUnixMs),
+          payloadJson: text(update.payloadJson),
         });
       });
       call.on("error", (error) => {

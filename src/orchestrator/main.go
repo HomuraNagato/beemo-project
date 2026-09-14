@@ -81,7 +81,14 @@ func main() {
 			HTTPURL:   cfg.OlderSisterHTTPURL,
 			Model:     cfg.OlderSisterModel,
 			TimeoutMs: cfg.OlderSisterTimeoutMs,
-			WebSearch: cfg.OlderSisterWebSearch,
+		}, orchtools.InternetConfig{
+			APIKey:      cfg.InternetAPIKey,
+			HTTPURL:     cfg.InternetHTTPURL,
+			TimeoutMs:   cfg.InternetTimeoutMs,
+			ResultCount: cfg.InternetResultCount,
+			MaxURLs:     cfg.InternetMaxURLs,
+			MaxTokens:   cfg.InternetMaxTokens,
+			SafeSearch:  cfg.InternetSafeSearch,
 		}, orchtools.MemoryConfig{
 			BaseURL:   cfg.MemoryBaseURL,
 			UserKey:   cfg.MemoryUserKey,

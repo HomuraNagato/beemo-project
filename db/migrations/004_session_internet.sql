@@ -1,0 +1,2 @@
+ALTER TABLE beemo_code.sessions
+    ADD COLUMN IF NOT EXISTS internet_enabled BOOLEAN NOT NULL DEFAULT FALSE;

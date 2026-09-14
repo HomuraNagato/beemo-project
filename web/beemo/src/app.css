@@ -1,0 +1,19 @@
+@import "tailwindcss";
+
+@theme {
+  --color-beemo-bg: #111413;
+  --color-beemo-panel: #171b1a;
+  --color-beemo-raised: #202725;
+  --color-beemo-border: #41504b;
+  --color-beemo-text: #edf7f2;
+  --color-beemo-muted: #91a39d;
+  --color-beemo-mint: #66d9b4;
+  --color-beemo-gold: #f0c36a;
+}
+
+@layer base {
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--color-beemo-bg); color: var(--color-beemo-text); font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+  button, textarea, select, input { font: inherit; }
+  button:focus-visible, textarea:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--color-beemo-gold); outline-offset: 2px; }
+}

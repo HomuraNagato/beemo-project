@@ -47,7 +47,13 @@ type Config struct {
 	OlderSisterHTTPURL         string
 	OlderSisterModel           string
 	OlderSisterTimeoutMs       int
-	OlderSisterWebSearch       bool
+	InternetAPIKey             string
+	InternetHTTPURL            string
+	InternetTimeoutMs          int
+	InternetResultCount        int
+	InternetMaxURLs            int
+	InternetMaxTokens          int
+	InternetSafeSearch         string
 	MemoryBaseURL              string
 	MemoryUserKey              string
 	MemoryTimeoutMs            int
@@ -70,6 +76,9 @@ func Load() Config {
 	// Secrets stay out of checked-in config.
 	if apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); apiKey != "" {
 		cfg.OlderSisterAPIKey = apiKey
+	}
+	if apiKey := strings.TrimSpace(os.Getenv("BRAVE_SEARCH_API_KEY")); apiKey != "" {
+		cfg.InternetAPIKey = apiKey
 	}
 	setString(&cfg.MemoryBaseURL, os.Getenv("MEMORY_PALACE_BASE_URL"))
 	setString(&cfg.MemoryUserKey, os.Getenv("MEMORY_PALACE_USER_KEY"))
@@ -134,7 +143,12 @@ func defaultConfig() Config {
 		OlderSisterHTTPURL:         "https://api.openai.com/v1/responses",
 		OlderSisterModel:           "gpt-5-mini",
 		OlderSisterTimeoutMs:       120000,
-		OlderSisterWebSearch:       true,
+		InternetHTTPURL:            "https://api.search.brave.com/res/v1/llm/context",
+		InternetTimeoutMs:          30000,
+		InternetResultCount:        20,
+		InternetMaxURLs:            8,
+		InternetMaxTokens:          6000,
+		InternetSafeSearch:         "moderate",
 		MemoryBaseURL:              "http://host.docker.internal:8013",
 		MemoryUserKey:              "local",
 		MemoryTimeoutMs:            30000,
@@ -200,8 +214,15 @@ type yamlConfig struct {
 		HTTPURL   string `yaml:"http_url"`
 		Model     string `yaml:"model"`
 		TimeoutMs int    `yaml:"timeout_ms"`
-		WebSearch *bool  `yaml:"web_search"`
 	} `yaml:"older_sister"`
+	Internet struct {
+		HTTPURL     string `yaml:"http_url"`
+		TimeoutMs   int    `yaml:"timeout_ms"`
+		ResultCount int    `yaml:"result_count"`
+		MaxURLs     int    `yaml:"max_urls"`
+		MaxTokens   int    `yaml:"max_tokens"`
+		SafeSearch  string `yaml:"safe_search"`
+	} `yaml:"internet"`
 	Memory struct {
 		BaseURL   string `yaml:"base_url"`
 		UserKey   string `yaml:"user_key"`
@@ -269,9 +290,12 @@ func loadYAML(path string) (Config, error) {
 	setString(&cfg.OlderSisterHTTPURL, raw.OlderSister.HTTPURL)
 	setString(&cfg.OlderSisterModel, raw.OlderSister.Model)
 	setInt(&cfg.OlderSisterTimeoutMs, raw.OlderSister.TimeoutMs)
-	if raw.OlderSister.WebSearch != nil {
-		cfg.OlderSisterWebSearch = *raw.OlderSister.WebSearch
-	}
+	setString(&cfg.InternetHTTPURL, raw.Internet.HTTPURL)
+	setInt(&cfg.InternetTimeoutMs, raw.Internet.TimeoutMs)
+	setInt(&cfg.InternetResultCount, raw.Internet.ResultCount)
+	setInt(&cfg.InternetMaxURLs, raw.Internet.MaxURLs)
+	setInt(&cfg.InternetMaxTokens, raw.Internet.MaxTokens)
+	setString(&cfg.InternetSafeSearch, raw.Internet.SafeSearch)
 	setString(&cfg.MemoryBaseURL, raw.Memory.BaseURL)
 	setString(&cfg.MemoryUserKey, raw.Memory.UserKey)
 	setInt(&cfg.MemoryTimeoutMs, raw.Memory.TimeoutMs)

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
+	"time"
 
 	pb "eve-beemo/proto/gen/proto"
 )
@@ -38,22 +40,29 @@ func (s *orchestratorServer) StreamState(req *pb.StateRequest, stream pb.Orchest
 }
 
 func (s *orchestratorServer) publishState(sessionID, state, message string, timestampUnixMs int64) {
-	update := &pb.StateUpdate{
-		SessionId:       sessionID,
-		State:           state,
-		Message:         message,
-		TimestampUnixMs: timestampUnixMs,
-	}
+	s.publishStateUpdate(&pb.StateUpdate{
+		SessionId: sessionID, State: state, Message: message, TimestampUnixMs: timestampUnixMs,
+	})
+}
+
+func (s *orchestratorServer) publishStatePayload(sessionID, state, message string, payload any) {
+	body, _ := json.Marshal(payload)
+	s.publishStateUpdate(&pb.StateUpdate{
+		SessionId: sessionID, State: state, Message: message, TimestampUnixMs: time.Now().UnixMilli(), PayloadJson: string(body),
+	})
+}
+
+func (s *orchestratorServer) publishStateUpdate(update *pb.StateUpdate) {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
 	for _, subscriber := range s.stateSubscribers {
-		if subscriber.sessionID != "" && subscriber.sessionID != sessionID {
+		if subscriber.sessionID != "" && subscriber.sessionID != update.GetSessionId() {
 			continue
 		}
 		select {
 		case subscriber.updates <- update:
 		default:
-			s.log().Warn("orch.state.drop", "session", sessionID, "state", state)
+			s.log().Warn("orch.state.drop", "session", update.GetSessionId(), "state", update.GetState())
 		}
 	}
 }

@@ -7,14 +7,26 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 type AgentSession struct {
-	SessionID string
-	Mode      string
-	Workspace string
-	Status    string
-	UpdatedAt time.Time
+	SessionID       string
+	Name            string
+	Mode            string
+	Workspace       string
+	Status          string
+	InternetEnabled bool
+	UpdatedAt       time.Time
+}
+
+type AgentProject struct {
+	Path       string
+	Name       string
+	IsGit      bool
+	CreatedAt  time.Time
+	LastUsedAt sql.NullTime
 }
 
 type AgentEvent struct {
@@ -127,7 +139,7 @@ func (s *AgentStore) ListSessions(ctx context.Context, userKey string, limit int
 		limit = 30
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT session_id, mode, workspace, status, updated_at
+		SELECT session_id, name, mode, workspace, status, internet_enabled, updated_at
 		FROM beemo_code.sessions
 		WHERE user_key = $1
 		ORDER BY updated_at DESC
@@ -140,7 +152,7 @@ func (s *AgentStore) ListSessions(ctx context.Context, userKey string, limit int
 	result := []AgentSession{}
 	for rows.Next() {
 		var session AgentSession
-		if err := rows.Scan(&session.SessionID, &session.Mode, &session.Workspace, &session.Status, &session.UpdatedAt); err != nil {
+		if err := rows.Scan(&session.SessionID, &session.Name, &session.Mode, &session.Workspace, &session.Status, &session.InternetEnabled, &session.UpdatedAt); err != nil {
 			return nil, err
 		}
 		result = append(result, session)
@@ -154,10 +166,10 @@ func (s *AgentStore) GetSession(ctx context.Context, userKey, sessionID string) 
 	}
 	var session AgentSession
 	err := s.db.QueryRowContext(ctx, `
-		SELECT session_id, mode, workspace, status, updated_at
+		SELECT session_id, name, mode, workspace, status, internet_enabled, updated_at
 		FROM beemo_code.sessions
 		WHERE user_key = $1 AND session_id = $2
-	`, userKey, sessionID).Scan(&session.SessionID, &session.Mode, &session.Workspace, &session.Status, &session.UpdatedAt)
+	`, userKey, sessionID).Scan(&session.SessionID, &session.Name, &session.Mode, &session.Workspace, &session.Status, &session.InternetEnabled, &session.UpdatedAt)
 	if err != nil {
 		return AgentSession{}, nil, err
 	}
@@ -180,4 +192,105 @@ func (s *AgentStore) GetSession(ctx context.Context, userKey, sessionID string) 
 		events = append(events, event)
 	}
 	return session, events, rows.Err()
+}
+
+func (s *AgentStore) CreateSession(ctx context.Context, sessionID, userKey string) (AgentSession, error) {
+	var session AgentSession
+	err := s.db.QueryRowContext(ctx, `
+		INSERT INTO beemo_code.sessions (session_id, user_key, name, mode, workspace, status)
+		VALUES ($1, $2, 'New session', 'chat', '', 'idle')
+		RETURNING session_id, name, mode, workspace, status, internet_enabled, updated_at
+	`, sessionID, userKey).Scan(&session.SessionID, &session.Name, &session.Mode, &session.Workspace, &session.Status, &session.InternetEnabled, &session.UpdatedAt)
+	return session, err
+}
+
+func (s *AgentStore) RenameSession(ctx context.Context, userKey, sessionID, name string) (AgentSession, error) {
+	var session AgentSession
+	err := s.db.QueryRowContext(ctx, `
+		UPDATE beemo_code.sessions SET name = $3, updated_at = NOW()
+		WHERE user_key = $1 AND session_id = $2
+		RETURNING session_id, name, mode, workspace, status, internet_enabled, updated_at
+	`, userKey, sessionID, name).Scan(&session.SessionID, &session.Name, &session.Mode, &session.Workspace, &session.Status, &session.InternetEnabled, &session.UpdatedAt)
+	return session, err
+}
+
+func (s *AgentStore) DeleteSessions(ctx context.Context, userKey string, sessionIDs []string) (int64, error) {
+	result, err := s.db.ExecContext(ctx, `
+		DELETE FROM beemo_code.sessions WHERE user_key = $1 AND session_id = ANY($2)
+	`, userKey, pq.Array(sessionIDs))
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+func (s *AgentStore) SetSessionMode(ctx context.Context, userKey, sessionID, mode, workspace string) (AgentSession, error) {
+	var session AgentSession
+	err := s.db.QueryRowContext(ctx, `
+		UPDATE beemo_code.sessions SET mode = $3, workspace = $4, updated_at = NOW()
+		WHERE user_key = $1 AND session_id = $2
+		RETURNING session_id, name, mode, workspace, status, internet_enabled, updated_at
+	`, userKey, sessionID, mode, workspace).Scan(&session.SessionID, &session.Name, &session.Mode, &session.Workspace, &session.Status, &session.InternetEnabled, &session.UpdatedAt)
+	return session, err
+}
+
+func (s *AgentStore) SetSessionInternet(ctx context.Context, userKey, sessionID string, enabled bool) (AgentSession, error) {
+	var session AgentSession
+	err := s.db.QueryRowContext(ctx, `
+		UPDATE beemo_code.sessions SET internet_enabled = $3, updated_at = NOW()
+		WHERE user_key = $1 AND session_id = $2
+		RETURNING session_id, name, mode, workspace, status, internet_enabled, updated_at
+	`, userKey, sessionID, enabled).Scan(&session.SessionID, &session.Name, &session.Mode, &session.Workspace, &session.Status, &session.InternetEnabled, &session.UpdatedAt)
+	return session, err
+}
+
+func (s *AgentStore) ListProjects(ctx context.Context, userKey string) ([]AgentProject, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT path, name, is_git, created_at, last_used_at
+		FROM beemo_code.projects WHERE user_key = $1
+		ORDER BY last_used_at DESC NULLS LAST, created_at, name, path
+	`, userKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	projects := []AgentProject{}
+	for rows.Next() {
+		var project AgentProject
+		if err := rows.Scan(&project.Path, &project.Name, &project.IsGit, &project.CreatedAt, &project.LastUsedAt); err != nil {
+			return nil, err
+		}
+		projects = append(projects, project)
+	}
+	return projects, rows.Err()
+}
+
+func (s *AgentStore) AddProject(ctx context.Context, userKey, path, name string, isGit bool) (AgentProject, error) {
+	var project AgentProject
+	err := s.db.QueryRowContext(ctx, `
+		INSERT INTO beemo_code.projects (user_key, path, name, is_git)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (user_key, path) DO UPDATE SET name = EXCLUDED.name, is_git = EXCLUDED.is_git
+		RETURNING path, name, is_git, created_at, last_used_at
+	`, userKey, path, name, isGit).Scan(&project.Path, &project.Name, &project.IsGit, &project.CreatedAt, &project.LastUsedAt)
+	return project, err
+}
+
+func (s *AgentStore) RemoveProject(ctx context.Context, userKey, path string) (bool, error) {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM beemo_code.projects WHERE user_key = $1 AND path = $2`, userKey, path)
+	if err != nil {
+		return false, err
+	}
+	count, err := result.RowsAffected()
+	return count > 0, err
+}
+
+func (s *AgentStore) UseProject(ctx context.Context, userKey, path string) (AgentProject, error) {
+	var project AgentProject
+	err := s.db.QueryRowContext(ctx, `
+		UPDATE beemo_code.projects SET last_used_at = NOW()
+		WHERE user_key = $1 AND path = $2
+		RETURNING path, name, is_git, created_at, last_used_at
+	`, userKey, path).Scan(&project.Path, &project.Name, &project.IsGit, &project.CreatedAt, &project.LastUsedAt)
+	return project, err
 }

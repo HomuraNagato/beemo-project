@@ -51,6 +51,15 @@ type agentEventStore interface {
 	DecideApproval(context.Context, string, bool) error
 	ListSessions(context.Context, string, int) ([]orchdb.AgentSession, error)
 	GetSession(context.Context, string, string) (orchdb.AgentSession, []orchdb.AgentEvent, error)
+	CreateSession(context.Context, string, string) (orchdb.AgentSession, error)
+	RenameSession(context.Context, string, string, string) (orchdb.AgentSession, error)
+	DeleteSessions(context.Context, string, []string) (int64, error)
+	SetSessionMode(context.Context, string, string, string, string) (orchdb.AgentSession, error)
+	SetSessionInternet(context.Context, string, string, bool) (orchdb.AgentSession, error)
+	ListProjects(context.Context, string) ([]orchdb.AgentProject, error)
+	AddProject(context.Context, string, string, string, bool) (orchdb.AgentProject, error)
+	RemoveProject(context.Context, string, string) (bool, error)
+	UseProject(context.Context, string, string) (orchdb.AgentProject, error)
 }
 
 type pendingApproval struct {
@@ -104,4 +113,16 @@ func (s *orchestratorServer) log() *slog.Logger {
 		return s.logger
 	}
 	return slog.Default()
+}
+
+func (s *orchestratorServer) sessionInternetEnabled(ctx context.Context, sessionID string) bool {
+	if s.agentStore == nil || sessionID == "" {
+		return false
+	}
+	session, _, err := s.agentStore.GetSession(ctx, s.cfg.MemoryUserKey, sessionID)
+	if err != nil {
+		s.log().Warn("orch.internet.session_state", "session", sessionID, "err", err)
+		return false
+	}
+	return session.InternetEnabled
 }

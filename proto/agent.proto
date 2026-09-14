@@ -11,7 +11,16 @@ service Orchestrator {
   rpc RunAgent(AgentRequest) returns (stream AgentEvent);
   rpc Approve(ApprovalDecision) returns (ApprovalResult);
   rpc ListAgentWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
+  rpc BrowseAgentDirectories(BrowseDirectoriesRequest) returns (BrowseDirectoriesResponse);
+  rpc ListAgentProjects(ProjectListRequest) returns (ProjectListResponse);
+  rpc AddAgentProject(ProjectRequest) returns (AgentProject);
+  rpc RemoveAgentProject(ProjectRequest) returns (ProjectMutationResponse);
+  rpc SelectAgentProject(ProjectSelectionRequest) returns (AgentSessionSummary);
   rpc ListAgentSessions(SessionListRequest) returns (SessionListResponse);
+  rpc CreateAgentSession(SessionCreateRequest) returns (AgentSessionSummary);
+  rpc ActivateAgentSession(SessionRequest) returns (AgentSessionSummary);
+  rpc RenameAgentSession(SessionRenameRequest) returns (AgentSessionSummary);
+  rpc DeleteAgentSessions(SessionDeleteRequest) returns (SessionDeleteResponse);
   rpc GetAgentSession(SessionRequest) returns (AgentSessionDetail);
   rpc GetAgentDiff(AgentDiffRequest) returns (AgentDiffResponse);
 }
@@ -21,6 +30,7 @@ service Orchestrator {
 service CodeTools {
   rpc Health(CodeHealthRequest) returns (CodeHealthResponse);
   rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
+  rpc BrowseDirectories(BrowseDirectoriesRequest) returns (BrowseDirectoriesResponse);
   rpc Execute(CodeToolRequest) returns (CodeToolResult);
 }
 
@@ -58,6 +68,7 @@ message StateUpdate {
   string state = 2;
   string message = 3;
   int64 timestamp_unix_ms = 4;
+  string payload_json = 5;
 }
 
 message WakeRequest {
@@ -154,6 +165,24 @@ message ListWorkspacesResponse {
   repeated string roots = 1;
 }
 
+message BrowseDirectoriesRequest {
+  string path = 1;
+}
+
+message DirectoryEntry {
+  string name = 1;
+  string path = 2;
+  bool is_git = 3;
+}
+
+message BrowseDirectoriesResponse {
+  string path = 1;
+  string parent = 2;
+  repeated DirectoryEntry directories = 3;
+  repeated string roots = 4;
+  bool is_git = 5;
+}
+
 message CodeToolRequest {
   string session_id = 1;
   string workspace = 2;
@@ -175,12 +204,44 @@ message SessionListRequest {
   int32 limit = 1;
 }
 
+message AgentProject {
+  string path = 1;
+  string name = 2;
+  bool is_git = 3;
+  int64 created_unix_ms = 4;
+  int64 last_used_unix_ms = 5;
+}
+
+message ProjectListRequest {}
+
+message ProjectListResponse {
+  repeated AgentProject projects = 1;
+}
+
+message ProjectRequest {
+  string path = 1;
+  string session_id = 2;
+}
+
+message ProjectMutationResponse {
+  bool removed = 1;
+  string mode = 2;
+  string workspace = 3;
+}
+
+message ProjectSelectionRequest {
+  string session_id = 1;
+  string path = 2;
+}
+
 message AgentSessionSummary {
   string session_id = 1;
   string mode = 2;
   string workspace = 3;
   string status = 4;
   int64 updated_unix_ms = 5;
+  string name = 6;
+  bool internet_enabled = 7;
 }
 
 message SessionListResponse {
@@ -189,6 +250,24 @@ message SessionListResponse {
 
 message SessionRequest {
   string session_id = 1;
+}
+
+message SessionCreateRequest {
+  string session_id = 1;
+}
+
+message SessionRenameRequest {
+  string session_id = 1;
+  string name = 2;
+}
+
+message SessionDeleteRequest {
+  repeated string session_ids = 1;
+  string active_session_id = 2;
+}
+
+message SessionDeleteResponse {
+  int32 deleted = 1;
 }
 
 message AgentSessionDetail {
