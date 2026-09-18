@@ -81,6 +81,23 @@ func TestCallOnceSendsExpectedChatRequest(t *testing.T) {
 	}
 }
 
+func TestCallOnceResultReturnsUsageAndFinishReason(t *testing.T) {
+	withMockHTTPClient(t, func(req *http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusOK, `{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}],"usage":{"prompt_tokens":7000,"completion_tokens":384,"total_tokens":7384}}`), nil
+	})
+
+	result, err := CallOnceResultWithMaxTokensContext(t.Context(), "http://llm.test/v1/chat/completions", "model", "prompt", 384, time.Second)
+	if err != nil {
+		t.Fatalf("CallOnceResultWithMaxTokensContext returned error: %v", err)
+	}
+	if result.Text != "partial" || result.FinishReason != "length" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if result.Usage.PromptTokens != 7000 || result.Usage.CompletionTokens != 384 || result.Usage.TotalTokens != 7384 {
+		t.Fatalf("unexpected usage: %+v", result.Usage)
+	}
+}
+
 func TestCallChatWithGrammarSendsStructuredOutputs(t *testing.T) {
 	var got chatRequest
 	withMockHTTPClient(t, func(req *http.Request) (*http.Response, error) {

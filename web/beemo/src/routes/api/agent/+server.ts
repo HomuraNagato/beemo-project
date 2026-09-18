@@ -36,7 +36,7 @@ export async function POST({ request }): Promise<Response> {
         call = serverStream(client, "runAgent", {
           sessionId: text(body.sessionId) || "web",
           messages,
-          mode: text(body.mode) || "chat",
+          mode: text(body.mode),
           workspace: text(body.workspace),
           options: record(body.options),
         });

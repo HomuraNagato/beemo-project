@@ -27,7 +27,6 @@ func (s *orchestratorServer) runMemoryAsk(ctx context.Context, req *pb.ChatReque
 		BaseURL:   s.cfg.MemoryBaseURL,
 		UserKey:   memoryAskOption(req.GetOptions(), "memory_user_key", s.cfg.MemoryUserKey),
 		TimeoutMs: s.cfg.MemoryTimeoutMs,
-		AutoSave:  s.cfg.MemoryAutoSave,
 	}
 	retrieved, err := orchtools.RetrieveMemory(ctx, memoryCfg, orchtools.MemoryRetrieveRequest{
 		RequestID:           requestID,
@@ -88,17 +87,22 @@ func (s *orchestratorServer) runMemoryAsk(ctx context.Context, req *pb.ChatReque
 
 	prompt := buildMemoryAskPrompt(userQuery, retrieved.Sources)
 	reasonStart := time.Now()
-	callReasoner := func(value string) (string, error) {
+	callReasoner := func(value string) (llm.Completion, error) {
 		if s.callFinalMessage != nil {
-			return callFinalMessage(s.cfg.LLMHTTPURL, s.cfg.LLMModel, value, callTimeout)
+			text, err := callFinalMessage(s.cfg.LLMHTTPURL, s.cfg.LLMModel, value, callTimeout)
+			return llm.Completion{Text: text}, err
 		}
-		return llm.CallOnceWithMaxTokens(s.cfg.LLMHTTPURL, s.cfg.LLMModel, value, profile.maxTokens, callTimeout)
+		return llm.CallOnceResultWithMaxTokensContext(ctx, s.cfg.LLMHTTPURL, s.cfg.LLMModel, value, profile.maxTokens, callTimeout)
 	}
-	finalText, err := callReasoner(buildMemoryAskPlanningPrompt(userQuery, retrieved.Sources))
+	s.publishStatePayload(req.GetSessionId(), "status", "Writing response", agentProgress{Phase: "response"})
+	completion, err := callReasoner(buildMemoryAskPlanningPrompt(userQuery, retrieved.Sources))
+	finalText := completion.Text
+	s.publishCompletionWarning(req.GetSessionId(), completion, profile.maxTokens)
 	followupQuery, followup := parseMemoryFollowupQuery(finalText)
 	followupRetrieveMs := int64(0)
 	answerRetry := false
 	if err == nil && followup {
+		s.publishStatePayload(req.GetSessionId(), "status", "Searching memory", agentProgress{Phase: "tool"})
 		followupStart := time.Now()
 		followupRetrieved, followupErr := orchtools.RetrieveMemory(ctx, memoryCfg, orchtools.MemoryRetrieveRequest{
 			RequestID:           requestID + ":followup",
@@ -118,11 +122,17 @@ func (s *orchestratorServer) runMemoryAsk(ctx context.Context, req *pb.ChatReque
 			retrieved.Sources = mergeMemoryAskSources(retrieved.Sources, followupRetrieved.Sources, profile.sourceLimit*2)
 			s.log().Info("orch.memory_ask.followup_retrieve", "request_id", requestID, "status", "ok", "query", followupQuery, "sources", len(followupRetrieved.Sources), "combined_sources", len(retrieved.Sources), "ms", followupRetrieveMs)
 		}
-		finalText, err = callReasoner(buildMemoryAskPrompt(userQuery, retrieved.Sources))
+		s.publishStatePayload(req.GetSessionId(), "status", "Writing response", agentProgress{Phase: "response"})
+		completion, err = callReasoner(buildMemoryAskPrompt(userQuery, retrieved.Sources))
+		finalText = completion.Text
+		s.publishCompletionWarning(req.GetSessionId(), completion, profile.maxTokens)
 	}
 	if err == nil && citationOnlyMemoryAnswer(finalText) {
 		answerRetry = true
-		finalText, err = callReasoner(buildMemoryAskPrompt(userQuery, retrieved.Sources))
+		s.publishStatePayload(req.GetSessionId(), "status", "Rewriting response", agentProgress{Phase: "response"})
+		completion, err = callReasoner(buildMemoryAskPrompt(userQuery, retrieved.Sources))
+		finalText = completion.Text
+		s.publishCompletionWarning(req.GetSessionId(), completion, profile.maxTokens)
 	}
 	reasonMs := time.Since(reasonStart).Milliseconds()
 	if err != nil {

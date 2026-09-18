@@ -18,20 +18,8 @@ type agentControl struct {
 func parseAgentControl(input string) (agentControl, bool) {
 	trimmed := strings.TrimSpace(input)
 	lower := strings.ToLower(trimmed)
-	if lower == "/code" {
-		return agentControl{action: "code"}, true
-	}
-	if lower == "/chat" {
-		return agentControl{action: "chat"}, true
-	}
-	if lower == "/switch" {
-		return agentControl{action: "switch"}, true
-	}
-	if lower == "/internet" {
-		return agentControl{action: "internet"}, true
-	}
-	if strings.HasPrefix(lower, "/switch ") {
-		return agentControl{action: "switch", target: strings.TrimSpace(trimmed[len("/switch "):])}, true
+	if command, ok := parseSlashCommand(trimmed); ok {
+		return command, true
 	}
 
 	normalized := strings.TrimSpace(strings.TrimRightFunc(lower, func(r rune) bool {
@@ -40,8 +28,8 @@ func parseAgentControl(input string) (agentControl, bool) {
 	switch normalized {
 	case "enter code mode", "enter programming mode", "start code mode", "start programming mode":
 		return agentControl{action: "code"}, true
-	case "enter chat mode", "switch to chat mode", "exit code mode", "leave code mode", "exit programming mode":
-		return agentControl{action: "chat"}, true
+	case "enter normal mode", "switch to normal mode", "exit code mode", "leave code mode", "exit programming mode":
+		return agentControl{action: "normal"}, true
 	case "switch projects", "switch project", "change projects", "change project", "switch repositories", "switch repository":
 		return agentControl{action: "switch"}, true
 	}
@@ -67,14 +55,17 @@ func (s *orchestratorServer) resolveAgentState(ctx context.Context, req *pb.Agen
 		}
 	}
 	if mode == "" {
-		mode = "chat"
+		mode = "normal"
 	}
-	if mode == "chat" {
+	if mode == "chat" { // Normalize sessions created before migration 005.
+		mode = "normal"
+	}
+	if mode == "normal" {
 		workspace = ""
 	}
 	if mode == "code" && s.agentStore != nil {
 		if _, ok, err := s.registeredProject(ctx, workspace); err != nil || !ok {
-			mode, workspace = "chat", ""
+			mode, workspace = "normal", ""
 		}
 	}
 	return mode, workspace
@@ -85,20 +76,20 @@ func (s *orchestratorServer) runAgentControl(ctx context.Context, req *pb.AgentR
 		return s.controlResponse(ctx, req, stream, "control_error", "Session controls are unavailable.", map[string]any{})
 	}
 	switch command.action {
-	case "chat":
-		session, err := s.agentStore.SetSessionMode(ctx, s.cfg.MemoryUserKey, req.GetSessionId(), "chat", "")
+	case "normal":
+		session, err := s.agentStore.SetSessionMode(ctx, s.cfg.MemoryUserKey, req.GetSessionId(), "normal", "")
 		if err != nil {
 			return s.sendAgentEvent(ctx, stream, req.GetSessionId(), "error", "", err.Error(), nil, "")
 		}
 		req.Mode, req.Workspace = session.Mode, session.Workspace
-		return s.controlResponse(ctx, req, stream, "mode_changed", "Chat mode.", map[string]any{"mode": "chat", "workspace": ""})
+		return s.controlResponse(ctx, req, stream, "mode_changed", "Normal mode.", map[string]any{"mode": "normal", "workspace": ""})
 	case "code":
 		project, ok, err := s.projectForCodeMode(ctx, req.GetWorkspace())
 		if err != nil {
 			return s.sendAgentEvent(ctx, stream, req.GetSessionId(), "error", "", err.Error(), nil, "")
 		}
 		if !ok {
-			return s.controlResponse(ctx, req, stream, "project_manager", "Add a code repository first.", map[string]any{"mode": "chat"})
+			return s.controlResponse(ctx, req, stream, "project_manager", "Add a code repository first.", map[string]any{"mode": "normal"})
 		}
 		if _, err := s.agentStore.UseProject(ctx, s.cfg.MemoryUserKey, project.Path); err != nil {
 			return s.sendAgentEvent(ctx, stream, req.GetSessionId(), "error", "", err.Error(), nil, "")
@@ -139,8 +130,8 @@ func (s *orchestratorServer) runAgentControl(ctx context.Context, req *pb.AgentR
 			return s.sendAgentEvent(ctx, stream, req.GetSessionId(), "error", "", err.Error(), nil, "")
 		}
 		enabled := !session.InternetEnabled
-		if enabled && strings.TrimSpace(s.cfg.InternetAPIKey) == "" {
-			return s.controlResponse(ctx, req, stream, "internet_unavailable", "Internet search is not configured. Add BRAVE_SEARCH_API_KEY to Beemo's environment.", map[string]any{"internetEnabled": false})
+		if message := internetConfigurationMessage(s.cfg.InternetProvider, s.cfg.InternetAPIKey); enabled && message != "" {
+			return s.controlResponse(ctx, req, stream, "internet_unavailable", message, map[string]any{"internetEnabled": false})
 		}
 		session, err = s.agentStore.SetSessionInternet(ctx, s.cfg.MemoryUserKey, req.GetSessionId(), enabled)
 		if err != nil {
@@ -157,6 +148,18 @@ func (s *orchestratorServer) runAgentControl(ctx context.Context, req *pb.AgentR
 		return s.controlResponse(ctx, req, stream, "internet_changed", message, map[string]any{"internetEnabled": session.InternetEnabled})
 	}
 	return nil
+}
+
+func internetConfigurationMessage(provider, apiKey string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "tavily", "":
+		if strings.TrimSpace(apiKey) == "" {
+			return "Internet search is not configured. Add TAVILY_API_KEY to Beemo's environment."
+		}
+		return ""
+	default:
+		return fmt.Sprintf("Internet search provider %q is not supported by this build.", provider)
+	}
 }
 
 func (s *orchestratorServer) projectForCodeMode(ctx context.Context, current string) (orchdb.AgentProject, bool, error) {

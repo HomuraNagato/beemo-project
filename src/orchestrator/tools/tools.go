@@ -57,20 +57,20 @@ type OlderSisterConfig struct {
 }
 
 type InternetConfig struct {
-	APIKey      string
-	HTTPURL     string
-	TimeoutMs   int
-	ResultCount int
-	MaxURLs     int
-	MaxTokens   int
-	SafeSearch  string
+	Provider        string
+	APIKey          string
+	HTTPURL         string
+	TimeoutMs       int
+	ResultCount     int
+	MaxTokens       int
+	SearchDepth     string
+	ChunksPerSource int
 }
 
 type MemoryConfig struct {
 	BaseURL    string
 	UserKey    string
 	TimeoutMs  int
-	AutoSave   bool
 	HTTPClient *http.Client
 }
 

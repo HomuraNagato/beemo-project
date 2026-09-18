@@ -23,6 +23,7 @@ service Orchestrator {
   rpc DeleteAgentSessions(SessionDeleteRequest) returns (SessionDeleteResponse);
   rpc GetAgentSession(SessionRequest) returns (AgentSessionDetail);
   rpc GetAgentDiff(AgentDiffRequest) returns (AgentDiffResponse);
+  rpc ListAgentCommands(CommandListRequest) returns (CommandListResponse);
 }
 
 // Host-local repository operations. The service is exposed over a Unix socket
@@ -126,7 +127,7 @@ message ChatResponse {
 message AgentRequest {
   string session_id = 1;
   repeated ChatMessage messages = 2;
-  string mode = 3; // chat | code
+  string mode = 3; // normal | code
   string workspace = 4;
   map<string, string> options = 5;
 }
@@ -273,6 +274,17 @@ message SessionDeleteResponse {
 message AgentSessionDetail {
   AgentSessionSummary session = 1;
   repeated AgentEvent events = 2;
+}
+
+message CommandListRequest {}
+
+message AgentCommand {
+  string command = 1;
+  string description = 2;
+}
+
+message CommandListResponse {
+  repeated AgentCommand commands = 1;
 }
 
 message AgentDiffRequest {

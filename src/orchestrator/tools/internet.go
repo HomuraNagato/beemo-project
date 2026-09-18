@@ -1,47 +1,42 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
-
-const maxInternetResponseBytes = 4 << 20
 
 type internetSearchArgs struct {
 	Query string `json:"query"`
 }
 
-type braveContextRequest struct {
-	Query          string `json:"q"`
-	Country        string `json:"country"`
-	SearchLanguage string `json:"search_lang"`
-	Count          int    `json:"count"`
-	MaxURLs        int    `json:"maximum_number_of_urls"`
-	MaxTokens      int    `json:"maximum_number_of_tokens"`
-	ThresholdMode  string `json:"context_threshold_mode"`
-	SafeSearch     string `json:"safesearch"`
-	SourceMetadata bool   `json:"enable_source_metadata"`
+type internetSearchRequest struct {
+	Query       string
+	MaxResults  int
+	SearchDepth string
+	Chunks      int
 }
 
-type braveContextResponse struct {
-	Grounding struct {
-		Generic []struct {
-			URL      string   `json:"url"`
-			Title    string   `json:"title"`
-			Snippets []string `json:"snippets"`
-		} `json:"generic"`
-	} `json:"grounding"`
+type internetSearchResponse struct {
+	Evidence   []internetEvidence
+	RequestID  string
+	ProviderMs string
+	Credits    int
 }
 
-var internetHTTPDo = func(req *http.Request) (*http.Response, error) {
-	return http.DefaultClient.Do(req)
+type internetEvidence struct {
+	Title   string
+	URL     string
+	Content string
+}
+
+type internetSearchProvider interface {
+	Name() string
+	Search(context.Context, internetSearchRequest) (internetSearchResponse, error)
 }
 
 func executeInternetSearch(ctx context.Context, req Request, cfg InternetConfig) (Result, error) {
@@ -56,86 +51,101 @@ func executeInternetSearch(ctx context.Context, req Request, cfg InternetConfig)
 	if query == "" {
 		return needsInputResult(req.Action, []string{"query"}, "What should I search for?"), nil
 	}
-	if strings.TrimSpace(cfg.APIKey) == "" {
-		return Result{}, fmt.Errorf("BRAVE_SEARCH_API_KEY is not configured")
-	}
 
+	provider, err := newInternetSearchProvider(cfg)
+	if err != nil {
+		return Result{}, err
+	}
 	timeout := time.Duration(cfg.TimeoutMs) * time.Millisecond
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	payload := braveContextRequest{
-		Query: query, Country: "US", SearchLanguage: "en",
-		Count:         boundedInt(cfg.ResultCount, 20, 1, 50),
-		MaxURLs:       boundedInt(cfg.MaxURLs, 8, 1, 50),
-		MaxTokens:     boundedInt(cfg.MaxTokens, 6000, 1024, 32768),
-		ThresholdMode: "balanced", SafeSearch: defaultInternetString(cfg.SafeSearch, "moderate"),
-		SourceMetadata: true,
-	}
-	body, err := json.Marshal(payload)
+	response, err := provider.Search(callCtx, internetSearchRequest{
+		Query:       query,
+		MaxResults:  boundedInt(cfg.ResultCount, 8, 1, 20),
+		SearchDepth: defaultInternetString(cfg.SearchDepth, "fast"),
+		Chunks:      boundedInt(cfg.ChunksPerSource, 2, 1, 3),
+	})
 	if err != nil {
 		return Result{}, err
 	}
-	httpURL := defaultInternetString(cfg.HTTPURL, "https://api.search.brave.com/res/v1/llm/context")
-	httpReq, err := http.NewRequestWithContext(callCtx, http.MethodPost, httpURL, bytes.NewReader(body))
-	if err != nil {
-		return Result{}, err
+	result := formatInternetEvidence(req.Action, response.Evidence, boundedInt(cfg.MaxTokens, 6000, 512, 32768))
+	sourceTitles := make([]string, 0, len(result.Sources))
+	sourceURLs := make([]string, 0, len(result.Sources))
+	for _, source := range result.Sources {
+		sourceTitles = append(sourceTitles, source.Title)
+		sourceURLs = append(sourceURLs, source.URL)
 	}
-	httpReq.Header.Set("Accept", "application/json")
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("X-Subscription-Token", strings.TrimSpace(cfg.APIKey))
-
-	resp, err := internetHTTPDo(httpReq)
-	if err != nil {
-		return Result{}, fmt.Errorf("Brave search request failed: %w", err)
-	}
-	defer resp.Body.Close()
-	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, maxInternetResponseBytes+1))
-	if err != nil {
-		return Result{}, fmt.Errorf("read Brave search response: %w", err)
-	}
-	if len(responseBody) > maxInternetResponseBytes {
-		return Result{}, fmt.Errorf("Brave search response exceeded %d bytes", maxInternetResponseBytes)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return Result{}, fmt.Errorf("Brave search returned %s: %s", resp.Status, compactHTTPError(responseBody))
-	}
-
-	var response braveContextResponse
-	if err := json.Unmarshal(responseBody, &response); err != nil {
-		return Result{}, fmt.Errorf("invalid Brave search response: %w", err)
-	}
-	result := formatInternetEvidence(req.Action, response)
-	slog.Info("tool.internet.search", "session", req.SessionID, "ms", time.Since(started).Milliseconds(), "sources", len(result.Sources), "evidence_chars", len(result.Output))
+	slog.Info("tool.internet.search",
+		"session", req.SessionID,
+		"provider", provider.Name(),
+		"query", query,
+		"ms", time.Since(started).Milliseconds(),
+		"provider_ms", response.ProviderMs,
+		"credits", response.Credits,
+		"sources", len(result.Sources),
+		"source_titles", sourceTitles,
+		"source_urls", sourceURLs,
+		"evidence_chars", len(result.Output),
+		"request_id", response.RequestID,
+	)
 	return result, nil
 }
 
-func formatInternetEvidence(action string, response braveContextResponse) Result {
+func newInternetSearchProvider(cfg InternetConfig) (internetSearchProvider, error) {
+	switch strings.ToLower(defaultInternetString(cfg.Provider, "tavily")) {
+	case "tavily":
+		if strings.TrimSpace(cfg.APIKey) == "" {
+			return nil, fmt.Errorf("TAVILY_API_KEY is not configured")
+		}
+		return &tavilySearchProvider{apiKey: cfg.APIKey, httpURL: cfg.HTTPURL}, nil
+	default:
+		return nil, fmt.Errorf("unsupported internet search provider %q", cfg.Provider)
+	}
+}
+
+func formatInternetEvidence(action string, evidence []internetEvidence, maxTokens int) Result {
+	maxChars := maxTokens * 4
 	var sections []string
 	var sources []Source
 	seen := map[string]bool{}
-	for _, item := range response.Grounding.Generic {
+	usedChars := 0
+	for _, item := range evidence {
 		url := strings.TrimSpace(item.URL)
-		if url == "" || seen[url] {
+		content := strings.TrimSpace(item.Content)
+		if url == "" || content == "" || seen[url] || usedChars >= maxChars {
 			continue
 		}
-		var snippets []string
-		for _, snippet := range item.Snippets {
-			if value := strings.TrimSpace(snippet); value != "" {
-				snippets = append(snippets, value)
-			}
-		}
-		if len(snippets) == 0 {
-			continue
-		}
-		seen[url] = true
 		title := defaultInternetString(item.Title, url)
+		header := fmt.Sprintf("[%d] %s\nURL: %s\nEvidence:\n", len(sources)+1, title, url)
+		remaining := maxChars - usedChars - utf8.RuneCountInString(header)
+		if remaining <= 0 {
+			break
+		}
+		content = truncateRunes(content, remaining)
+		seen[url] = true
 		sources = append(sources, Source{Title: title, URL: url})
-		sections = append(sections, fmt.Sprintf("[%d] %s\nURL: %s\nEvidence:\n%s", len(sources), title, url, strings.Join(snippets, "\n")))
+		section := header + content
+		sections = append(sections, section)
+		usedChars += utf8.RuneCountInString(section) + 2
 	}
 	return Result{Action: action, Output: strings.Join(sections, "\n\n"), Sources: sources}
+}
+
+func truncateRunes(value string, maximum int) string {
+	if maximum <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= maximum {
+		return value
+	}
+	if maximum <= 3 {
+		return string(runes[:maximum])
+	}
+	return string(runes[:maximum-3]) + "..."
 }
 
 func boundedInt(value, fallback, minimum, maximum int) int {
@@ -156,12 +166,4 @@ func defaultInternetString(value, fallback string) string {
 		return fallback
 	}
 	return strings.TrimSpace(value)
-}
-
-func compactHTTPError(body []byte) string {
-	value := strings.TrimSpace(string(body))
-	if len(value) > 500 {
-		return value[:500] + "..."
-	}
-	return value
 }

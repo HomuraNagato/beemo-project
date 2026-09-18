@@ -198,7 +198,7 @@ func (s *AgentStore) CreateSession(ctx context.Context, sessionID, userKey strin
 	var session AgentSession
 	err := s.db.QueryRowContext(ctx, `
 		INSERT INTO beemo_code.sessions (session_id, user_key, name, mode, workspace, status)
-		VALUES ($1, $2, 'New session', 'chat', '', 'idle')
+		VALUES ($1, $2, 'New session', 'normal', '', 'idle')
 		RETURNING session_id, name, mode, workspace, status, internet_enabled, updated_at
 	`, sessionID, userKey).Scan(&session.SessionID, &session.Name, &session.Mode, &session.Workspace, &session.Status, &session.InternetEnabled, &session.UpdatedAt)
 	return session, err

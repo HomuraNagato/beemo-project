@@ -18,7 +18,7 @@ function sessionSummary(value: unknown): Record<string, unknown> {
   return {
     sessionId: text(session.sessionId),
     name: text(session.name) || "New session",
-    mode: text(session.mode) || "chat",
+    mode: text(session.mode) || "normal",
     workspace: text(session.workspace),
     status: text(session.status),
     internetEnabled: Boolean(session.internetEnabled),

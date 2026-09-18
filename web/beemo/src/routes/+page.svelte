@@ -8,16 +8,17 @@
   import SessionManagerDialog from "$lib/components/SessionManagerDialog.svelte";
   import { X } from "@lucide/svelte";
   import { cleanReply, expressionFromText } from "$lib/expressions";
-  import type { AgentEvent, ChatMessage, CodeProject, FaceExpression, SessionSummary, StateUpdate, WakeEvent } from "$lib/types";
+  import { limitNotice, operationalLabel, parseAgentProgress, type StatusTone } from "$lib/agentStatus";
+  import type { AgentEvent, ChatMessage, CodeProject, FaceExpression, SessionSummary, SlashCommand, StateUpdate, WakeEvent } from "$lib/types";
 
-  type Mode = "chat" | "code";
+  type Mode = "normal" | "code";
   const conversationHideDelayMs = 20_000;
 
   let expression: FaceExpression = "calm";
   let talking = false;
   let status = "idle";
   let voiceStatus = "voice connecting";
-  let mode: Mode = "chat";
+  let mode: Mode = "normal";
   let workspace = "";
   let internetEnabled = false;
   let sessionId = "";
@@ -26,7 +27,10 @@
   let conversationOpen = true;
   let conversationExpanded = false;
   let activity = "";
+  let notice = "";
+  let noticeTone: StatusTone = "normal";
   let composer = "";
+  let slashCommands: SlashCommand[] = [];
   let activeController: AbortController | null = null;
   let diffDialog: HTMLDialogElement;
   let projectDialog: ProjectManagerDialog;
@@ -43,6 +47,7 @@
 
   onMount(() => {
     runtimeEvents = connectRuntimeEvents();
+    void loadSlashCommands();
     return () => {
       runtimeEvents?.close();
       wakeEvents?.close();
@@ -51,6 +56,17 @@
       if (conversationTimer) clearTimeout(conversationTimer);
     };
   });
+
+  async function loadSlashCommands(): Promise<void> {
+    try {
+      const response = await fetch("/api/commands", { cache: "no-store" });
+      if (!response.ok) return;
+      const payload = await response.json() as { commands?: SlashCommand[] };
+      slashCommands = Array.isArray(payload.commands) ? payload.commands : [];
+    } catch {
+      slashCommands = [];
+    }
+  }
 
   function connectRuntimeEvents(): EventSource {
     const events = new EventSource("/api/runtime-events");
@@ -70,6 +86,8 @@
     conversationExpanded = false;
     holdConversation();
     activity = "";
+    notice = "";
+    noticeTone = "normal";
     expression = "calm";
     status = "new session";
     latestSessionEventTimestamp = 0;
@@ -116,6 +134,8 @@
       handleControl(event.payloadJson);
       return;
     }
+    const progress = parseAgentProgress(event.payloadJson);
+    applyLimitNotice(progress);
     const content = cleanReply(event.message);
     if (event.state === "user" || event.state === "assistant") {
       const latest = messages.at(-1);
@@ -124,9 +144,14 @@
       }
       showMessage(event.state, content);
     }
-    if (event.state === "user" || event.state === "status") {
+    if (event.state === "user") {
+      expression = "thinking";
+      status = "thinking";
+      activity = "Choosing approach";
+    } else if (event.state === "status") {
       expression = "thinking";
       status = event.message || "thinking";
+      activity = operationalLabel(status, progress);
     } else if (event.state === "assistant") {
       expression = expressionFromText(content);
       status = "responding";
@@ -137,6 +162,9 @@
       status = "error";
       conversationOpen = true;
       holdConversation();
+    } else if (event.state === "complete") {
+      activity = "";
+      status = "idle";
     }
   }
 
@@ -223,8 +251,14 @@
     const duration = Math.min(6000, Math.max(1200, text.split(/\s+/).length * 170));
     talkingTimer = setTimeout(() => {
       talking = false;
-      status = "idle";
     }, duration);
+  }
+
+  function applyLimitNotice(progress: ReturnType<typeof parseAgentProgress>): void {
+    const next = limitNotice(progress);
+    if (!next) return;
+    notice = next.text;
+    noticeTone = next.tone;
   }
 
   async function sendMessage(text: string): Promise<void> {
@@ -234,6 +268,9 @@
     showMessage("user", text);
     expression = "thinking";
     status = "thinking";
+    activity = "Choosing approach";
+    notice = "";
+    noticeTone = "normal";
     activeController = new AbortController();
 
     const response = await fetch("/api/agent", {
@@ -272,26 +309,32 @@
     messages = [...messages, { role: "assistant", content: reply }];
     expression = expressionFromText(reply);
     showMessage("assistant", cleanReply(reply));
-    activity = "";
-    status = "responding";
     animateTalking(reply);
     scheduleConversationHide();
     activeController = null;
   }
 
   async function handleAgentEvent(event: AgentEvent): Promise<string> {
+    const progress = parseAgentProgress(event.payloadJson);
+    applyLimitNotice(progress);
     switch (event.type) {
       case "control":
         handleControl(event.payloadJson);
         break;
       case "assistant":
+        status = "responding";
         return event.text || "";
+      case "status":
+        expression = "thinking";
+        status = event.text || "thinking";
+        activity = operationalLabel(status, progress);
+        break;
       case "tool_start":
         expression = "thinking";
-        showActivity(`Running ${event.tool}`);
+        showActivity(operationalLabel(event.text || `Running ${event.tool}`, progress));
         break;
       case "tool_result":
-        showActivity(event.text ? `${event.tool}: ${event.text.slice(0, 180)}` : `${event.tool} complete`);
+        showActivity(operationalLabel("Planning next step", progress));
         break;
       case "file_change":
         showActivity("Workspace changed");
@@ -309,6 +352,10 @@
       }
       case "error":
         throw new Error(event.text || "agent failed");
+      case "complete":
+        activity = "";
+        status = "idle";
+        break;
     }
     return "";
   }
@@ -416,6 +463,8 @@
       <ConversationOverlay
         messages={visibleMessages}
         {activity}
+        {notice}
+        {noticeTone}
         {status}
         {voiceStatus}
         {mode}
@@ -430,7 +479,7 @@
         onswitch={() => void projectDialog.open()}
         ondiff={() => void showDiff()}
       />
-      <MessageComposer bind:value={composer} busy={Boolean(activeController)} onsubmit={() => void submit()} />
+      <MessageComposer bind:value={composer} busy={Boolean(activeController)} commands={slashCommands} onsubmit={() => void submit()} />
     {/if}
   </section>
 </main>

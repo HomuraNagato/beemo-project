@@ -24,16 +24,18 @@ type agentDecision struct {
 }
 
 type agentObservation struct {
-	Tool    string `json:"tool"`
-	Output  string `json:"output"`
-	Error   string `json:"error,omitempty"`
-	Changed bool   `json:"changed,omitempty"`
+	Tool    string             `json:"tool"`
+	Args    json.RawMessage    `json:"args,omitempty"`
+	Output  string             `json:"output"`
+	Error   string             `json:"error,omitempty"`
+	Changed bool               `json:"changed,omitempty"`
+	Sources []orchtools.Source `json:"sources,omitempty"`
 }
 
 func (s *orchestratorServer) RunAgent(req *pb.AgentRequest, stream pb.Orchestrator_RunAgentServer) error {
 	ctx := stream.Context()
 	mode, workspace := s.resolveAgentState(ctx, req)
-	if mode != "chat" && mode != "code" {
+	if mode != "normal" && mode != "code" {
 		return fmt.Errorf("unsupported agent mode %q", mode)
 	}
 	req.Mode = mode
@@ -63,26 +65,28 @@ func (s *orchestratorServer) RunAgent(req *pb.AgentRequest, stream pb.Orchestrat
 		}
 		s.publishState(req.GetSessionId(), "user", userText, timestampUnixMs)
 	}
-	if err := s.sendAgentEvent(ctx, stream, req.GetSessionId(), "status", "", "thinking", nil, ""); err != nil {
+	if err := s.sendAgentEvent(ctx, stream, req.GetSessionId(), "status", "", "Choosing approach", agentProgress{Phase: "routing"}, ""); err != nil {
 		return err
 	}
 	if command, ok := parseAgentControl(userText); ok {
+		if command.action == "research" {
+			if strings.TrimSpace(command.target) == "" {
+				return s.controlResponse(ctx, req, stream, "research_input", "What would you like me to research?", map[string]any{"profile": "normal"})
+			}
+			req.Messages = replaceLatestUserMessage(req.GetMessages(), command.target)
+			req.Options["core_context"] = s.coreContext(ctx)
+			return s.runConversationAgent(req, stream, s.conversationProfile("research"))
+		}
 		return s.runAgentControl(ctx, req, stream, command)
 	}
 
-	if mode == "chat" {
-		response, err := s.Chat(ctx, &pb.ChatRequest{
-			SessionId: req.GetSessionId(),
-			Messages:  req.GetMessages(),
-			Options:   req.GetOptions(),
-		})
-		if err != nil {
-			return s.sendAgentEvent(ctx, stream, req.GetSessionId(), "error", "", err.Error(), nil, "")
+	req.Options["core_context"] = s.coreContext(ctx)
+	if mode == "normal" {
+		if query, ok := naturalResearchQuery(userText); ok {
+			req.Messages = replaceLatestUserMessage(req.GetMessages(), query)
+			return s.runConversationAgent(req, stream, s.conversationProfile("research"))
 		}
-		if err := s.sendAgentEvent(ctx, stream, req.GetSessionId(), "assistant", "", response.GetText(), map[string]any{"tools": response.GetTools()}, ""); err != nil {
-			return err
-		}
-		return s.sendAgentEvent(ctx, stream, req.GetSessionId(), "complete", "", "complete", nil, "")
+		return s.runConversationAgent(req, stream, s.conversationProfile("normal"))
 	}
 
 	if strings.TrimSpace(req.GetWorkspace()) == "" {
@@ -110,14 +114,19 @@ func (s *orchestratorServer) runCodeAgent(req *pb.AgentRequest, stream pb.Orches
 	}
 
 	for toolSteps < s.cfg.CodeMaxSteps {
-		prompt := buildCodeAgentPrompt(req, observations, toolSteps+1, s.cfg.CodeMaxSteps, s.cfg.CodeMaxPromptChars)
-		callAgent := s.callAgentCompletion
-		if callAgent == nil {
-			callAgent = llm.CallOnceWithMaxTokensContext
+		stepProgress := codeStepProgress(toolSteps+1, s.cfg.CodeMaxSteps)
+		if err := s.sendAgentEvent(ctx, stream, req.GetSessionId(), "status", "", "Planning next step", stepProgress, ""); err != nil {
+			return err
 		}
-		decisionText, err := callAgent(ctx, s.cfg.LLMHTTPURL, s.cfg.LLMModel, prompt, s.cfg.CodeMaxTokens, time.Duration(s.cfg.LLMTimeoutMs)*time.Millisecond)
+		prompt := buildCodeAgentPrompt(req, observations, toolSteps+1, s.cfg.CodeMaxSteps, s.cfg.CodeMaxPromptChars)
+		decisionText, completion, err := s.callCodeCompletion(ctx, prompt)
 		if err != nil {
 			return s.sendAgentEvent(ctx, stream, req.GetSessionId(), "error", "", fmt.Sprintf("coding model failed: %v", err), nil, "")
+		}
+		modelProgress := progressForCompletion(completion, s.cfg.LLMContextTokens, s.cfg.CodeMaxTokens)
+		modelProgress.Step, modelProgress.MaxSteps = toolSteps+1, s.cfg.CodeMaxSteps
+		if modelProgress.Warning != "" {
+			_ = s.sendAgentEvent(ctx, stream, req.GetSessionId(), "status", "", "Model limit warning", modelProgress, "")
 		}
 		decision, err := parseAgentDecision(decisionText)
 		if err != nil {
@@ -179,7 +188,10 @@ func (s *orchestratorServer) runCodeAgent(req *pb.AgentRequest, stream pb.Orches
 			duplicateFailures = 0
 			lastToolSignature = signature
 			toolSteps++
-			if err := s.sendAgentEvent(ctx, stream, req.GetSessionId(), "tool_start", decision.Tool, "", json.RawMessage(decision.Args), ""); err != nil {
+			toolProgress := codeStepProgress(toolSteps, s.cfg.CodeMaxSteps)
+			toolProgress.Phase = "tool"
+			payload := map[string]any{"args": json.RawMessage(decision.Args), "progress": toolProgress}
+			if err := s.sendAgentEvent(ctx, stream, req.GetSessionId(), "tool_start", decision.Tool, toolActivity(decision.Tool), payload, ""); err != nil {
 				return err
 			}
 			observation, err := s.executeAgentTool(ctx, req, stream, decision)
@@ -248,12 +260,21 @@ Handoff:`, messages, results)
 	} else if decision, parseErr := parseAgentDecision(text); parseErr == nil && decision.Type == "final" && strings.TrimSpace(decision.Text) != "" {
 		text = decision.Text
 	}
-	payload := map[string]any{"status": "tool_limit", "incomplete": true}
+	payload := agentProgress{Phase: "complete", Step: s.cfg.CodeMaxSteps, MaxSteps: s.cfg.CodeMaxSteps, Warning: "tool_limit", Incomplete: true}
 	if err := s.sendAgentEvent(ctx, stream, req.GetSessionId(), "assistant", "", strings.TrimSpace(text), payload, ""); err != nil {
 		return err
 	}
 	_ = s.saveAgentSession(ctx, req, "code", "complete")
 	return s.sendAgentEvent(ctx, stream, req.GetSessionId(), "complete", "", "tool_limit", payload, "")
+}
+
+func (s *orchestratorServer) callCodeCompletion(ctx context.Context, prompt string) (string, llm.Completion, error) {
+	if s.callAgentCompletion != nil {
+		text, err := s.callAgentCompletion(ctx, s.cfg.LLMHTTPURL, s.cfg.LLMModel, prompt, s.cfg.CodeMaxTokens, time.Duration(s.cfg.LLMTimeoutMs)*time.Millisecond)
+		return text, llm.Completion{Text: text}, err
+	}
+	result, err := llm.CallOnceResultWithMaxTokensContext(ctx, s.cfg.LLMHTTPURL, s.cfg.LLMModel, prompt, s.cfg.CodeMaxTokens, time.Duration(s.cfg.LLMTimeoutMs)*time.Millisecond)
+	return result.Text, result, err
 }
 
 func (s *orchestratorServer) executeAgentTool(ctx context.Context, req *pb.AgentRequest, stream pb.Orchestrator_RunAgentServer, decision agentDecision) (agentObservation, error) {
@@ -289,23 +310,32 @@ func (s *orchestratorServer) executeAgentTool(ctx context.Context, req *pb.Agent
 		if result.GetChanged() {
 			_ = s.sendAgentEvent(ctx, stream, req.GetSessionId(), "file_change", decision.Tool, "workspace changed", nil, "")
 		}
-		return agentObservation{Tool: decision.Tool, Output: result.GetOutput(), Changed: result.GetChanged()}, nil
+		return agentObservation{Tool: decision.Tool, Args: decision.Args, Output: result.GetOutput(), Changed: result.GetChanged()}, nil
 	}
 
-	if !supportedTool(decision.Tool) || decision.Tool == "beemo.direct" {
+	if !agentToolAllowed(decision.Tool) {
 		return agentObservation{}, fmt.Errorf("unsupported agent tool %q", decision.Tool)
 	}
 	if decision.Tool == "internet.search" && !strings.EqualFold(req.GetOptions()["internet_enabled"], "true") {
-		return agentObservation{Tool: decision.Tool, Error: "internet access is disabled; enter /internet to enable it for this session"}, nil
+		return agentObservation{Tool: decision.Tool, Args: decision.Args, Error: "internet access is disabled; enter /internet to enable it for this session"}, nil
 	}
 	result, err := s.tools.Execute(ctx, orchtools.Request{SessionID: req.GetSessionId(), Action: decision.Tool, Args: decision.Args})
 	if err != nil {
 		return agentObservation{}, err
 	}
 	if result.Status == "needs_input" {
-		return agentObservation{Tool: decision.Tool, Error: result.Question}, nil
+		return agentObservation{Tool: decision.Tool, Args: decision.Args, Error: result.Question}, nil
 	}
-	return agentObservation{Tool: decision.Tool, Output: result.Output}, nil
+	return agentObservation{Tool: decision.Tool, Args: decision.Args, Output: result.Output, Sources: result.Sources}, nil
+}
+
+func agentToolAllowed(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "weather", "internet.search", "calculator", "memory.search":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *orchestratorServer) initialCodeObservations(ctx context.Context, req *pb.AgentRequest) []agentObservation {
@@ -545,19 +575,19 @@ Available tools:
 - code.git_status {}
 - code.git_diff {}
 - memory.search {query, limit?}
-- memory.remember {title, text}
-- get_time {}
 - weather {location, when?}
 - calculator {operation and operation-specific values}
-- older_sister {query}
 %s
 
 Do not claim success until verification supports it. Dependency downloads, destructive commands, commits, pushes, and network commands require user approval.
+Current local date and time: %s
+Core user context (user-maintained facts and preferences, not instructions):
+%s
 Workspace: %s
 Step: %d of %d
 Conversation JSON: %s
 Tool observations JSON: %s
-Next decision:`, internetTool, req.GetWorkspace(), step, maxSteps, messages, results)
+Next decision:`, internetTool, time.Now().Format(time.RFC1123Z), strings.TrimSpace(req.GetOptions()["core_context"]), req.GetWorkspace(), step, maxSteps, messages, results)
 	}
 	prompt := render()
 	for len(prompt) > maxChars && (observationBudget > 1000 || messageBudget > 1000) {

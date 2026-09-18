@@ -68,7 +68,7 @@ func (s *orchestratorServer) RemoveAgentProject(ctx context.Context, req *pb.Pro
 		session, _, getErr := s.agentStore.GetSession(ctx, s.cfg.MemoryUserKey, sessionID)
 		if getErr == nil {
 			if session.Workspace == path {
-				session, err = s.agentStore.SetSessionMode(ctx, s.cfg.MemoryUserKey, sessionID, "chat", "")
+				session, err = s.agentStore.SetSessionMode(ctx, s.cfg.MemoryUserKey, sessionID, "normal", "")
 				if err != nil {
 					return nil, err
 				}
@@ -128,7 +128,7 @@ func (s *orchestratorServer) ActivateAgentSession(ctx context.Context, req *pb.S
 		if _, ok, projectErr := s.registeredProject(ctx, session.Workspace); projectErr != nil {
 			return nil, projectErr
 		} else if !ok {
-			session, err = s.agentStore.SetSessionMode(ctx, s.cfg.MemoryUserKey, session.SessionID, "chat", "")
+			session, err = s.agentStore.SetSessionMode(ctx, s.cfg.MemoryUserKey, session.SessionID, "normal", "")
 			if err != nil {
 				return nil, err
 			}

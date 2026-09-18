@@ -36,6 +36,7 @@ const (
 	Orchestrator_DeleteAgentSessions_FullMethodName    = "/eve.Orchestrator/DeleteAgentSessions"
 	Orchestrator_GetAgentSession_FullMethodName        = "/eve.Orchestrator/GetAgentSession"
 	Orchestrator_GetAgentDiff_FullMethodName           = "/eve.Orchestrator/GetAgentDiff"
+	Orchestrator_ListAgentCommands_FullMethodName      = "/eve.Orchestrator/ListAgentCommands"
 )
 
 // OrchestratorClient is the client API for Orchestrator service.
@@ -59,6 +60,7 @@ type OrchestratorClient interface {
 	DeleteAgentSessions(ctx context.Context, in *SessionDeleteRequest, opts ...grpc.CallOption) (*SessionDeleteResponse, error)
 	GetAgentSession(ctx context.Context, in *SessionRequest, opts ...grpc.CallOption) (*AgentSessionDetail, error)
 	GetAgentDiff(ctx context.Context, in *AgentDiffRequest, opts ...grpc.CallOption) (*AgentDiffResponse, error)
+	ListAgentCommands(ctx context.Context, in *CommandListRequest, opts ...grpc.CallOption) (*CommandListResponse, error)
 }
 
 type orchestratorClient struct {
@@ -268,6 +270,15 @@ func (c *orchestratorClient) GetAgentDiff(ctx context.Context, in *AgentDiffRequ
 	return out, nil
 }
 
+func (c *orchestratorClient) ListAgentCommands(ctx context.Context, in *CommandListRequest, opts ...grpc.CallOption) (*CommandListResponse, error) {
+	out := new(CommandListResponse)
+	err := c.cc.Invoke(ctx, Orchestrator_ListAgentCommands_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // OrchestratorServer is the server API for Orchestrator service.
 // All implementations must embed UnimplementedOrchestratorServer
 // for forward compatibility
@@ -289,6 +300,7 @@ type OrchestratorServer interface {
 	DeleteAgentSessions(context.Context, *SessionDeleteRequest) (*SessionDeleteResponse, error)
 	GetAgentSession(context.Context, *SessionRequest) (*AgentSessionDetail, error)
 	GetAgentDiff(context.Context, *AgentDiffRequest) (*AgentDiffResponse, error)
+	ListAgentCommands(context.Context, *CommandListRequest) (*CommandListResponse, error)
 	mustEmbedUnimplementedOrchestratorServer()
 }
 
@@ -346,6 +358,9 @@ func (UnimplementedOrchestratorServer) GetAgentSession(context.Context, *Session
 }
 func (UnimplementedOrchestratorServer) GetAgentDiff(context.Context, *AgentDiffRequest) (*AgentDiffResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetAgentDiff not implemented")
+}
+func (UnimplementedOrchestratorServer) ListAgentCommands(context.Context, *CommandListRequest) (*CommandListResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListAgentCommands not implemented")
 }
 func (UnimplementedOrchestratorServer) mustEmbedUnimplementedOrchestratorServer() {}
 
@@ -672,6 +687,24 @@ func _Orchestrator_GetAgentDiff_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Orchestrator_ListAgentCommands_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CommandListRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrchestratorServer).ListAgentCommands(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Orchestrator_ListAgentCommands_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrchestratorServer).ListAgentCommands(ctx, req.(*CommandListRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Orchestrator_ServiceDesc is the grpc.ServiceDesc for Orchestrator service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -738,6 +771,10 @@ var Orchestrator_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetAgentDiff",
 			Handler:    _Orchestrator_GetAgentDiff_Handler,
+		},
+		{
+			MethodName: "ListAgentCommands",
+			Handler:    _Orchestrator_ListAgentCommands_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

@@ -36,6 +36,13 @@ type orchestratorServer struct {
 	stateMu             sync.Mutex
 	stateSubscribers    map[uint64]stateSubscriber
 	stateSubscriberID   uint64
+	coreContextMu       sync.Mutex
+	coreContextCache    map[string]cachedCoreContext
+}
+
+type cachedCoreContext struct {
+	body      string
+	fetchedAt time.Time
 }
 
 type stateSubscriber struct {

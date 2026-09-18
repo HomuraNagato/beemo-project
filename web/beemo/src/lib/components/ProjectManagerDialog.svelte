@@ -6,7 +6,7 @@
 
   export let sessionId = "";
   export let activeWorkspace = "";
-  export let onstate: (mode: "chat" | "code", workspace: string) => void;
+  export let onstate: (mode: "normal" | "code", workspace: string) => void;
   export let onselect: (project: CodeProject) => Promise<void>;
 
   let dialog: HTMLDialogElement;
@@ -47,7 +47,7 @@
   async function removeProject(project: CodeProject): Promise<void> {
     if (!window.confirm(`Remove ${project.name} from Beemo?\n\nNo files will be deleted.`)) return;
     const response = await fetch("/api/projects", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: project.path, sessionId }) });
-    const payload = await response.json() as { mode?: "chat" | "code"; workspace?: string; error?: string };
+    const payload = await response.json() as { mode?: "normal" | "code"; workspace?: string; error?: string };
     if (!response.ok || payload.error) { error = payload.error || "project could not be removed"; return; }
     if (payload.mode) onstate(payload.mode, payload.workspace || "");
     await loadProjects();

@@ -29,7 +29,7 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:5013", "orchestrator gRPC address")
 	sessionID := flag.String("session", "voice-loop", "chat session id")
 	timeout := flag.Duration("timeout", defaultTimeout, "request timeout")
-	mode := flag.String("mode", "chat", "session mode: chat or code")
+	mode := flag.String("mode", "normal", "session mode: normal or code")
 	workspace := flag.String("workspace", "", "repository path for Code mode")
 	resume := flag.Bool("resume", true, "resume the persisted session id")
 	flag.Parse()
@@ -109,7 +109,7 @@ func main() {
 		case line == "/help":
 			transcript = append(transcript, transcriptEntry{
 				role:    "system",
-				content: "Commands: /mode chat|code, /workspace <path>, /help, /clear, /faces, /face <emotion>, /quit",
+				content: "Commands: /mode normal|code, /workspace <path>, /help, /clear, /faces, /face <emotion>, /quit",
 			})
 			render(*addr, *sessionID, currentExpression, transcript)
 			continue
@@ -140,8 +140,8 @@ func main() {
 			continue
 		case strings.HasPrefix(line, "/mode "):
 			next := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(line, "/mode ")))
-			if next != "chat" && next != "code" {
-				transcript = append(transcript, transcriptEntry{role: "system", content: "Mode must be chat or code."})
+			if next != "normal" && next != "code" {
+				transcript = append(transcript, transcriptEntry{role: "system", content: "Mode must be normal or code."})
 			} else {
 				*mode = next
 				transcript = append(transcript, transcriptEntry{role: "system", content: "Mode set to " + next + "."})
@@ -317,7 +317,7 @@ func render(addr, sessionID string, expr expression, transcript []transcriptEntr
 	fmt.Printf("expression: %s (%s)\n", expr.Emotion, expr.Label)
 	fmt.Printf("addr: %s\n", addr)
 	fmt.Printf("session: %s\n", sessionID)
-	fmt.Println("commands: /mode chat|code /workspace <path> /help /clear /faces /face <emotion> /quit")
+	fmt.Println("commands: /mode normal|code /workspace <path> /help /clear /faces /face <emotion> /quit")
 	fmt.Println(strings.Repeat("-", 72))
 	if len(transcript) == 0 {
 		fmt.Println("No messages yet.")

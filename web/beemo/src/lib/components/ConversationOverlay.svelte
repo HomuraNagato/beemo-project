@@ -6,9 +6,11 @@
 
   export let messages: ChatMessage[];
   export let activity = "";
+  export let notice = "";
+  export let noticeTone: "normal" | "warning" | "error" = "normal";
   export let status = "idle";
   export let voiceStatus = "voice connecting";
-  export let mode: "chat" | "code" = "chat";
+  export let mode: "normal" | "code" = "normal";
   export let workspace = "";
   export let internetEnabled = false;
   export let expanded = false;
@@ -65,8 +67,13 @@
   <div class="grid min-h-0 w-full grid-rows-[auto_minmax(0,1fr)]">
     <header class="flex min-h-12 items-center justify-between gap-3 border-b border-[rgba(220,238,231,0.18)] px-3">
       <div class="min-w-0">
-        <strong class="block overflow-hidden text-sm text-ellipsis whitespace-nowrap">{mode === "code" ? `Code · ${projectName()}` : "Chat"}{internetEnabled ? " · Internet" : ""}</strong>
-        <span class="block overflow-hidden text-[0.68rem] text-ellipsis whitespace-nowrap text-[#c2d0cb]">{activity || `${status} · ${voiceStatus}`}</span>
+        <strong class="block overflow-hidden text-sm text-ellipsis whitespace-nowrap">{mode === "code" ? `Code · ${projectName()}` : "Normal"}{internetEnabled ? " · Internet" : ""}</strong>
+        <span
+          class:text-[#ffd27a]={noticeTone === "warning"}
+          class:text-[#ff9e93]={noticeTone === "error"}
+          class:text-[#c2d0cb]={noticeTone === "normal"}
+          class="block overflow-hidden text-[0.68rem] text-ellipsis whitespace-nowrap"
+        >{notice || activity || (status === "idle" ? `${status} · ${voiceStatus}` : status)}</span>
       </div>
       <div class="flex shrink-0 gap-1">
         {#if mode === "code"}

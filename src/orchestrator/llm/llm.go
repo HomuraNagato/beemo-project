@@ -35,7 +35,21 @@ type chatResponse struct {
 		Message struct {
 			Content string `json:"content"`
 		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+	Usage Usage `json:"usage"`
+}
+
+type Usage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
+type Completion struct {
+	Text         string
+	FinishReason string
+	Usage        Usage
 }
 
 type structuredOutputsSpec struct {
@@ -69,8 +83,13 @@ func CallOnceWithMaxTokens(httpURL, model, prompt string, maxTokens int, timeout
 }
 
 func CallOnceWithMaxTokensContext(ctx context.Context, httpURL, model, prompt string, maxTokens int, timeout time.Duration) (string, error) {
+	result, err := CallOnceResultWithMaxTokensContext(ctx, httpURL, model, prompt, maxTokens, timeout)
+	return result.Text, err
+}
+
+func CallOnceResultWithMaxTokensContext(ctx context.Context, httpURL, model, prompt string, maxTokens int, timeout time.Duration) (Completion, error) {
 	if httpURL == "" {
-		return "", fmt.Errorf("LLM_HTTP_URL missing")
+		return Completion{}, fmt.Errorf("LLM_HTTP_URL missing")
 	}
 	if model == "" {
 		model = "llama-3.2.gguf"
@@ -90,7 +109,7 @@ func CallOnceWithMaxTokensContext(ctx context.Context, httpURL, model, prompt st
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return "", err
+		return Completion{}, err
 	}
 	slog.Info("llm.chat_request",
 		"model", model,
@@ -100,7 +119,7 @@ func CallOnceWithMaxTokensContext(ctx context.Context, httpURL, model, prompt st
 		"prompt_preview", logPreview(prompt),
 	)
 
-	return callChatRequestContext(ctx, httpURL, body, timeout)
+	return callChatResultContext(ctx, httpURL, body, timeout)
 }
 
 func CallChatWithGrammar(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {
@@ -255,18 +274,27 @@ func callChatRequest(httpURL string, body []byte, timeout time.Duration) (string
 }
 
 func callChatRequestContext(ctx context.Context, httpURL string, body []byte, timeout time.Duration) (string, error) {
+	result, err := callChatResultContext(ctx, httpURL, body, timeout)
+	return result.Text, err
+}
+
+func callChatResultContext(ctx context.Context, httpURL string, body []byte, timeout time.Duration) (Completion, error) {
 	respBody, err := callRawRequestContext(ctx, httpURL, body, timeout)
 	if err != nil {
-		return "", err
+		return Completion{}, err
 	}
 	var parsed chatResponse
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return "", err
+		return Completion{}, err
 	}
 	if len(parsed.Choices) == 0 {
-		return "", fmt.Errorf("llm response: no choices")
+		return Completion{}, fmt.Errorf("llm response: no choices")
 	}
-	return parsed.Choices[0].Message.Content, nil
+	return Completion{
+		Text:         parsed.Choices[0].Message.Content,
+		FinishReason: parsed.Choices[0].FinishReason,
+		Usage:        parsed.Usage,
+	}, nil
 }
 
 func callRawRequest(httpURL string, body []byte, timeout time.Duration) ([]byte, error) {

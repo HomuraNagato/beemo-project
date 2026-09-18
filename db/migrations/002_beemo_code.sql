@@ -3,7 +3,7 @@ CREATE SCHEMA IF NOT EXISTS beemo_code;
 CREATE TABLE IF NOT EXISTS beemo_code.sessions (
     session_id TEXT PRIMARY KEY,
     user_key TEXT NOT NULL,
-    mode TEXT NOT NULL DEFAULT 'chat',
+    mode TEXT NOT NULL DEFAULT 'normal',
     workspace TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'active',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

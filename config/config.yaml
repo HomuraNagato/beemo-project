@@ -4,6 +4,7 @@ llm:
   provider: vllm
   model: Qwen3-4B-Instruct-2507
   timeout_ms: 120000
+  context_tokens: 8192
 
 embedding:
   addr: eve-embedding:5021
@@ -51,18 +52,23 @@ older_sister:
   timeout_ms: 120000
 
 internet:
-  http_url: https://api.search.brave.com/res/v1/llm/context
+  provider: tavily
+  http_url: https://api.tavily.com/search
   timeout_ms: 30000
-  result_count: 20
-  max_urls: 8
+  result_count: 8
   max_tokens: 6000
-  safe_search: moderate
+  search_depth: fast
+  chunks_per_source: 2
 
 memory:
   base_url: http://host.docker.internal:8013
   user_key: nagato
   timeout_ms: 30000
-  auto_save: true
+  core_context_max_chars: 8000
+
+agent:
+  normal_max_rounds: 4
+  research_max_rounds: 8
 
 code:
   socket: /run/beemo-code/beemo-code.sock

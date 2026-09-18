@@ -53,7 +53,7 @@ export interface WakeEvent {
 export interface SessionSummary {
   sessionId: string;
   name: string;
-  mode: "chat" | "code";
+  mode: "normal" | "code";
   workspace: string;
   status: string;
   internetEnabled: boolean;
@@ -72,6 +72,11 @@ export interface DirectoryEntry {
   name: string;
   path: string;
   isGit: boolean;
+}
+
+export interface SlashCommand {
+  command: string;
+  description: string;
 }
 
 export interface ChatMessage {

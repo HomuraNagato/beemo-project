@@ -36,6 +36,11 @@ type MemoryRetrieveResponse struct {
 	Diagnostics MemoryRetrieveDiagnostics `json:"diagnostics"`
 }
 
+type CoreContext struct {
+	Body      string    `json:"body"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 type MemoryRetrieveSource struct {
 	ID             string   `json:"id"`
 	MemoryID       string   `json:"memory_id"`
@@ -104,19 +109,20 @@ func executeMemorySearch(ctx context.Context, req Request, cfg MemoryConfig) (Re
 	if strings.TrimSpace(args.Query) == "" {
 		return needsInputResult(req.Action, []string{"query"}, "What should I look up in memory?"), nil
 	}
-	payload := map[string]any{
-		"query":       args.Query,
-		"kind":        args.Kind,
-		"source_type": args.SourceType,
-		"limit":       limitOrDefault(args.Limit, 5),
-	}
-	var response memorySearchResponse
-	if err := callMemory(ctx, cfg, http.MethodPost, "/v1/search", payload, &response); err != nil {
+	response, err := RetrieveMemory(ctx, cfg, MemoryRetrieveRequest{
+		RequestID:           fmt.Sprintf("%s-%d", req.SessionID, time.Now().UnixNano()),
+		Query:               args.Query,
+		Mode:                "hybrid",
+		Limit:               limitOrDefault(args.Limit, 8),
+		CandidateLimit:      30,
+		ChunkLimitPerSource: 6,
+	})
+	if err != nil {
 		return Result{}, err
 	}
 	return Result{
 		Action: req.Action,
-		Output: formatMemorySearchResults(response.Results),
+		Output: formatMemoryRetrieveSources(response.Sources),
 	}, nil
 }
 
@@ -141,6 +147,12 @@ func RetrieveMemory(ctx context.Context, cfg MemoryConfig, req MemoryRetrieveReq
 		return MemoryRetrieveResponse{}, err
 	}
 	return response, nil
+}
+
+func GetCoreContext(ctx context.Context, cfg MemoryConfig) (CoreContext, error) {
+	var response CoreContext
+	err := callMemory(ctx, cfg, http.MethodGet, "/v1/core-context", nil, &response)
+	return response, err
 }
 
 func executeMemoryRemember(ctx context.Context, req Request, cfg MemoryConfig) (Result, error) {
@@ -278,6 +290,25 @@ func formatMemorySearchResults(results []memorySearchResult) string {
 			text = string([]rune(text)[:420]) + "..."
 		}
 		lines = append(lines, fmt.Sprintf("%d. %s [%s/%s similarity=%.3f]\n%s", i+1, title, result.Kind, result.SourceType, result.Similarity, text))
+	}
+	return strings.Join(lines, "\n\n")
+}
+
+func formatMemoryRetrieveSources(results []MemoryRetrieveSource) string {
+	if len(results) == 0 {
+		return "No relevant memories found."
+	}
+	lines := make([]string, 0, len(results))
+	for i, result := range results {
+		title := firstNonBlank(result.Title, "Untitled source")
+		text := strings.TrimSpace(result.EvidenceText)
+		if text == "" {
+			text = strings.TrimSpace(result.Text)
+		}
+		if len([]rune(text)) > 1600 {
+			text = string([]rune(text)[:1600]) + "..."
+		}
+		lines = append(lines, fmt.Sprintf("[%d] %s\nSource: %s\nEvidence:\n%s", i+1, title, result.SourceURI, text))
 	}
 	return strings.Join(lines, "\n\n")
 }

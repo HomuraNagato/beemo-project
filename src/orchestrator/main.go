@@ -6,12 +6,10 @@ import (
 	"net"
 	"os"
 	"strings"
-	"time"
 
 	pb "eve-beemo/proto/gen/proto"
 	"eve-beemo/src/orchestrator/config"
 	orchestrdb "eve-beemo/src/orchestrator/db"
-	"eve-beemo/src/orchestrator/routing"
 	orchtools "eve-beemo/src/orchestrator/tools"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -54,16 +52,6 @@ func main() {
 	healthpb.RegisterHealthServer(grpcServer, healthServer)
 	reflection.Register(grpcServer)
 
-	selector := routing.NewSelectorWithDB(cfg.RoutesPath, cfg.EmbeddingHTTPURL, cfg.EmbeddingModel, cfg.RouteTopK, cfg.RouteDomainTopK, routeDB)
-	if selector.Enabled() {
-		timeout := time.Duration(cfg.EmbeddingTimeoutMs) * time.Millisecond
-		if err := selector.Warmup(timeout); err != nil {
-			logger.Error("orchestrator.route_warmup", "status", "error", "err", err)
-			return
-		}
-		logger.Info("orchestrator.route_warmup", "status", "ok", "routes_path", cfg.RoutesPath)
-	}
-
 	pb.RegisterOrchestratorServer(grpcServer, &orchestratorServer{
 		cfg: cfg,
 		tools: orchtools.NewLocalExecutorWithAllConfigs(orchtools.WeatherConfig{
@@ -82,23 +70,22 @@ func main() {
 			Model:     cfg.OlderSisterModel,
 			TimeoutMs: cfg.OlderSisterTimeoutMs,
 		}, orchtools.InternetConfig{
-			APIKey:      cfg.InternetAPIKey,
-			HTTPURL:     cfg.InternetHTTPURL,
-			TimeoutMs:   cfg.InternetTimeoutMs,
-			ResultCount: cfg.InternetResultCount,
-			MaxURLs:     cfg.InternetMaxURLs,
-			MaxTokens:   cfg.InternetMaxTokens,
-			SafeSearch:  cfg.InternetSafeSearch,
+			Provider:        cfg.InternetProvider,
+			APIKey:          cfg.InternetAPIKey,
+			HTTPURL:         cfg.InternetHTTPURL,
+			TimeoutMs:       cfg.InternetTimeoutMs,
+			ResultCount:     cfg.InternetResultCount,
+			MaxTokens:       cfg.InternetMaxTokens,
+			SearchDepth:     cfg.InternetSearchDepth,
+			ChunksPerSource: cfg.InternetChunksPerSource,
 		}, orchtools.MemoryConfig{
 			BaseURL:   cfg.MemoryBaseURL,
 			UserKey:   cfg.MemoryUserKey,
 			TimeoutMs: cfg.MemoryTimeoutMs,
-			AutoSave:  cfg.MemoryAutoSave,
 		}),
-		routeSelector: selector,
-		logger:        logger,
-		codeTools:     newCodeToolsClient(cfg.CodeSocket, logger),
-		agentStore:    orchestrdb.NewAgentStore(routeDB),
+		logger:     logger,
+		codeTools:  newCodeToolsClient(cfg.CodeSocket, logger),
+		agentStore: orchestrdb.NewAgentStore(routeDB),
 	})
 	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	healthServer.SetServingStatus("eve.Orchestrator", healthpb.HealthCheckResponse_SERVING)

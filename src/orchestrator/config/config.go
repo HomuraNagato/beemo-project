@@ -15,6 +15,7 @@ type Config struct {
 	LLMProvider                string
 	LLMModel                   string
 	LLMTimeoutMs               int
+	LLMContextTokens           int
 	DatabaseURL                string
 	DBMigrationsDir            string
 	EmbeddingAddr              string
@@ -47,17 +48,20 @@ type Config struct {
 	OlderSisterHTTPURL         string
 	OlderSisterModel           string
 	OlderSisterTimeoutMs       int
+	InternetProvider           string
 	InternetAPIKey             string
 	InternetHTTPURL            string
 	InternetTimeoutMs          int
 	InternetResultCount        int
-	InternetMaxURLs            int
 	InternetMaxTokens          int
-	InternetSafeSearch         string
+	InternetSearchDepth        string
+	InternetChunksPerSource    int
 	MemoryBaseURL              string
 	MemoryUserKey              string
 	MemoryTimeoutMs            int
-	MemoryAutoSave             bool
+	MemoryCoreContextMaxChars  int
+	NormalMaxRounds            int
+	ResearchMaxRounds          int
 	CodeSocket                 string
 	CodeMaxSteps               int
 	CodeMaxTokens              int
@@ -77,8 +81,12 @@ func Load() Config {
 	if apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); apiKey != "" {
 		cfg.OlderSisterAPIKey = apiKey
 	}
-	if apiKey := strings.TrimSpace(os.Getenv("BRAVE_SEARCH_API_KEY")); apiKey != "" {
-		cfg.InternetAPIKey = apiKey
+	setString(&cfg.InternetProvider, os.Getenv("INTERNET_SEARCH_PROVIDER"))
+	switch strings.ToLower(strings.TrimSpace(cfg.InternetProvider)) {
+	case "tavily":
+		setString(&cfg.InternetAPIKey, os.Getenv("TAVILY_API_KEY"))
+	case "openai":
+		setString(&cfg.InternetAPIKey, os.Getenv("OPENAI_API_KEY"))
 	}
 	setString(&cfg.MemoryBaseURL, os.Getenv("MEMORY_PALACE_BASE_URL"))
 	setString(&cfg.MemoryUserKey, os.Getenv("MEMORY_PALACE_USER_KEY"))
@@ -116,6 +124,7 @@ func defaultConfig() Config {
 		LLMProvider:                "vllm",
 		LLMModel:                   "Qwen3-1.7B",
 		LLMTimeoutMs:               120000,
+		LLMContextTokens:           8192,
 		DatabaseURL:                "",
 		DBMigrationsDir:            "db/migrations",
 		EmbeddingAddr:              embeddingAddr,
@@ -143,16 +152,19 @@ func defaultConfig() Config {
 		OlderSisterHTTPURL:         "https://api.openai.com/v1/responses",
 		OlderSisterModel:           "gpt-5-mini",
 		OlderSisterTimeoutMs:       120000,
-		InternetHTTPURL:            "https://api.search.brave.com/res/v1/llm/context",
+		InternetProvider:           "tavily",
+		InternetHTTPURL:            "https://api.tavily.com/search",
 		InternetTimeoutMs:          30000,
-		InternetResultCount:        20,
-		InternetMaxURLs:            8,
+		InternetResultCount:        8,
 		InternetMaxTokens:          6000,
-		InternetSafeSearch:         "moderate",
+		InternetSearchDepth:        "fast",
+		InternetChunksPerSource:    2,
 		MemoryBaseURL:              "http://host.docker.internal:8013",
 		MemoryUserKey:              "local",
 		MemoryTimeoutMs:            30000,
-		MemoryAutoSave:             true,
+		MemoryCoreContextMaxChars:  8000,
+		NormalMaxRounds:            4,
+		ResearchMaxRounds:          8,
 		CodeSocket:                 "/run/beemo-code/beemo-code.sock",
 		CodeMaxSteps:               64,
 		CodeMaxTokens:              1024,
@@ -169,6 +181,7 @@ type yamlConfig struct {
 		Provider        string `yaml:"provider"`
 		Model           string `yaml:"model"`
 		TimeoutMs       int    `yaml:"timeout_ms"`
+		ContextTokens   int    `yaml:"context_tokens"`
 	} `yaml:"llm"`
 	Embedding struct {
 		Addr      string `yaml:"addr"`
@@ -216,19 +229,24 @@ type yamlConfig struct {
 		TimeoutMs int    `yaml:"timeout_ms"`
 	} `yaml:"older_sister"`
 	Internet struct {
-		HTTPURL     string `yaml:"http_url"`
-		TimeoutMs   int    `yaml:"timeout_ms"`
-		ResultCount int    `yaml:"result_count"`
-		MaxURLs     int    `yaml:"max_urls"`
-		MaxTokens   int    `yaml:"max_tokens"`
-		SafeSearch  string `yaml:"safe_search"`
+		Provider        string `yaml:"provider"`
+		HTTPURL         string `yaml:"http_url"`
+		TimeoutMs       int    `yaml:"timeout_ms"`
+		ResultCount     int    `yaml:"result_count"`
+		MaxTokens       int    `yaml:"max_tokens"`
+		SearchDepth     string `yaml:"search_depth"`
+		ChunksPerSource int    `yaml:"chunks_per_source"`
 	} `yaml:"internet"`
 	Memory struct {
-		BaseURL   string `yaml:"base_url"`
-		UserKey   string `yaml:"user_key"`
-		TimeoutMs int    `yaml:"timeout_ms"`
-		AutoSave  *bool  `yaml:"auto_save"`
+		BaseURL             string `yaml:"base_url"`
+		UserKey             string `yaml:"user_key"`
+		TimeoutMs           int    `yaml:"timeout_ms"`
+		CoreContextMaxChars int    `yaml:"core_context_max_chars"`
 	} `yaml:"memory"`
+	Agent struct {
+		NormalMaxRounds   int `yaml:"normal_max_rounds"`
+		ResearchMaxRounds int `yaml:"research_max_rounds"`
+	} `yaml:"agent"`
 	Code struct {
 		Socket            string `yaml:"socket"`
 		MaxSteps          int    `yaml:"max_steps"`
@@ -255,6 +273,7 @@ func loadYAML(path string) (Config, error) {
 	setString(&cfg.LLMProvider, raw.LLM.Provider)
 	setString(&cfg.LLMModel, raw.LLM.Model)
 	setInt(&cfg.LLMTimeoutMs, raw.LLM.TimeoutMs)
+	setInt(&cfg.LLMContextTokens, raw.LLM.ContextTokens)
 	setString(&cfg.EmbeddingAddr, raw.Embedding.Addr)
 	setString(&cfg.EmbeddingHTTPURL, raw.Embedding.HTTPURL)
 	setString(&cfg.EmbeddingModel, raw.Embedding.Model)
@@ -290,18 +309,19 @@ func loadYAML(path string) (Config, error) {
 	setString(&cfg.OlderSisterHTTPURL, raw.OlderSister.HTTPURL)
 	setString(&cfg.OlderSisterModel, raw.OlderSister.Model)
 	setInt(&cfg.OlderSisterTimeoutMs, raw.OlderSister.TimeoutMs)
+	setString(&cfg.InternetProvider, raw.Internet.Provider)
 	setString(&cfg.InternetHTTPURL, raw.Internet.HTTPURL)
 	setInt(&cfg.InternetTimeoutMs, raw.Internet.TimeoutMs)
 	setInt(&cfg.InternetResultCount, raw.Internet.ResultCount)
-	setInt(&cfg.InternetMaxURLs, raw.Internet.MaxURLs)
 	setInt(&cfg.InternetMaxTokens, raw.Internet.MaxTokens)
-	setString(&cfg.InternetSafeSearch, raw.Internet.SafeSearch)
+	setString(&cfg.InternetSearchDepth, raw.Internet.SearchDepth)
+	setInt(&cfg.InternetChunksPerSource, raw.Internet.ChunksPerSource)
 	setString(&cfg.MemoryBaseURL, raw.Memory.BaseURL)
 	setString(&cfg.MemoryUserKey, raw.Memory.UserKey)
 	setInt(&cfg.MemoryTimeoutMs, raw.Memory.TimeoutMs)
-	if raw.Memory.AutoSave != nil {
-		cfg.MemoryAutoSave = *raw.Memory.AutoSave
-	}
+	setInt(&cfg.MemoryCoreContextMaxChars, raw.Memory.CoreContextMaxChars)
+	setInt(&cfg.NormalMaxRounds, raw.Agent.NormalMaxRounds)
+	setInt(&cfg.ResearchMaxRounds, raw.Agent.ResearchMaxRounds)
 	setString(&cfg.CodeSocket, raw.Code.Socket)
 	setInt(&cfg.CodeMaxSteps, raw.Code.MaxSteps)
 	setInt(&cfg.CodeMaxTokens, raw.Code.MaxTokens)

@@ -52,6 +52,7 @@ func (s *orchestratorServer) runChat(ctx context.Context, req *pb.ChatRequest) (
 	if userQuery == "" {
 		userQuery = latestUserQuery(effectiveMessages)
 	}
+	s.publishStatePayload(req.GetSessionId(), "status", "Choosing approach", agentProgress{Phase: "routing"})
 	internetEnabled := s.sessionInternetEnabled(ctx, req.GetSessionId())
 	s.log().Info("orch.chat.start", "session", req.GetSessionId(), "user_query", userQuery)
 	if userQuery == "" {
@@ -79,12 +80,14 @@ func (s *orchestratorServer) runChat(ctx context.Context, req *pb.ChatRequest) (
 	}
 
 	if memoryAskRequested(req.GetOptions()) {
+		s.publishStatePayload(req.GetSessionId(), "status", "Searching memory", agentProgress{Phase: "tool"})
 		return s.runMemoryAsk(ctx, req, userQuery, effectiveMessages, callFinalMessage, callTimeout)
 	}
 
 	if directResponseRequested(req.GetOptions()) {
 		prompt := directPrompt(req.GetMessages(), userQuery)
-		finalText, err := callFinalMessage(s.cfg.LLMHTTPURL, s.cfg.LLMModel, prompt, callTimeout)
+		s.publishStatePayload(req.GetSessionId(), "status", "Writing response", agentProgress{Phase: "response"})
+		completion, err := s.callFinalCompletion(ctx, prompt, callTimeout)
 		if err != nil {
 			return chatOutcome{History: historyEntry{
 				Timestamp: time.Now().Format(time.RFC3339),
@@ -94,6 +97,8 @@ func (s *orchestratorServer) runChat(ctx context.Context, req *pb.ChatRequest) (
 				Error:     fmt.Sprintf("llm_followup: %v", err),
 			}}, err
 		}
+		finalText := completion.Text
+		s.publishCompletionWarning(req.GetSessionId(), completion, 384)
 		return chatOutcome{
 			Response:   finalText,
 			Tools:      []string{"beemo.direct"},
@@ -493,6 +498,7 @@ func (s *orchestratorServer) runChat(ctx context.Context, req *pb.ChatRequest) (
 		}
 
 		tool = fromPlannedCall(resolvedTool)
+		s.publishStatePayload(req.GetSessionId(), "status", toolActivity(tool.Tool), agentProgress{Phase: "tool"})
 		s.log().Info("orch.chat.tool_call", "session", req.GetSessionId(), "tool", tool.Tool, "args", string(tool.Args))
 		result, rerr := s.tools.Execute(ctx, orchtools.Request{
 			SessionID: req.GetSessionId(),
@@ -543,9 +549,6 @@ func (s *orchestratorServer) runChat(ctx context.Context, req *pb.ChatRequest) (
 	}
 
 	if directText, ok := directToolResponse(s.cfg.DirectToolResponses, successfulResults, userQuery); ok {
-		if !containsString(toolsRequested, "memory.remember") {
-			go s.maybeAutoSaveMemory(req.GetSessionId(), userQuery)
-		}
 		return chatOutcome{
 			Response:   directText,
 			Tools:      toolsRequested,
@@ -565,7 +568,8 @@ func (s *orchestratorServer) runChat(ctx context.Context, req *pb.ChatRequest) (
 	}
 
 	followup := prompts.FinalResponse(originQuery, userQuery, activeContext.Transcript, decisionText, toolResult)
-	finalText, err := callFinalMessage(s.cfg.LLMHTTPURL, s.cfg.LLMModel, followup, callTimeout)
+	s.publishStatePayload(req.GetSessionId(), "status", "Writing response", agentProgress{Phase: "response"})
+	completion, err := s.callFinalCompletion(ctx, followup, callTimeout)
 	if err != nil {
 		return chatOutcome{History: historyEntry{
 			Timestamp:  time.Now().Format(time.RFC3339),
@@ -578,10 +582,9 @@ func (s *orchestratorServer) runChat(ctx context.Context, req *pb.ChatRequest) (
 			Error:      fmt.Sprintf("llm_followup: %v", err),
 		}}, err
 	}
+	finalText := completion.Text
+	s.publishCompletionWarning(req.GetSessionId(), completion, 384)
 	finalText = appendInternetSources(finalText, successfulResults)
-	if !containsString(toolsRequested, "memory.remember") {
-		go s.maybeAutoSaveMemory(req.GetSessionId(), userQuery)
-	}
 	return chatOutcome{
 		Response:   finalText,
 		Tools:      toolsRequested,
@@ -598,6 +601,21 @@ func (s *orchestratorServer) runChat(ctx context.Context, req *pb.ChatRequest) (
 			Status:     "ok",
 		},
 	}, nil
+}
+
+func (s *orchestratorServer) callFinalCompletion(ctx context.Context, prompt string, timeout time.Duration) (llm.Completion, error) {
+	if s.callFinalMessage != nil {
+		text, err := s.callFinalMessage(s.cfg.LLMHTTPURL, s.cfg.LLMModel, prompt, timeout)
+		return llm.Completion{Text: text}, err
+	}
+	return llm.CallOnceResultWithMaxTokensContext(ctx, s.cfg.LLMHTTPURL, s.cfg.LLMModel, prompt, 384, timeout)
+}
+
+func (s *orchestratorServer) publishCompletionWarning(sessionID string, completion llm.Completion, outputLimit int) {
+	progress := progressForCompletion(completion, s.cfg.LLMContextTokens, outputLimit)
+	if progress.Warning != "" {
+		s.publishStatePayload(sessionID, "status", "Model limit warning", progress)
+	}
 }
 
 func internetDisabledOutcome(sessionID, userQuery string, messages []*pb.ChatMessage, decision string) chatOutcome {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	orchdb "eve-beemo/src/orchestrator/db"
@@ -10,7 +11,8 @@ func TestParseAgentControlRecognizesExplicitWholeUtterances(t *testing.T) {
 	tests := map[string]agentControl{
 		"/code":                   {action: "code"},
 		"Enter programming mode.": {action: "code"},
-		"exit code mode":          {action: "chat"},
+		"exit code mode":          {action: "normal"},
+		"/research vector search": {action: "research", target: "vector search"},
 		"switch projects":         {action: "switch"},
 		"/switch memory_palace":   {action: "switch", target: "memory_palace"},
 		"/internet":               {action: "internet"},
@@ -35,6 +37,18 @@ func TestParseAgentControlDoesNotCaptureProgrammingDiscussion(t *testing.T) {
 		if command, ok := parseAgentControl(input); ok {
 			t.Fatalf("unexpected control for %q: %#v", input, command)
 		}
+	}
+}
+
+func TestInternetConfigurationMessage(t *testing.T) {
+	if got := internetConfigurationMessage("tavily", "key"); got != "" {
+		t.Fatalf("configured Tavily returned message %q", got)
+	}
+	if got := internetConfigurationMessage("tavily", ""); !strings.Contains(got, "TAVILY_API_KEY") {
+		t.Fatalf("missing Tavily key returned message %q", got)
+	}
+	if got := internetConfigurationMessage("openai", "key"); !strings.Contains(got, "not supported") {
+		t.Fatalf("unsupported provider returned message %q", got)
 	}
 }
 
