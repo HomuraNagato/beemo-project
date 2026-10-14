@@ -144,6 +144,11 @@ init_models() {
 
   download_model "reasoning" "$(config_value llm model)" "$vllm_image"
   download_model "embedding" "$(config_value embedding model)" "$vllm_image"
+  if [ "$FORCE_DOWNLOAD" -eq 1 ]; then
+    "$ROOT_DIR/scripts/download-kokoro.sh" --force
+  else
+    "$ROOT_DIR/scripts/download-kokoro.sh"
+  fi
 }
 
 printf 'Initializing Beemo using %s stack\n' "$ACCEL"

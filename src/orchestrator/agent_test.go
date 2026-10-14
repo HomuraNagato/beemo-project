@@ -142,7 +142,7 @@ func TestRunAgentNormalUsesBoundedToolLoop(t *testing.T) {
 func TestConversationAgentGuardsRequiredInternetEvidence(t *testing.T) {
 	responses := []string{
 		`{"type":"final","text":"Try Imaginary Garden."}`,
-		`{"type":"tool","tool":"internet.search","args":{"query":"restaurants near Elmhurst NY currently open"}}`,
+		`{"tool":"internet.search","tool":"search_query":"restaurants near Elmhurst NY currently open"}`,
 		`{"type":"final","text":"The current evidence supports Example Garden [1]."}`,
 	}
 	toolExecutor := &fakeAgentTools{results: []orchtools.Result{{
@@ -171,7 +171,16 @@ func TestConversationAgentGuardsRequiredInternetEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(responses) != 0 || len(toolExecutor.requests) != 1 {
-		t.Fatalf("expected rejected final followed by one search and cited answer; responses=%d requests=%#v", len(responses), toolExecutor.requests)
+		t.Fatalf("expected rejected final followed by recovered search and cited answer; responses=%d requests=%#v", len(responses), toolExecutor.requests)
+	}
+	var searchArgs struct {
+		Query string `json:"query"`
+	}
+	if err := json.Unmarshal(toolExecutor.requests[0].Args, &searchArgs); err != nil {
+		t.Fatal(err)
+	}
+	if searchArgs.Query != "What's a good restaurant near Elmhurst NY?" {
+		t.Fatalf("recovered search used unexpected query %q", searchArgs.Query)
 	}
 	if got := assistantEventText(stream.events); !strings.Contains(got, "Example Garden [1]") {
 		t.Fatalf("unexpected grounded answer %q", got)
@@ -190,6 +199,24 @@ func TestConversationAgentGuardsRequiredInternetEvidence(t *testing.T) {
 		if payload.Progress.Step != 2 || !strings.Contains(string(payload.Args), "Elmhurst") {
 			t.Fatalf("tool event omitted progress or args: %#v", payload)
 		}
+	}
+}
+
+func TestConversationAgentDoesNotExposeMalformedFinalDecision(t *testing.T) {
+	server := &orchestratorServer{
+		cfg: config.Config{LLMHTTPURL: "http://reasoning", LLMModel: "test", LLMTimeoutMs: 1000, NormalMaxRounds: 1, CodeMaxTokens: 128},
+		callAgentCompletion: func(context.Context, string, string, string, int, time.Duration) (string, error) {
+			return `{"tool":"internet.search","tool":"search_query":"current news"}`, nil
+		},
+	}
+	stream := &recordingAgentStream{ctx: context.Background()}
+	req := &pb.AgentRequest{SessionId: "malformed-final-test", Messages: []*pb.ChatMessage{{Role: "user", Content: "Tell me something timeless."}}}
+	if err := server.runConversationAgent(req, stream, server.conversationProfile("normal")); err != nil {
+		t.Fatal(err)
+	}
+	answer := assistantEventText(stream.events)
+	if strings.Contains(answer, `"tool"`) || !strings.Contains(answer, "invalid response") {
+		t.Fatalf("malformed decision was exposed to the user: %q", answer)
 	}
 }
 
@@ -221,6 +248,41 @@ func TestConversationAgentRequiresCitationAfterInternetSearch(t *testing.T) {
 	}
 	if len(responses) != 0 || !strings.Contains(assistantEventText(stream.events), "[1]") {
 		t.Fatalf("expected uncited final to be rejected, responses=%d answer=%q", len(responses), assistantEventText(stream.events))
+	}
+}
+
+func TestConversationAgentAcceptsCitedPlainTextOnFinalGroundedRound(t *testing.T) {
+	responses := []string{
+		`{"type":"final","text":"A current answer."}`,
+		`{"tool":"internet.search","tool":"search_query":"current news"}`,
+		`{"type":"final","text":"A summary without a citation."}`,
+		`A concise current summary.`,
+	}
+	server := &orchestratorServer{
+		cfg: config.Config{LLMHTTPURL: "http://reasoning", LLMModel: "test", LLMTimeoutMs: 1000, LLMContextTokens: 2048, NormalMaxRounds: 4, CodeMaxTokens: 1024},
+		tools: &fakeAgentTools{results: []orchtools.Result{{
+			Action: "internet.search", Output: "[1] Current report\nEvidence:\nVerified detail.",
+			Sources: []orchtools.Source{{Title: "Current report", URL: "https://example.test/current"}},
+		}}},
+		callAgentCompletion: func(_ context.Context, _, _, prompt string, _ int, _ time.Duration) (string, error) {
+			response := responses[0]
+			responses = responses[1:]
+			if len(responses) == 0 && !strings.Contains(prompt, "Return only the final answer text") {
+				t.Fatalf("final grounded prompt retained the JSON envelope: %s", prompt)
+			}
+			return response, nil
+		},
+	}
+	stream := &recordingAgentStream{ctx: context.Background()}
+	req := &pb.AgentRequest{
+		SessionId: "plain-final-test", Messages: []*pb.ChatMessage{{Role: "user", Content: "What is in the news right now?"}},
+		Options: map[string]string{"internet_enabled": "true"},
+	}
+	if err := server.runConversationAgent(req, stream, server.conversationProfile("normal")); err != nil {
+		t.Fatal(err)
+	}
+	if got := assistantEventText(stream.events); !strings.Contains(got, "concise current summary.") || !strings.Contains(got, "Sources:") {
+		t.Fatalf("unexpected grounded plain-text answer %q", got)
 	}
 }
 
@@ -278,7 +340,7 @@ func TestConversationPromptIncludesCoreContextAndInternetConditionally(t *testin
 		Messages: []*pb.ChatMessage{{Role: "user", Content: "find it"}},
 		Options:  map[string]string{"core_context": "I prefer concise answers.", "internet_enabled": "true"},
 	}
-	prompt := buildConversationAgentPrompt(req, nil, conversationProfile{name: "normal", maxRounds: 4}, evidencePolicy{Level: evidencePreferred, Tool: "internet.search", Reason: "test"}, 1)
+	prompt := buildConversationAgentPrompt(req, nil, conversationProfile{name: "normal", maxRounds: 4, maxTokens: 1024}, evidencePolicy{Level: evidencePreferred, Tool: "internet.search", Reason: "test"}, 1, 8192)
 	for _, expected := range []string{"I prefer concise answers.", "internet.search", "Current local date and time", "Evidence requirement: preferred", "Prior assistant messages are conversational context, not proof", "Round: 1 of 4"} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("prompt missing %q", expected)
@@ -459,5 +521,29 @@ func TestCodeAgentPromptUsesTargetedSearchAndStaysBounded(t *testing.T) {
 	}
 	if strings.Contains(prompt, `"query":"RunAgent"`) {
 		t.Fatal("prompt retained a concrete search example")
+	}
+}
+
+func TestStreamableFinalTextDecodesPartialJSON(t *testing.T) {
+	tests := []struct {
+		name     string
+		response string
+		want     string
+		final    bool
+	}{
+		{name: "plain final", response: "A direct answer.", want: "A direct answer.", final: true},
+		{name: "tool decision", response: `{"type":"tool","tool":"weather","args":{`, final: false},
+		{name: "partial final", response: `{"type":"final","text":"First sentence. Sec`, want: "First sentence. Sec", final: true},
+		{name: "escaped text", response: `{"type":"final","text":"Say \"hello\". Path C:\\temp`, want: `Say "hello". Path C:\temp`, final: true},
+		{name: "incomplete escape", response: `{"type":"final","text":"Wait` + "\\", want: "Wait", final: true},
+		{name: "markdown envelope", response: "```json\n{\"type\":\"final\",\"text\":\"hidden\"}", final: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, final := streamableFinalText(test.response)
+			if got != test.want || final != test.final {
+				t.Fatalf("streamableFinalText() = %q, %v; want %q, %v", got, final, test.want, test.final)
+			}
+		})
 	}
 }

@@ -4,6 +4,7 @@ llm:
   provider: llamacpp
   model: Qwen2.5-1.5B-Instruct.Q4_K_M.gguf
   timeout_ms: 120000
+  context_tokens: 2048
 
 routing:
   deterministic_tool_shortcuts: false

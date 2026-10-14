@@ -67,6 +67,31 @@ func TestUpUsesExistingMemoryPalaceComposeAfterModelServices(t *testing.T) {
 	}
 }
 
+func TestUpStartsCompleteVoiceStack(t *testing.T) {
+	runner := &recordingRunner{}
+	manager := Manager{
+		Paths:   Paths{BeemoRoot: t.TempDir()},
+		Profile: Profile{Name: "legion-go", ComposeFiles: []string{"docker-compose.yaml"}},
+		Runner:  runner,
+		Output:  io.Discard,
+		Client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("ok"))}, nil
+		})},
+	}
+
+	if err := manager.Up(context.Background(), UpOptions{Voice: true, Timeout: time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	commands := make([]string, 0, len(runner.commands))
+	for _, command := range runner.commands {
+		commands = append(commands, command.name+" "+strings.Join(command.args, " "))
+	}
+	joined := strings.Join(commands, "\n")
+	if !strings.Contains(joined, "eve-asr eve-tts eve-wakeword") {
+		t.Fatalf("expected ASR, TTS, and wakeword services to start together, got %#v", runner.commands)
+	}
+}
+
 func TestRestartRoutesMemoryToItsOwnComposeProject(t *testing.T) {
 	runner := &recordingRunner{}
 	manager := Manager{Paths: Paths{BeemoRoot: t.TempDir(), MemoryPalaceRoot: "/memory"}, Profile: Profile{Name: "garnetmoon"}, Runner: runner}

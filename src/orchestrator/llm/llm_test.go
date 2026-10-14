@@ -98,6 +98,39 @@ func TestCallOnceResultReturnsUsageAndFinishReason(t *testing.T) {
 	}
 }
 
+func TestStreamResultEmitsDeltasAndCollectsCompletion(t *testing.T) {
+	var got chatRequest
+	withMockHTTPClient(t, func(req *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(req.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		body := strings.Join([]string{
+			`data: {"choices":[{"delta":{"content":"First sentence. "},"finish_reason":""}]}`,
+			`data: {"choices":[{"delta":{"content":"Second sentence."},"finish_reason":"stop"}]}`,
+			`data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14}}`,
+			`data: [DONE]`,
+		}, "\n\n")
+		response := jsonResponse(http.StatusOK, body)
+		response.Header.Set("Content-Type", "text/event-stream")
+		return response, nil
+	})
+
+	var deltas []string
+	result, err := StreamResultWithMaxTokensContext(t.Context(), "http://llm.test/v1/chat/completions", "model", "prompt", 128, time.Second, func(delta string) error {
+		deltas = append(deltas, delta)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Stream || result.Text != "First sentence. Second sentence." || result.FinishReason != "stop" {
+		t.Fatalf("unexpected streamed request/result: request=%+v result=%+v", got, result)
+	}
+	if strings.Join(deltas, "") != result.Text || result.Usage.TotalTokens != 14 {
+		t.Fatalf("unexpected deltas or usage: deltas=%q result=%+v", deltas, result)
+	}
+}
+
 func TestCallChatWithGrammarSendsStructuredOutputs(t *testing.T) {
 	var got chatRequest
 	withMockHTTPClient(t, func(req *http.Request) (*http.Response, error) {

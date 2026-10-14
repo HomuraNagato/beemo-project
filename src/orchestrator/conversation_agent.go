@@ -4,12 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	pb "eve-beemo/proto/gen/proto"
 	"eve-beemo/src/orchestrator/llm"
 	orchtools "eve-beemo/src/orchestrator/tools"
+)
+
+var (
+	agentTypeFieldPattern = regexp.MustCompile(`"type"\s*:\s*"([^"]*)"`)
+	agentTextFieldPattern = regexp.MustCompile(`"text"\s*:\s*"`)
 )
 
 type conversationProfile struct {
@@ -62,8 +69,27 @@ func (s *orchestratorServer) runConversationAgent(req *pb.AgentRequest, stream p
 		if err := s.sendAgentEvent(ctx, stream, req.GetSessionId(), "status", "", message, progress, ""); err != nil {
 			return err
 		}
-		prompt := buildConversationAgentPrompt(req, observations, profile, policy, round)
-		decisionText, completion, err := s.callConversationCompletion(ctx, prompt, profile.maxTokens)
+		prompt := buildConversationAgentPrompt(req, observations, profile, policy, round, s.cfg.LLMContextTokens)
+		var decisionText string
+		var completion llm.Completion
+		var err error
+		if s.callAgentCompletion == nil {
+			pendingResponse := ""
+			emittedText := ""
+			completion, err = llm.StreamResultWithMaxTokensContext(ctx, s.cfg.LLMHTTPURL, s.cfg.LLMModel, prompt, profile.maxTokens, time.Duration(s.cfg.LLMTimeoutMs)*time.Millisecond, func(delta string) error {
+				pendingResponse += delta
+				text, final := streamableFinalText(pendingResponse)
+				if !final || !strings.HasPrefix(text, emittedText) || len(text) == len(emittedText) {
+					return nil
+				}
+				delta = text[len(emittedText):]
+				emittedText = text
+				return s.sendAgentEvent(ctx, stream, req.GetSessionId(), "assistant_delta", "", delta, nil, "")
+			})
+			decisionText = completion.Text
+		} else {
+			decisionText, completion, err = s.callConversationCompletion(ctx, prompt, profile.maxTokens)
+		}
 		if err != nil {
 			return s.sendAgentEvent(ctx, stream, req.GetSessionId(), "error", "", fmt.Sprintf("%s model failed: %v", profile.name, err), progress, "")
 		}
@@ -75,11 +101,21 @@ func (s *orchestratorServer) runConversationAgent(req *pb.AgentRequest, stream p
 
 		decision, parseErr := parseAgentDecision(decisionText)
 		if parseErr != nil {
-			if round == profile.maxRounds && strings.TrimSpace(decisionText) != "" {
-				return s.finishConversationAgent(ctx, req, stream, profile, strings.TrimSpace(decisionText), observations, modelProgress)
+			if text, ok := groundedPlainFinal(decisionText, observations, policy, internetEnabled, round == profile.maxRounds); ok {
+				s.log().Info("orch.agent.round", "session", req.GetSessionId(), "profile", profile.name, "round", round, "decision", "plain_final", "ms", time.Since(roundStarted).Milliseconds())
+				return s.finishConversationAgent(ctx, req, stream, profile, text, observations, modelProgress)
 			}
-			observations = appendBoundedObservations(observations, agentObservation{Tool: "agent", Error: "invalid decision: " + parseErr.Error()}, 12)
-			continue
+			var recovered bool
+			decision, recovered = requiredInternetFallback(req, policy, internetEnabled, observations)
+			if !recovered {
+				if round == profile.maxRounds {
+					return s.finishConversationAgent(ctx, req, stream, profile,
+						"I could not complete a reliable answer because the model returned an invalid response.", observations,
+						agentProgress{Phase: "complete", Step: round, MaxSteps: profile.maxRounds, Warning: "invalid_decision", Incomplete: true})
+				}
+				observations = appendBoundedObservations(observations, agentObservation{Tool: "agent", Error: "invalid decision: " + parseErr.Error()}, 12)
+				continue
+			}
 		}
 		if decision.Type == "final" {
 			if policy.needsInternet(internetEnabled) {
@@ -110,8 +146,12 @@ func (s *orchestratorServer) runConversationAgent(req *pb.AgentRequest, stream p
 			return s.finishConversationAgent(ctx, req, stream, profile, text, observations, modelProgress)
 		}
 		if decision.Type != "tool" || strings.TrimSpace(decision.Tool) == "" {
-			observations = appendBoundedObservations(observations, agentObservation{Tool: "agent", Error: "decision must be a final answer or one available tool call"}, 12)
-			continue
+			var recovered bool
+			decision, recovered = requiredInternetFallback(req, policy, internetEnabled, observations)
+			if !recovered {
+				observations = appendBoundedObservations(observations, agentObservation{Tool: "agent", Error: "decision must be a final answer or one available tool call"}, 12)
+				continue
+			}
 		}
 		if round == profile.maxRounds {
 			text := "I reached the " + profile.name + " round limit before completing the answer."
@@ -161,6 +201,95 @@ func (s *orchestratorServer) runConversationAgent(req *pb.AgentRequest, stream p
 	return s.finishConversationAgent(ctx, req, stream, profile, "I reached the round limit before completing the answer.", observations, agentProgress{Phase: "complete", Step: profile.maxRounds, MaxSteps: profile.maxRounds, Warning: "tool_limit", Incomplete: true})
 }
 
+func streamableFinalText(response string) (string, bool) {
+	trimmed := strings.TrimLeft(response, " \t\r\n")
+	if trimmed == "" || strings.HasPrefix(trimmed, "`") {
+		return "", false
+	}
+	if !strings.HasPrefix(trimmed, "{") {
+		return response, true
+	}
+
+	typeMatch := agentTypeFieldPattern.FindStringSubmatch(trimmed)
+	if len(typeMatch) != 2 || typeMatch[1] != "final" {
+		return "", false
+	}
+	textMatch := agentTextFieldPattern.FindStringIndex(trimmed)
+	if textMatch == nil {
+		return "", true
+	}
+	text, _ := decodePartialJSONString(trimmed[textMatch[1]:])
+	return text, true
+}
+
+func decodePartialJSONString(raw string) (string, bool) {
+	validEnd := 0
+	complete := false
+	for index := 0; index < len(raw); {
+		switch raw[index] {
+		case '"':
+			validEnd = index
+			complete = true
+			index = len(raw)
+		case '\\':
+			if index+1 >= len(raw) {
+				index = len(raw)
+				continue
+			}
+			width := 2
+			if raw[index+1] == 'u' {
+				width = 6
+			}
+			if index+width > len(raw) {
+				index = len(raw)
+				continue
+			}
+			index += width
+			validEnd = index
+		default:
+			index++
+			validEnd = index
+		}
+	}
+	decoded, err := strconv.Unquote(`"` + raw[:validEnd] + `"`)
+	if err != nil {
+		return "", false
+	}
+	return decoded, complete
+}
+
+func requiredInternetFallback(req *pb.AgentRequest, policy evidencePolicy, internetEnabled bool, observations []agentObservation) (agentDecision, bool) {
+	if !policy.needsInternet(internetEnabled) {
+		return agentDecision{}, false
+	}
+	for _, observation := range observations {
+		if observation.Tool == "internet.search" {
+			return agentDecision{}, false
+		}
+	}
+	query := strings.TrimSpace(latestUserQuery(req.GetMessages()))
+	if query == "" {
+		return agentDecision{}, false
+	}
+	args, err := json.Marshal(map[string]string{"query": query})
+	if err != nil {
+		return agentDecision{}, false
+	}
+	return agentDecision{Type: "tool", Tool: "internet.search", Args: args}, true
+}
+
+func groundedPlainFinal(text string, observations []agentObservation, policy evidencePolicy, internetEnabled, finalRound bool) (string, bool) {
+	if !finalRound || !policy.needsInternet(internetEnabled) {
+		return "", false
+	}
+	_, grounded := successfulInternetEvidence(observations)
+	trimmed := strings.TrimSpace(text)
+	if !grounded || trimmed == "" || strings.HasPrefix(trimmed, "{") {
+		return "", false
+	}
+	return trimmed, true
+}
+
 func (s *orchestratorServer) callConversationCompletion(ctx context.Context, prompt string, maxTokens int) (string, llm.Completion, error) {
 	if s.callAgentCompletion != nil {
 		text, err := s.callAgentCompletion(ctx, s.cfg.LLMHTTPURL, s.cfg.LLMModel, prompt, maxTokens, time.Duration(s.cfg.LLMTimeoutMs)*time.Millisecond)
@@ -190,9 +319,13 @@ func (s *orchestratorServer) finishConversationAgent(ctx context.Context, req *p
 	return s.sendAgentEvent(ctx, stream, req.GetSessionId(), "complete", "", "complete", progress, "")
 }
 
-func buildConversationAgentPrompt(req *pb.AgentRequest, observations []agentObservation, profile conversationProfile, policy evidencePolicy, round int) string {
+func buildConversationAgentPrompt(req *pb.AgentRequest, observations []agentObservation, profile conversationProfile, policy evidencePolicy, round, contextTokens int) string {
 	messages, _ := json.Marshal(compactAgentMessages(req.GetMessages(), 18000))
-	results, _ := json.Marshal(compactAgentObservations(observations, 18000))
+	observationBudget := 18000
+	if contextTokens > 0 {
+		observationBudget = min(observationBudget, max(2000, (contextTokens-profile.maxTokens-800)*3))
+	}
+	results, _ := json.Marshal(compactAgentObservations(observations, observationBudget))
 	coreContext := strings.TrimSpace(req.GetOptions()["core_context"])
 	internetTool := ""
 	internetStatus := "Internet search is disabled for this session."
@@ -204,13 +337,20 @@ func buildConversationAgentPrompt(req *pb.AgentRequest, observations []agentObse
 	if profile.name == "research" {
 		profileGuidance = "Gather and compare enough evidence to answer rigorously. Refine searches when evidence is incomplete, then synthesize with source-number citations. Do not repeat equivalent searches."
 	}
+	responseContract := `Return exactly one JSON object without markdown. To use a tool: {"type":"tool","tool":"name","args":{...}}. To answer: {"type":"final","text":"answer"}.`
 	forceFinal := ""
 	if round == profile.maxRounds {
-		forceFinal = "This is the final round. Return type=\"final\" using the evidence available; do not call another tool."
+		_, grounded := successfulInternetEvidence(observations)
+		if policy.needsInternet(strings.EqualFold(req.GetOptions()["internet_enabled"], "true")) && grounded {
+			responseContract = "Return only the final answer text without JSON or markdown fences. Cite supporting internet evidence with [n] references."
+			forceFinal = "This is the final round. Answer using the evidence available; do not call another tool."
+		} else {
+			forceFinal = "This is the final round. Return type=\"final\" using the evidence available; do not call another tool."
+		}
 	}
 	return fmt.Sprintf(`You are Beemo in %s profile.
 %s
-Return exactly one JSON object without markdown. To use a tool: {"type":"tool","tool":"name","args":{...}}. To answer: {"type":"final","text":"answer"}.
+%s
 %s
 
 Current local date and time: %s
@@ -231,7 +371,7 @@ For external entities, confirm that evidence matches the requested identity, cat
 Round: %d of %d
 Conversation JSON: %s
 Tool observations JSON: %s
-Next decision:`, profile.name, profileGuidance, forceFinal, time.Now().Format(time.RFC1123Z), internetStatus, policy.promptText(), coreContext, internetTool, round, profile.maxRounds, messages, results)
+Next decision:`, profile.name, profileGuidance, responseContract, forceFinal, time.Now().Format(time.RFC1123Z), internetStatus, policy.promptText(), coreContext, internetTool, round, profile.maxRounds, messages, results)
 }
 
 func naturalResearchQuery(input string) (string, bool) {

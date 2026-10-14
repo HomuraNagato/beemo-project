@@ -503,7 +503,7 @@ func (s *orchestratorServer) sendAgentEvent(ctx context.Context, stream pb.Orche
 		SessionId: sessionID, Type: eventType, Tool: tool, Text: text,
 		PayloadJson: payloadJSON, TimestampUnixMs: time.Now().UnixMilli(), ApprovalId: approvalID,
 	}
-	if s.agentStore != nil {
+	if s.agentStore != nil && eventType != "assistant_delta" {
 		if err := s.agentStore.AppendEvent(ctx, sessionID, eventType, tool, text, payload); err != nil {
 			s.log().Warn("orch.agent.event_store", "session", sessionID, "type", eventType, "err", err)
 		}

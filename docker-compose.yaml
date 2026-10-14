@@ -73,6 +73,8 @@ services:
     stdin_open: true
     tty: true
     privileged: true
+    dns:
+      - ${BEEMO_DNS_SERVER:-1.1.1.1}
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       INTERNET_SEARCH_PROVIDER: ${INTERNET_SEARCH_PROVIDER:-tavily}
@@ -84,8 +86,8 @@ services:
     ports:
       - 5013:5013
     build:
-      context: ./compose/orchestrator
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: compose/orchestrator/Dockerfile
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -119,23 +121,21 @@ services:
     volumes:
       - ./.beemo-session:/run/beemo/session-id
 
-  #  eve-tts:
-  #    container_name: eve-tts
-  #    hostname: eve-tts
-  #    image: eve-tts
-  #    ports:
-  #      - 5018:5018
-  #    build:
-  #      context: ./compose/tts
-  #      dockerfile: Dockerfile
-  #    privileged: true
-  #    deploy:
-  #      resources:
-  #        reservations:
-  #          devices:
-  #            - driver: nvidia
-  #              count: all
-  #              capabilities: [gpu]
+  eve-tts:
+    container_name: eve-tts
+    hostname: eve-tts
+    image: eve-tts
+    ports:
+      - 5018:5018
+    build:
+      context: .
+      dockerfile: compose/tts/Dockerfile
+    environment:
+      KOKORO_SPEAKER_ID: ${KOKORO_SPEAKER_ID:-4}
+      KOKORO_SPEED: ${KOKORO_SPEED:-1.05}
+      KOKORO_NUM_THREADS: ${KOKORO_NUM_THREADS:-4}
+    volumes:
+      - ./models:/models:ro
 
   eve-asr:
     container_name: eve-asr
@@ -167,6 +167,7 @@ services:
     depends_on:
       - eve-asr
       - eve-orchestrator
+      - eve-tts
     volumes:
       - ./config:/config:ro
       - ./models:/models

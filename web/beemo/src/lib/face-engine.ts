@@ -30,7 +30,7 @@ const states: Record<FaceExpression, FaceShape> = {
   sad: shape({ eyeScaleY: 0.94, browLiftLeft: 0.018, browLiftRight: 0.018, browTiltLeft: -0.055, browTiltRight: 0.055, browWeight: 0.72, mouthCurve: -0.54, mouthWidth: 0.28, mouthY: 0.54, glow: 0.25, pulse: 0.08, scanSpeed: 0.7 }),
   worried: shape({ eyeScaleX: 0.96, eyeScaleY: 1.02, browLiftLeft: 0.03, browLiftRight: 0.03, browTiltLeft: -0.105, browTiltRight: 0.105, browWeight: 1, mouthCurve: -0.72, mouthWidth: 0.255, mouthY: 0.54, glow: 0.32, pulse: 0.12, scanSpeed: 1.3 }),
   surprised: shape({ eyeY: 0.305, eyeScaleX: 1.03, eyeScaleY: 1.08, browLiftLeft: 0.055, browLiftRight: 0.055, browWeight: 0.58, mouthCurve: 0, mouthOpen: 0.78, mouthWidth: 0.16, mouthY: 0.515, glow: 0.62, pulse: 0.28, scanSpeed: 1.8 }),
-  listening: shape({ eyeScaleX: 0.96, eyeScaleY: 0.84, browLiftLeft: 0.024, browLiftRight: 0.024, browWeight: 0.46, mouthCurve: 0.03, mouthWidth: 0.22, mouthY: 0.52, glow: 0.38, pulse: 0.2, scanSpeed: 0.9 }),
+  listening: shape({ eyeScaleX: 1.03, eyeScaleY: 1.08, browLiftLeft: 0.035, browLiftRight: 0.035, browWeight: 0.56, mouthCurve: 0.06, mouthWidth: 0.22, mouthY: 0.52, glow: 0.62, pulse: 0.5, scanSpeed: 2.4 }),
   thinking: shape({ eyeY: 0.3, eyeScaleX: 0.78, eyeScaleY: 0.82, browLiftLeft: 0.065, browLiftRight: -0.025, browTiltLeft: -0.035, browTiltRight: 0.025, browWeight: 1, mouthCurve: 0.04, mouthWidth: 0.2, mouthY: 0.525, glow: 0.5, pulse: 0.35, scanSpeed: 2.2 }),
   hidden: shape({ eyeScaleX: 0, eyeScaleY: 0, mouthCurve: 0, mouthWidth: 0, glow: 0.18, pulse: 0.05, scanSpeed: 0.5 }),
 };
@@ -66,6 +66,7 @@ export function mountFace(canvas: HTMLCanvasElement, textureUrl: string): FaceCo
   let from = { ...states.calm };
   let target = { ...states.calm };
   let transitionStart = performance.now();
+  let transitionDuration = 420;
   let talking = false;
   let talkingLevel = 0;
   let talkingFrom = 0;
@@ -178,7 +179,7 @@ export function mountFace(canvas: HTMLCanvasElement, textureUrl: string): FaceCo
   function render(time: number): void {
     if (stopped) return;
     const bounds = resize();
-    active = interpolate(from, target, Math.min((time - transitionStart) / 850, 1));
+    active = interpolate(from, target, Math.min((time - transitionStart) / transitionDuration, 1));
     talkingLevel = lerp(talkingFrom, talkingTarget, ease(Math.min((time - talkingStart) / 320, 1)));
     if (talking && time >= nextSpeechChange) {
       speechTarget = speechTarget > 0 ? 0 : random(0.68, 1);
@@ -222,6 +223,7 @@ export function mountFace(canvas: HTMLCanvasElement, textureUrl: string): FaceCo
       target = { ...states[next] };
       expression = next;
       transitionStart = performance.now();
+      transitionDuration = next === "listening" ? 180 : 420;
       if (next === "hidden") this.setTalking(false);
     },
     setTalking(next) {

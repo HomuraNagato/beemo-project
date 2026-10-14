@@ -4,6 +4,12 @@ from typing import Iterable, List, Optional
 
 WORD_RE = re.compile(r"[a-z0-9]+")
 QUESTION_RE = re.compile(r"\?\s*$")
+SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])(?:\s+|$)")
+FENCED_CODE_RE = re.compile(r"```.*?```", re.DOTALL)
+MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^\)]+\)")
+SOURCE_APPENDIX_RE = re.compile(r"(?ims)\n\s*(?:#{1,6}\s*)?sources\s*:\s*\n.*$")
+CITATION_RE = re.compile(r"\s*\[\d+(?:\s*,\s*\d+)*\]")
+LEADING_EXPRESSION_RE = re.compile(r"^\s*\[(?:calm|sad|worried|surprised|listening|thinking|hidden)\]\s*", re.IGNORECASE)
 LEADING_WAKE_NOISE_RE = re.compile(
     r"^\s*(?:(?:hey|hay|hi|okay|ok|k|a)\W+)?"
     r"(?:bee\W*mo+h?|be+mo+h?|b+mo+h?|b\W*mole?h?|bimo|beemo|beemoh|bmo|pmo|pimo)"
@@ -65,3 +71,25 @@ def strip_leading_wake_noise(transcript: str) -> str:
 
 def should_listen_for_followup(response: str) -> bool:
     return bool(QUESTION_RE.search(response.strip()))
+
+
+def take_complete_sentences(buffer: str) -> tuple[List[str], str]:
+    matches = list(SENTENCE_BOUNDARY_RE.finditer(buffer))
+    if not matches:
+        return [], buffer
+    cutoff = matches[-1].end()
+    complete = buffer[:cutoff].strip()
+    remainder = buffer[cutoff:]
+    return [part.strip() for part in SENTENCE_BOUNDARY_RE.split(complete) if part.strip()], remainder
+
+
+def prepare_tts_text(response: str) -> str:
+    text = LEADING_EXPRESSION_RE.sub("", response.strip())
+    text = SOURCE_APPENDIX_RE.sub("", text)
+    text = CITATION_RE.sub("", text)
+    text = FENCED_CODE_RE.sub(" I included code in the text response. ", text)
+    text = MARKDOWN_LINK_RE.sub(r"\1", text)
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    text = re.sub(r"(?m)^\s{0,3}(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+)", "", text)
+    text = re.sub(r"[*_~]", "", text)
+    return re.sub(r"\s+", " ", text).strip()

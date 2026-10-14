@@ -32,6 +32,7 @@ beemo_set_profile "$PROFILE"
 
 docker compose "${BEEMO_COMPOSE_FILES[@]}" stop \
   eve-wakeword \
+  eve-tts \
   eve-asr \
   eve-orchestrator \
   eve-reasoning \

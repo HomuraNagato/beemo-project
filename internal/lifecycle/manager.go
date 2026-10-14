@@ -110,7 +110,7 @@ func (m Manager) Up(ctx context.Context, options UpOptions) error {
 		}
 	}
 	if options.Voice {
-		if err := m.composeUp(ctx, []string{"eve-asr", "eve-wakeword"}, options.Build); err != nil {
+		if err := m.composeUp(ctx, []string{"eve-asr", "eve-tts", "eve-wakeword"}, options.Build); err != nil {
 			return err
 		}
 	}
@@ -121,7 +121,7 @@ func (m Manager) Up(ctx context.Context, options UpOptions) error {
 func (m Manager) Down(ctx context.Context, memory, ui, voice bool) error {
 	services := []string{}
 	if voice {
-		services = append(services, "eve-wakeword", "eve-asr")
+		services = append(services, "eve-wakeword", "eve-tts", "eve-asr")
 	}
 	if ui {
 		services = append(services, "eve-ui")
@@ -157,7 +157,7 @@ func (m Manager) Status(ctx context.Context) error {
 		{Name: "memory_palace", URL: "http://127.0.0.1:8013/health"},
 		{Name: "eve-ui", URL: "http://127.0.0.1:5017/healthz"},
 	}
-	containerNames := []string{"eve-db", "eve-reasoning", "eve-embedding", "eve-reranker", "memory_palace", "eve-ui", "eve-orchestrator", "eve-asr", "eve-wakeword"}
+	containerNames := []string{"eve-db", "eve-reasoning", "eve-embedding", "eve-reranker", "memory_palace", "eve-ui", "eve-orchestrator", "eve-asr", "eve-tts", "eve-wakeword"}
 	states := m.containerStates(ctx, containerNames)
 	m.printf("profile: %s\n", m.Profile.Name)
 	if sessionID, err := ReadSession(m.Paths); err == nil {
@@ -193,7 +193,7 @@ func (m Manager) Status(ctx context.Context) error {
 		}
 	}
 	m.printf("%-18s %-12s %s\n", "eve-orchestrator", orchestratorState, orchestratorHealth)
-	for _, name := range []string{"eve-asr", "eve-wakeword"} {
+	for _, name := range []string{"eve-asr", "eve-tts", "eve-wakeword"} {
 		m.printf("%-18s %-12s %s\n", name, states[name], "-")
 	}
 	return nil

@@ -11,6 +11,7 @@ export type AgentEventType =
   | "user"
   | "status"
   | "assistant"
+  | "assistant_delta"
   | "control"
   | "tool_start"
   | "tool_result"

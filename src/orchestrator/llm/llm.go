@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -35,6 +36,16 @@ type chatResponse struct {
 		Message struct {
 			Content string `json:"content"`
 		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
+	} `json:"choices"`
+	Usage Usage `json:"usage"`
+}
+
+type chatStreamResponse struct {
+	Choices []struct {
+		Delta struct {
+			Content string `json:"content"`
+		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage Usage `json:"usage"`
@@ -120,6 +131,95 @@ func CallOnceResultWithMaxTokensContext(ctx context.Context, httpURL, model, pro
 	)
 
 	return callChatResultContext(ctx, httpURL, body, timeout)
+}
+
+func StreamResultWithMaxTokensContext(ctx context.Context, httpURL, model, prompt string, maxTokens int, timeout time.Duration, onDelta func(string) error) (Completion, error) {
+	if httpURL == "" {
+		return Completion{}, fmt.Errorf("LLM_HTTP_URL missing")
+	}
+	if model == "" {
+		model = "llama-3.2.gguf"
+	}
+	if maxTokens <= 0 {
+		maxTokens = 384
+	}
+	payload := chatRequest{
+		Model:     model,
+		Messages:  []chatMessage{{Role: "user", Content: prompt}},
+		MaxTokens: maxTokens, Temperature: 0, Stream: true,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return Completion{}, err
+	}
+	slog.Info("llm.chat_stream_request", "model", model, "max_tokens", maxTokens, "temperature", 0, "prompt_chars", len(prompt), "prompt_preview", logPreview(prompt))
+	return callChatStreamContext(ctx, httpURL, body, timeout, onDelta)
+}
+
+func callChatStreamContext(ctx context.Context, httpURL string, body []byte, timeout time.Duration, onDelta func(string) error) (Completion, error) {
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, httpURL, bytes.NewReader(body))
+	if err != nil {
+		return Completion{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := newHTTPClient().Do(req)
+	if err != nil {
+		return Completion{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		responseBody, _ := io.ReadAll(resp.Body)
+		return Completion{}, fmt.Errorf("llm http status: %s body=%s", resp.Status, strings.TrimSpace(string(responseBody)))
+	}
+
+	var result Completion
+	var text strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 4096), 1<<20)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "[DONE]" {
+			break
+		}
+		var chunk chatStreamResponse
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			return Completion{}, fmt.Errorf("decode llm stream: %w", err)
+		}
+		if chunk.Usage.TotalTokens > 0 {
+			result.Usage = chunk.Usage
+		}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+		delta := chunk.Choices[0].Delta.Content
+		if chunk.Choices[0].FinishReason != "" {
+			result.FinishReason = chunk.Choices[0].FinishReason
+		}
+		if delta == "" {
+			continue
+		}
+		text.WriteString(delta)
+		if onDelta != nil {
+			if err := onDelta(delta); err != nil {
+				return Completion{}, err
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return Completion{}, err
+	}
+	result.Text = text.String()
+	return result, nil
 }
 
 func CallChatWithGrammar(httpURL, model, prompt, grammar string, timeout time.Duration) (string, error) {

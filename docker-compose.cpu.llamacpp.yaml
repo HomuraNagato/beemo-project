@@ -3,7 +3,7 @@ services:
   eve-reasoning:
     container_name: eve-reasoning
     hostname: eve-reasoning
-    image: ghcr.io/ggml-org/llama.cpp:server
+    image: ghcr.io/ggml-org/llama.cpp:server-vulkan
     privileged: true
     ports:
       - 5014:5014
@@ -16,6 +16,7 @@ services:
       REASONING_PORT: "5014"
       REASONING_HOST: 0.0.0.0
       LLAMA_CTX_SIZE: "2048"
+      LLAMA_GPU_LAYERS: ${LLAMA_GPU_LAYERS:-all}
     shm_size: 1g
     entrypoint: /entrypoint.sh
 

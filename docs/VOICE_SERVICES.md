@@ -1,9 +1,10 @@
 # Voice Services
 
-This repo now includes two containerized voice services:
+This repo includes three containerized voice services:
 
 - `eve-asr`: gRPC ASR service backed by `faster-whisper`
 - `eve-wakeword`: microphone listener that can trigger either from `openwakeword` or from a transcript-based wake phrase such as `hey beemo`, then forwards the request to `eve-orchestrator`
+- `eve-tts`: Kokoro text-to-speech served through the existing `eve.TTS` gRPC API
 
 ## Why this shape
 
@@ -68,4 +69,6 @@ hey beemo what time is it
 
 - `eve-wakeword` expects microphone access through PulseAudio/PipeWire. On SteamOS the default bind mount is `/run/user/1000/pulse/native`.
 - The first `eve-asr` startup may download the `small.en` Whisper model into `/models/faster-whisper`.
+- `beemo init` downloads the quantized English Kokoro model to `models/kokoro-int8-en-v0_19`. Speaker ID 4 (`af_sky`) is the default and can be changed with `KOKORO_SPEAKER_ID`.
+- The wakeword service stops microphone capture during playback so Beemo does not trigger on its own response.
 - If you want reliable `hey beemo` detection with `openwakeword`, you will usually want a custom `.onnx` model at `/models/wakeword/wakeword.onnx`. The upstream project ships built-in models for common phrases like `alexa`, `hey mycroft`, and `hey jarvis`, and documents custom model training separately: [openWakeWord README](https://github.com/dscripka/openWakeWord).

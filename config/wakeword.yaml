@@ -43,5 +43,10 @@ followup:
 services:
   asr_addr: eve-asr:5019
   orchestrator_addr: eve-orchestrator:5013
+  tts_addr: eve-tts:5018
   asr_timeout_secs: 60
   orchestrator_timeout_secs: 120
+  tts_timeout_secs: 120
+
+tts:
+  enabled: true

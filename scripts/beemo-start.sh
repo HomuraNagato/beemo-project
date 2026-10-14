@@ -116,7 +116,7 @@ wait_http "eve-embedding" "http://127.0.0.1:5021/health" "eve-embedding" 300
 wait_http "eve-reasoning" "http://127.0.0.1:5014/health" "eve-reasoning" 120
 
 if [ "$VOICE" = "1" ]; then
-  compose up -d --build eve-asr
+  compose up -d --build eve-asr eve-tts
 fi
 
 if [ "$RESTART_ORCH" = "1" ]; then

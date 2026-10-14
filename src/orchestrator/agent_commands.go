@@ -41,21 +41,18 @@ func parseSlashCommand(input string) (agentControl, bool) {
 func (s *orchestratorServer) ListAgentCommands(context.Context, *pb.CommandListRequest) (*pb.CommandListResponse, error) {
 	response := &pb.CommandListResponse{Commands: []*pb.AgentCommand{}}
 	for _, definition := range agentCommandRegistry {
-		if !definition.Discoverable || !s.agentCommandAvailable(definition) {
+		if !definition.Discoverable {
 			continue
 		}
+		description := definition.Description
+		if definition.Action == "internet" {
+			if message := internetConfigurationMessage(s.cfg.InternetProvider, s.cfg.InternetAPIKey); message != "" {
+				description = "Internet search unavailable: configure TAVILY_API_KEY."
+			}
+		}
 		response.Commands = append(response.Commands, &pb.AgentCommand{
-			Command: definition.Command, Description: definition.Description,
+			Command: definition.Command, Description: description,
 		})
 	}
 	return response, nil
-}
-
-func (s *orchestratorServer) agentCommandAvailable(definition agentCommandDefinition) bool {
-	switch definition.Action {
-	case "internet":
-		return internetConfigurationMessage(s.cfg.InternetProvider, s.cfg.InternetAPIKey) == ""
-	default:
-		return true
-	}
 }

@@ -8,7 +8,7 @@ import threading
 import time
 from collections import deque
 from concurrent import futures
-from typing import Optional, Set
+from typing import Callable, Optional, Set
 
 import grpc
 import numpy as np
@@ -18,10 +18,12 @@ from openwakeword.model import Model as OpenWakeWordModel
 
 from services.wakeword.logic import (
     extract_prompt,
+    prepare_tts_text,
     should_listen_for_followup,
     split_optional_phrases,
     split_phrases,
     strip_leading_wake_noise,
+    take_complete_sentences,
 )
 
 
@@ -185,11 +187,18 @@ class OrchestratorClient:
     def close(self) -> None:
         self.channel.close()
 
-    def chat(self, session_id: str, prompt: str) -> tuple[str, list[str], str, str]:
+    def chat(
+        self,
+        session_id: str,
+        prompt: str,
+        on_sentence: Optional[Callable[[str], None]] = None,
+    ) -> tuple[str, list[str], str, str, bool]:
         response_text = ""
         tools: list[str] = []
         status = "ok"
         error_kind = ""
+        pending_speech = ""
+        streamed_speech = False
         events = self.stub.RunAgent(
             agent_pb2.AgentRequest(
                 session_id=session_id,
@@ -198,7 +207,14 @@ class OrchestratorClient:
             timeout=self.timeout_secs,
         )
         for event in events:
-            if event.type == "assistant":
+            if event.type == "assistant_delta":
+                pending_speech += event.text
+                sentences, pending_speech = take_complete_sentences(pending_speech)
+                if on_sentence is not None:
+                    for sentence in sentences:
+                        on_sentence(sentence)
+                        streamed_speech = True
+            elif event.type == "assistant":
                 response_text = event.text.strip()
                 if event.payload_json:
                     try:
@@ -209,7 +225,55 @@ class OrchestratorClient:
                 status = "error"
                 error_kind = "orchestrator_agent"
                 response_text = event.text.strip()
-        return response_text, tools, status, error_kind
+        if on_sentence is not None and pending_speech.strip():
+            on_sentence(pending_speech.strip())
+            streamed_speech = True
+        return response_text, tools, status, error_kind, streamed_speech
+
+
+class TTSClient:
+    def __init__(self, addr: str, timeout_secs: int) -> None:
+        self.channel = grpc.insecure_channel(addr)
+        self.stub = agent_pb2_grpc.TTSStub(self.channel)
+        self.timeout_secs = timeout_secs
+
+    def close(self) -> None:
+        self.channel.close()
+
+    def play(self, session_id: str, text: str) -> None:
+        player: Optional[subprocess.Popen] = None
+        sample_rate_hz = 0
+        try:
+            chunks = self.stub.Speak(
+                agent_pb2.SpeakRequest(session_id=session_id, text=text),
+                timeout=self.timeout_secs,
+            )
+            for chunk in chunks:
+                if not chunk.pcm_s16le:
+                    continue
+                if player is None:
+                    sample_rate_hz = chunk.sample_rate_hz or 24000
+                    player = subprocess.Popen(
+                        [
+                            "paplay",
+                            "--raw",
+                            "--channels=1",
+                            "--format=s16le",
+                            f"--rate={sample_rate_hz}",
+                        ],
+                        stdin=subprocess.PIPE,
+                    )
+                elif chunk.sample_rate_hz and chunk.sample_rate_hz != sample_rate_hz:
+                    raise RuntimeError("TTS changed sample rate during playback")
+                assert player.stdin is not None
+                player.stdin.write(chunk.pcm_s16le)
+        finally:
+            if player is not None:
+                if player.stdin is not None:
+                    player.stdin.close()
+                exit_code = player.wait(timeout=10)
+                if exit_code != 0:
+                    raise RuntimeError(f"paplay exited with status {exit_code}")
 
 
 class PulseRecorder:
@@ -438,12 +502,32 @@ class WakeLoop:
             addr=cfg_str(config, "services.orchestrator_addr", os.getenv("ORCH_ADDR", "eve-orchestrator:5013")),
             timeout_secs=cfg_int(config, "services.orchestrator_timeout_secs", env_int("WAKEWORD_ORCH_TIMEOUT_SECS", 120)),
         )
+        self.tts_enabled = cfg_bool(config, "tts.enabled", env_bool("WAKEWORD_TTS_ENABLED", True))
+        self.tts_client = TTSClient(
+            addr=cfg_str(config, "services.tts_addr", os.getenv("TTS_ADDR", "eve-tts:5018")),
+            timeout_secs=cfg_int(config, "services.tts_timeout_secs", env_int("WAKEWORD_TTS_TIMEOUT_SECS", 120)),
+        )
 
     def stop(self) -> None:
         self.stop_event.set()
         self.recorder.stop()
         self.asr_client.close()
         self.orchestrator_client.close()
+        self.tts_client.close()
+
+    def speak_response(self, response: str) -> None:
+        text = prepare_tts_text(response)
+        if not self.tts_enabled or not text:
+            return
+        self.recorder.stop()
+        try:
+            logging.info("wakeword.tts_start chars=%d", len(text))
+            self.tts_client.play(self.session_id, text)
+            logging.info("wakeword.tts_complete")
+        except Exception:
+            logging.exception("wakeword.tts_error")
+        finally:
+            self.detector.reset()
 
     def active_session_id(self) -> str:
         if self.session_file:
@@ -467,6 +551,9 @@ class WakeLoop:
         status: str = "",
         error_kind: str = "",
     ) -> None:
+        # Refresh before every event so the initial wake notification follows a
+        # session rotated after this process started.
+        self.session_id = self.active_session_id()
         event = agent_pb2.WakeDetected(
             session_id=self.session_id,
             timestamp_unix_ms=int(time.time() * 1000),
@@ -579,7 +666,11 @@ class WakeLoop:
                 confidence=confidence,
             )
         try:
-            response, tools, status, error_kind = self.orchestrator_client.chat(session_id, prompt)
+            response, tools, status, error_kind, streamed_speech = self.orchestrator_client.chat(
+                session_id,
+                prompt,
+                on_sentence=self.speak_response if self.tts_enabled else None,
+            )
         except grpc.RpcError as err:
             details = err.details() if hasattr(err, "details") else str(err)
             logging.exception("wakeword.orchestrator_error details=%r", details)
@@ -598,6 +689,7 @@ class WakeLoop:
                     status=status,
                     error_kind=error_kind,
                 )
+            self.speak_response(response)
             return response
         logging.info("wakeword.orchestrator_response status=%r error_kind=%r text=%r", status, error_kind, response)
         if publish_source:
@@ -611,6 +703,8 @@ class WakeLoop:
                 status=status,
                 error_kind=error_kind,
             )
+        if not streamed_speech:
+            self.speak_response(response)
         return response
 
     def run_followup_window(self, initial_response: str) -> None:

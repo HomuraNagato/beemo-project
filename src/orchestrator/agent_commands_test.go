@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	pb "eve-beemo/proto/gen/proto"
@@ -27,7 +28,7 @@ func TestParseSlashCommandUsesRegistryForHiddenControls(t *testing.T) {
 	}
 }
 
-func TestListAgentCommandsReturnsOnlyConfiguredDiscoverableCommands(t *testing.T) {
+func TestListAgentCommandsReturnsDiscoverableCommandsWithConfigurationStatus(t *testing.T) {
 	server := &orchestratorServer{cfg: config.Config{
 		InternetProvider: "tavily",
 		InternetAPIKey:   "tavily-key",
@@ -48,7 +49,10 @@ func TestListAgentCommandsReturnsOnlyConfiguredDiscoverableCommands(t *testing.T
 	if err != nil {
 		t.Fatalf("ListAgentCommands without key returned error: %v", err)
 	}
-	if len(response.GetCommands()) != 4 || response.GetCommands()[3].GetCommand() != "/switch" {
-		t.Fatalf("unexpected commands without internet key: %#v", response.GetCommands())
+	if len(response.GetCommands()) != 5 || response.GetCommands()[4].GetCommand() != "/internet" {
+		t.Fatalf("expected internet command to remain discoverable without a key: %#v", response.GetCommands())
+	}
+	if !strings.Contains(response.GetCommands()[4].GetDescription(), "TAVILY_API_KEY") {
+		t.Fatalf("expected internet configuration guidance, got %#v", response.GetCommands()[4])
 	}
 }

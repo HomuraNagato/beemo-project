@@ -1,18 +1,23 @@
-FROM golang:1.22-bullseye
+FROM golang:1.22-bullseye AS build
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    git \
-    protobuf-compiler \
-    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
 
-ENV GOPATH=/go
-ENV PATH="${GOPATH}/bin:${PATH}"
+COPY go.mod go.sum ./
+RUN go mod download
+RUN CGO_ENABLED=0 GOBIN=/out go install github.com/fullstorydev/grpcurl/cmd/grpcurl@v1.9.1
 
+COPY proto ./proto
+COPY src/orchestrator ./src/orchestrator
+
+RUN CGO_ENABLED=0 go build -trimpath -o /out/eve-orchestrator ./src/orchestrator
+
+FROM scratch
+
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=build /out/eve-orchestrator /usr/local/bin/eve-orchestrator
+COPY --from=build /out/grpcurl /usr/local/bin/grpcurl
+
+ENV PATH=/usr/local/bin
 WORKDIR /workspace
 
-RUN go install github.com/fullstorydev/grpcurl/cmd/grpcurl@latest
-
-#RUN go mod tidy
-
-CMD ["go", "run", "./src/orchestrator"]
+CMD ["/usr/local/bin/eve-orchestrator"]

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { afterUpdate } from "svelte";
-  import { ArrowDown, FileDiff, Maximize2, Minimize2, RefreshCw, X } from "@lucide/svelte";
+  import { ArrowDown, FileDiff, Maximize2, Mic, Minimize2, RefreshCw, X } from "@lucide/svelte";
   import type { ChatMessage } from "$lib/types";
   import MessageText from "./MessageText.svelte";
 
@@ -68,12 +68,17 @@
     <header class="flex min-h-12 items-center justify-between gap-3 border-b border-[rgba(220,238,231,0.18)] px-3">
       <div class="min-w-0">
         <strong class="block overflow-hidden text-sm text-ellipsis whitespace-nowrap">{mode === "code" ? `Code · ${projectName()}` : "Normal"}{internetEnabled ? " · Internet" : ""}</strong>
-        <span
-          class:text-[#ffd27a]={noticeTone === "warning"}
-          class:text-[#ff9e93]={noticeTone === "error"}
-          class:text-[#c2d0cb]={noticeTone === "normal"}
-          class="block overflow-hidden text-[0.68rem] text-ellipsis whitespace-nowrap"
-        >{notice || activity || (status === "idle" ? `${status} · ${voiceStatus}` : status)}</span>
+        <div class="flex min-w-0 items-center gap-1.5">
+          {#if status === "listening"}
+            <Mic class="shrink-0 animate-pulse text-beemo-gold" size={12} aria-hidden="true" />
+          {/if}
+          <span
+            class:text-[#ffd27a]={noticeTone === "warning" || status === "listening"}
+            class:text-[#ff9e93]={noticeTone === "error"}
+            class:text-[#c2d0cb]={noticeTone === "normal" && status !== "listening"}
+            class="block overflow-hidden text-[0.68rem] text-ellipsis whitespace-nowrap"
+          >{notice || activity || (status === "idle" ? `${status} · ${voiceStatus}` : status)}</span>
+        </div>
       </div>
       <div class="flex shrink-0 gap-1">
         {#if mode === "code"}

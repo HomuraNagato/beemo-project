@@ -173,13 +173,8 @@
     if (!event.transcript && !event.prompt && !event.response) {
       expression = "listening";
       status = "listening";
+      voiceStatus = "wake detected";
       return;
-    }
-    const prompt = event.prompt || event.transcript;
-    if (prompt) {
-      showMessage("user", prompt);
-      expression = "thinking";
-      status = "thinking";
     }
     if (event.response) {
       showMessage("assistant", cleanReply(event.response));
@@ -188,6 +183,13 @@
       animateTalking(event.response);
       if (event.status === "error") holdConversation();
       else scheduleConversationHide();
+      return;
+    }
+    const prompt = event.prompt || event.transcript;
+    if (prompt) {
+      showMessage("user", prompt);
+      expression = "thinking";
+      status = "thinking";
     }
   }
 
@@ -324,6 +326,9 @@
       case "assistant":
         status = "responding";
         return event.text || "";
+      case "assistant_delta":
+        status = "responding";
+        break;
       case "status":
         expression = "thinking";
         status = event.text || "thinking";

@@ -35,11 +35,11 @@
 - Unit and integration-style tests exist for the orchestrator flow, LLM client requests, routing, and calculator/tool behavior.
 
 ## Missing Pieces
-- Separate Go service implementations for `WakeWord`, `ASR`, `LLM`, `TTS`, `Vision`, and `UI` are still not present. `WakeWord` and `ASR` have Python service implementations, but they are not yet migrated to Go.
+- Separate Go service implementations for `WakeWord`, `ASR`, `LLM`, `TTS`, `Vision`, and `UI` are still not present. `WakeWord` and `ASR` have Python service implementations, and `TTS` has a TypeScript service backed by sherpa-onnx and Kokoro.
 - `Orchestrator.StreamState` is defined in the proto contract but is not implemented in the current server.
 - LLM output is still synchronous request/response from the orchestrator's perspective; streaming token handling is not implemented.
 - Route retrieval still uses the warmed in-process route index at runtime rather than querying `route_embeddings`.
-- Audio, wake-word detection, TTS playback, and camera/vision integration are not yet migrated into working Go services. The current voice path is a Python/Docker prototype rather than a Go migration.
+- Audio, wake-word detection, and TTS playback are working Docker services but are not yet migrated to Go. Camera/vision integration is still incomplete.
 - Compose references for some planned services are incomplete; for example, `compose/vision` and `compose/ui` are referenced by `docker-compose.yaml` but are not present in the repository.
 
 ## Current Developer Workflow
